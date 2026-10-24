@@ -11,7 +11,6 @@ from contextlib import asynccontextmanager
 
 import edge_tts
 import httpx
-import imageio_ffmpeg
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, Request
@@ -27,18 +26,23 @@ def setup_ffmpeg() -> str:
     sys_ff = shutil.which("ffmpeg")
     if sys_ff:
         return sys_ff
-    exe = imageio_ffmpeg.get_ffmpeg_exe()
-    bin_dir = "/tmp/ffbin"
-    os.makedirs(bin_dir, exist_ok=True)
-    target = os.path.join(bin_dir, "ffmpeg")
-    if not os.path.exists(target):
-        try:
-            os.symlink(exe, target)
-        except Exception:
-            shutil.copy2(exe, target)
-            os.chmod(target, 0o755)
-    os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
-    return target
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        bin_dir = "/tmp/ffbin"
+        os.makedirs(bin_dir, exist_ok=True)
+        target = os.path.join(bin_dir, "ffmpeg")
+        if not os.path.exists(target):
+            try:
+                os.symlink(exe, target)
+            except Exception:
+                shutil.copy2(exe, target)
+                os.chmod(target, 0o755)
+        os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
+        return target
+    except Exception:
+        return "ffmpeg"
 
 
 FFMPEG_BIN = setup_ffmpeg()
@@ -47,8 +51,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
 
-FEMALE_VOICE = "my-MM-NilarNeural"
-MALE_VOICE = "my-MM-ThihaNeural"
+FEMALE_EDGE_VOICE = "my-MM-NilarNeural"
+MALE_EDGE_VOICE = "my-MM-ThihaNeural"
+FEMALE_GEMINI_VOICE = "Kore"
+MALE_GEMINI_VOICE = "Puck"
 SAMPLE_RATE = 24000
 
 processed_updates = deque(maxlen=500)
@@ -62,6 +68,13 @@ PREFERRED_MODELS = [
     "gemini-3.1-flash-lite-preview",
     "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
+]
+
+PREFERRED_TTS_MODELS = [
+    "gemini-3.8-flash-lite-tts",
+    "gemini-3.8-flash-tts",
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-preview-tts",
 ]
 
 
@@ -97,7 +110,7 @@ async def register_webhook(base_url: str) -> dict:
         return {"ok": False, "reason": "Missing BOT_TOKEN or base_url"}
     clean_base = base_url.rstrip("/")
     if clean_base.startswith("http://") and "localhost" not in clean_base and "127.0.0.1" not in clean_base:
-        clean_base = "https://" + clean_base[len("http://"):]
+        clean_base = "https://" + clean_base[len("http://") :]
     webhook_url = f"{clean_base}/webhook"
     res = await tg_api("setWebhook", {"url": webhook_url, "drop_pending_updates": False})
     logger.info(f"Webhook set to {webhook_url}: {res}")
@@ -132,7 +145,7 @@ async def index(request: Request):
     <html>
     <head><meta charset="utf-8"><title>Rednote MM Bot</title></head>
     <body style="font-family:sans-serif;max-width:560px;margin:40px auto;padding:20px;line-height:1.6;">
-        <h2>🎬 Rednote ➔ မြန်မာစကားပြော Auto Bot</h2>
+        <h2>🎬 Rednote ➔ မြန်မာစကားပြော Auto Bot (v2)</h2>
         <p><b>Status:</b> Online 🟢</p>
         <p><b>Telegram Webhook:</b> {wh_status}</p>
         <p>Telegram ထဲက သင့် Bot ဆီသို့ Rednote (小红书) Link ပို့ပြီး စတင်အသုံးပြုနိုင်ပါပြီ!</p>
@@ -185,7 +198,11 @@ async def telegram_webhook(request: Request):
     url_match = re.search(r"https?://[^\s，。！？,<>\"'；：）】]+", text)
     if not url_match:
         asyncio.create_task(
-            send_text(chat_id, "⚠️ Rednote Video Link လေး ပို့ပေးပါနော် (ဥပမာ http://xhslink.com/... ပါတဲ့ စာသား)။", reply_to=msg_id)
+            send_text(
+                chat_id,
+                "⚠️ Rednote Video Link လေး ပို့ပေးပါနော် (ဥပမာ http://xhslink.com/... ပါတဲ့ စာသား)။",
+                reply_to=msg_id,
+            )
         )
         return JSONResponse({"ok": True})
 
@@ -225,7 +242,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> bool:
                 expanded_url = str(r.url)
                 html = r.text
 
-                # 1. Check og:video meta tag
                 og_matches = re.findall(
                     r'<meta[^>]+(?:name|property)=["\']og:video["\'][^>]+content=["\']([^"\']+)["\']',
                     html,
@@ -241,7 +257,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> bool:
                     if u_clean.startswith("http"):
                         direct_video_urls.append(u_clean)
 
-                # 2. Check masterUrl / originVideoKey inside __INITIAL_STATE__
                 master_matches = re.findall(r'"masterUrl"\s*:\s*"([^"]+)"', html)
                 for m in master_matches:
                     u_clean = m.encode("utf-8").decode("unicode_escape", errors="ignore").replace("\\u002F", "/")
@@ -262,7 +277,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> bool:
             except Exception as e:
                 logger.warning(f"HTML scrape attempt warning: {e}")
 
-        # Try downloading extracted direct CDN URLs first
         seen = set()
         for vurl in direct_video_urls:
             if vurl in seen:
@@ -284,7 +298,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> bool:
             except Exception as e:
                 logger.warning(f"Direct CDN download failed: {e}")
 
-    # Fallback to yt-dlp (try expanded_url and xiaohongshu domain normalized URL)
     candidate_urls = [expanded_url]
     if "rednote.com" in expanded_url:
         candidate_urls.append(expanded_url.replace("rednote.com", "xiaohongshu.com"))
@@ -332,10 +345,10 @@ def estimate_segment_pitch_hz(wav_samples_8k: np.ndarray, start: float, end: flo
     seg = wav_samples_8k[s_idx:e_idx].astype(np.float32)
     if len(seg) < sr // 4:
         return 0.0
-    frame_len = int(0.04 * sr)  # 320 samples (40ms)
+    frame_len = int(0.04 * sr)
     hop = int(0.02 * sr)
-    min_lag = int(sr / 300)  # 300 Hz max F0
-    max_lag = int(sr / 75)   # 75 Hz min F0
+    min_lag = int(sr / 300)
+    max_lag = int(sr / 75)
     f0s = []
     for idx in range(0, len(seg) - frame_len, hop):
         frame = seg[idx : idx + frame_len]
@@ -362,9 +375,37 @@ MYANMAR_DIGITS = str.maketrans("0123456789", "၀၁၂၃၄၅၆၇၈၉")
 
 def clean_burmese_for_tts(text: str) -> str:
     t = re.sub(r"[*_#`~<>[\]()]", " ", text)
+    # Remove emojis / non-BMP symbols that can confuse TTS engines
+    t = re.sub(r"[\U00010000-\U0010ffff]", " ", t)
     t = t.translate(MYANMAR_DIGITS)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
+def has_speakable_text(text: str) -> bool:
+    return bool(re.search(r"[\u1000-\u1049a-zA-Z0-9]", text))
+
+
+def merge_nearby_segments(segments: list[dict]) -> list[dict]:
+    if not segments:
+        return []
+    merged = [dict(segments[0])]
+    for seg in segments[1:]:
+        prev = merged[-1]
+        gap = seg["start"] - prev["end"]
+        combined_dur = seg["end"] - prev["start"]
+        if (
+            seg["gender"] == prev["gender"]
+            and gap < 0.45
+            and combined_dur <= 8.5
+            and len(prev["burmese"]) + len(seg["burmese"]) <= 220
+        ):
+            sep = "၊ " if not prev["burmese"].endswith(("။", "၊", "?", "!")) else " "
+            prev["burmese"] = f"{prev['burmese']}{sep}{seg['burmese']}"
+            prev["end"] = seg["end"]
+        else:
+            merged.append(dict(seg))
+    return merged
 
 
 async def transcribe_and_translate_gemini(audio_mp3_path: str, total_dur: float, wav_8k: np.ndarray) -> list[dict]:
@@ -377,20 +418,20 @@ You are a professional Myanmar video dubbing scriptwriter and audio analyst.
 Listen carefully to this {total_dur:.1f}-second audio clip from a short video.
 
 Task:
-1. Segment ALL spoken dialogue accurately with `start` and `end` timestamps in seconds (within 0.0 to {total_dur:.1f}). Ignore background music without speech. If there is no speech at all, return `[]`.
-2. For EACH spoken segment, listen carefully to the speaker's actual voice timbre and pitch, and label `gender` strictly as `"female"` (woman/girl voice) or `"male"` (man/boy voice). If multiple people converse, switch `"female"` and `"male"` accurately for each speaker's turn!
+1. Group spoken dialogue into natural complete sentence segments (ideally 2 to 8 seconds each) with accurate `start` and `end` timestamps in seconds (within 0.0 to {total_dur:.1f}). Ignore pure music, laughter, or silence without words. If there is no speech at all, return `[]`.
+2. For EACH spoken segment, listen carefully to the speaker's actual voice timbre and pitch, and label `gender` strictly as `"female"` (woman/girl voice) or `"male"` (man/boy voice). Switch accurately whenever a different gender speaks!
 3. Translate and adapt each spoken segment into **100% natural, smooth colloquial spoken Burmese (မြန်မာအပြောစကားစစ်စစ်)** for voiceover dubbing:
    - NEVER use stiff literary Burmese ("သည်", "၏", "၌", "၎င်း", "သောကြောင့်", "ဖြစ်ပေသည်").
    - ALWAYS use natural everyday spoken Burmese ("တယ်", "နော်", "ပေါ့", "လေ", "အဲဒါကြောင့်", "ဆိုတော့").
    - Match pronouns/particles naturally to speaker gender if appropriate (e.g., female speaker: "ရှင့်/နော်/ကျွန်မ", male speaker: "ဗျာ/ကျွန်တော်").
-   - Write ALL numbers and any English words/brands phonetically in Myanmar Unicode script (e.g. write "အေအိုင်", "တစ်ရာ", "နှစ်ခု" instead of English letters or digits) so the Myanmar TTS voice pronounces every syllable smoothly without skipping.
+   - Write ALL numbers and any English words/brands phonetically in Myanmar Unicode words (e.g. write "အေအိုင်", "တစ်ရာ", "နှစ်ခု") — NEVER include emojis or "..." alone.
    - Keep the Burmese phrasing concise so it naturally takes roughly `(end - start)` seconds to speak aloud!
 
 Return ONLY valid JSON matching this exact structure (no markdown fences):
 [
   {{
     "start": 0.3,
-    "end": 3.5,
+    "end": 3.8,
     "gender": "female",
     "burmese": "ဒီနေ့မှာတော့ အရမ်းအသုံးဝင်တဲ့ နည်းလမ်းလေးတစ်ခုကို ပြောပြပေးသွားမှာပါနော်။"
   }}
@@ -406,7 +447,6 @@ Return ONLY valid JSON matching this exact structure (no markdown fences):
     last_err = None
     raw_json_text = None
 
-    # Build model try list + dynamic discovery fallback
     models_to_try = list(PREFERRED_MODELS)
     for model_name in models_to_try:
         try:
@@ -418,14 +458,13 @@ Return ONLY valid JSON matching this exact structure (no markdown fences):
             )
             if resp and resp.text:
                 raw_json_text = resp.text.strip()
-                logger.info(f"Gemini succeeded with model: {model_name}")
+                logger.info(f"Gemini transcription succeeded with model: {model_name}")
                 break
         except Exception as e:
             last_err = e
             logger.warning(f"Model {model_name} failed: {str(e)[:160]}")
 
     if raw_json_text is None:
-        # Discover any available flash model dynamically
         try:
             avail = await asyncio.to_thread(client.models.list)
             for m in avail:
@@ -440,7 +479,7 @@ Return ONLY valid JSON matching this exact structure (no markdown fences):
                         )
                         if resp and resp.text:
                             raw_json_text = resp.text.strip()
-                            logger.info(f"Gemini succeeded with discovered model: {mname}")
+                            logger.info(f"Gemini transcription succeeded with discovered model: {mname}")
                             break
                     except Exception as e2:
                         last_err = e2
@@ -450,7 +489,6 @@ Return ONLY valid JSON matching this exact structure (no markdown fences):
     if raw_json_text is None:
         raise RuntimeError(f"Gemini API failed: {last_err}")
 
-    # Parse JSON safely
     cleaned = re.sub(r"^```(?:json)?|```$", "", raw_json_text, flags=re.M).strip()
     segments = json.loads(cleaned)
     if not isinstance(segments, list):
@@ -464,13 +502,12 @@ Return ONLY valid JSON matching this exact structure (no markdown fences):
             if end <= start:
                 end = min(total_dur, start + 1.5)
             burmese = clean_burmese_for_tts(str(seg.get("burmese", "")))
-            if not burmese:
+            if not burmese or not has_speakable_text(burmese):
                 continue
 
             ai_gender = str(seg.get("gender", "female")).lower().strip()
             pitch_hz = estimate_segment_pitch_hz(wav_8k, start, end)
 
-            # Combine Gemini voice listening + acoustic F0 check when pitch is unambiguous
             if ai_gender in ("male", "m"):
                 gender = "male"
                 if pitch_hz > 215.0:
@@ -492,28 +529,156 @@ Return ONLY valid JSON matching this exact structure (no markdown fences):
             logger.warning(f"Skipping malformed segment {seg}: {e}")
 
     valid_segments.sort(key=lambda x: x["start"])
-    return valid_segments
+    return merge_nearby_segments(valid_segments)
+
+
+async def generate_tts_audio(
+    text: str,
+    gender: str,
+    out_wav_path: str,
+    gemini_client: genai.Client,
+    state: dict,
+) -> bool:
+    """
+    3-layer TTS waterfall so cloud IP blocks or transient rate limits NEVER fail a video:
+      1. Google Gemini Native Neural TTS (Kore=Female, Puck=Male) — ultra-natural & works on Render cloud IPs
+      2. Microsoft Edge Neural TTS (my-MM-NilarNeural / my-MM-ThihaNeural)
+      3. Google Translate Myanmar TTS (with male pitch adaptation when gender=='male')
+    """
+    tmp_raw = out_wav_path + ".raw"
+
+    # Layer 1: Gemini Native TTS
+    if not state.get("gemini_tts_exhausted"):
+        g_voice = FEMALE_GEMINI_VOICE if gender == "female" else MALE_GEMINI_VOICE
+        for tts_model in PREFERRED_TTS_MODELS:
+            if tts_model in state.get("dead_tts_models", set()):
+                continue
+            try:
+                resp = await asyncio.to_thread(
+                    gemini_client.models.generate_content,
+                    model=tts_model,
+                    contents=text,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=g_voice)
+                            )
+                        ),
+                    ),
+                )
+                part = resp.candidates[0].content.parts[0].inline_data
+                audio_bytes = part.data
+                mime = (part.mime_type or "").lower()
+                if audio_bytes and len(audio_bytes) > 400:
+                    with open(tmp_raw, "wb") as f:
+                        f.write(audio_bytes)
+                    if audio_bytes[:4] == b"RIFF":
+                        run_cmd(
+                            [FFMPEG_BIN, "-y", "-i", tmp_raw, "-ac", "1", "-ar", str(SAMPLE_RATE), out_wav_path],
+                            30,
+                        )
+                    else:
+                        rate_m = re.search(r"rate=(\d+)", mime)
+                        pcm_rate = rate_m.group(1) if rate_m else "24000"
+                        run_cmd(
+                            [
+                                FFMPEG_BIN,
+                                "-y",
+                                "-f",
+                                "s16le",
+                                "-ar",
+                                pcm_rate,
+                                "-ac",
+                                "1",
+                                "-i",
+                                tmp_raw,
+                                "-ar",
+                                str(SAMPLE_RATE),
+                                out_wav_path,
+                            ],
+                            30,
+                        )
+                    if os.path.exists(out_wav_path) and os.path.getsize(out_wav_path) > 400:
+                        return True
+            except Exception as e:
+                err_str = str(e)
+                logger.warning(f"Gemini TTS ({tts_model}) warning: {err_str[:160]}")
+                if "404" in err_str or "NOT_FOUND" in err_str:
+                    state.setdefault("dead_tts_models", set()).add(tts_model)
+                elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    state["gemini_tts_exhausted"] = True
+                    break
+
+    # Layer 2: Microsoft Edge Neural TTS
+    if not state.get("edge_blocked"):
+        try:
+            e_voice = FEMALE_EDGE_VOICE if gender == "female" else MALE_EDGE_VOICE
+            tmp_mp3 = out_wav_path + ".edge.mp3"
+            comm = edge_tts.Communicate(text, e_voice)
+            await comm.save(tmp_mp3)
+            if os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 300:
+                run_cmd([FFMPEG_BIN, "-y", "-i", tmp_mp3, "-ac", "1", "-ar", str(SAMPLE_RATE), out_wav_path], 30)
+                if os.path.exists(out_wav_path) and os.path.getsize(out_wav_path) > 400:
+                    return True
+        except Exception as e:
+            logger.warning(f"Edge TTS blocked/failed on this IP, switching to fallback: {e}")
+            state["edge_blocked"] = True
+
+    # Layer 3: Google Translate Myanmar TTS (always works on cloud IPs, zero quota limits)
+    try:
+        chunks = [text[i : i + 170] for i in range(0, len(text), 170)]
+        mp3_bytes = bytearray()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for ch in chunks:
+                r = await client.get(
+                    "https://translate.google.com/translate_tts",
+                    params={"ie": "UTF-8", "tl": "my", "client": "tw-ob", "q": ch},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                if r.status_code == 200 and r.content:
+                    mp3_bytes.extend(r.content)
+        if len(mp3_bytes) > 300:
+            tmp_gt = out_wav_path + ".gt.mp3"
+            with open(tmp_gt, "wb") as f:
+                f.write(mp3_bytes)
+            af_extra = []
+            if gender == "male":
+                af_extra = ["-af", "asetrate=24000*0.84,aresample=24000,atempo=1.19"]
+            run_cmd(
+                [FFMPEG_BIN, "-y", "-i", tmp_gt, "-ac", "1", "-ar", str(SAMPLE_RATE)] + af_extra + [out_wav_path],
+                30,
+            )
+            if os.path.exists(out_wav_path) and os.path.getsize(out_wav_path) > 400:
+                return True
+    except Exception as e:
+        logger.error(f"Google Translate TTS fallback error: {e}")
+
+    return False
 
 
 async def synthesize_dubbed_track(segments: list[dict], total_dur: float, work_dir: str, out_audio_path: str):
     total_samples = int(np.ceil((total_dur + 1.0) * SAMPLE_RATE))
     master_pcm = np.zeros(total_samples, dtype=np.float32)
     cursor_sample = 0
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    tts_state: dict = {"dead_tts_models": set()}
 
     for idx, seg in enumerate(segments):
-        voice = FEMALE_VOICE if seg["gender"] == "female" else MALE_VOICE
-        raw_tts_mp3 = os.path.join(work_dir, f"seg_{idx}_raw.mp3")
+        if not has_speakable_text(seg["burmese"]):
+            continue
+
+        raw_wav = os.path.join(work_dir, f"seg_{idx}_raw.wav")
         trimmed_wav = os.path.join(work_dir, f"seg_{idx}_trim.wav")
 
-        # Generate TTS via Edge Neural Voice
-        comm = edge_tts.Communicate(seg["burmese"], voice)
-        await comm.save(raw_tts_mp3)
+        ok = await generate_tts_audio(seg["burmese"], seg["gender"], raw_wav, gemini_client, tts_state)
+        if not ok or not os.path.exists(raw_wav):
+            continue
 
-        # Trim silence at start/end and convert to 24kHz mono s16le WAV
         trim_filter = (
-            "silenceremove=start_periods=1:start_silence=0.04:start_threshold=-45dB,"
+            "silenceremove=start_periods=1:start_silence=0.04:start_threshold=-42dB,"
             "areverse,"
-            "silenceremove=start_periods=1:start_silence=0.06:start_threshold=-45dB,"
+            "silenceremove=start_periods=1:start_silence=0.06:start_threshold=-42dB,"
             "areverse"
         )
         run_cmd(
@@ -521,7 +686,7 @@ async def synthesize_dubbed_track(segments: list[dict], total_dur: float, work_d
                 FFMPEG_BIN,
                 "-y",
                 "-i",
-                raw_tts_mp3,
+                raw_wav,
                 "-af",
                 trim_filter,
                 "-ac",
@@ -532,14 +697,13 @@ async def synthesize_dubbed_track(segments: list[dict], total_dur: float, work_d
             ],
             30,
         )
-        if not os.path.exists(trimmed_wav) or os.path.getsize(trimmed_wav) < 200:
-            run_cmd([FFMPEG_BIN, "-y", "-i", raw_tts_mp3, "-ac", "1", "-ar", str(SAMPLE_RATE), trimmed_wav], 30)
+        if not os.path.exists(trimmed_wav) or os.path.getsize(trimmed_wav) < 300:
+            trimmed_wav = raw_wav
 
         tts_dur = get_media_duration(trimmed_wav)
         if tts_dur <= 0.05:
             continue
 
-        # Determine available time window until next segment (or end of video)
         start_sec = max(seg["start"], cursor_sample / SAMPLE_RATE)
         if idx + 1 < len(segments):
             next_start = max(start_sec + 0.4, segments[idx + 1]["start"])
@@ -550,9 +714,8 @@ async def synthesize_dubbed_track(segments: list[dict], total_dur: float, work_d
         final_pcm_path = os.path.join(work_dir, f"seg_{idx}.pcm")
         speed_ratio = tts_dur / avail_dur if avail_dur > 0 else 1.0
 
-        # Smoothly adjust speed if Burmese phrase is longer than speaker's window (cap at 1.45x so it stays natural)
         af_chain = []
-        if speed_ratio > 1.03:
+        if speed_ratio > 1.04:
             clamped_speed = min(1.45, speed_ratio)
             af_chain.append(f"atempo={clamped_speed:.3f}")
 
@@ -569,7 +732,6 @@ async def synthesize_dubbed_track(segments: list[dict], total_dur: float, work_d
         if len(seg_pcm) == 0:
             continue
 
-        # Soft 15ms fade-in/out to prevent clicks
         fade_len = min(int(0.015 * SAMPLE_RATE), len(seg_pcm) // 4)
         if fade_len > 1:
             seg_pcm[:fade_len] *= np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
@@ -584,13 +746,11 @@ async def synthesize_dubbed_track(segments: list[dict], total_dur: float, work_d
         master_pcm[place_idx:end_idx] += seg_pcm
         cursor_sample = end_idx + int(0.05 * SAMPLE_RATE)
 
-    # Trim to exact video duration (or slightly longer only if last sentence finishes right at end)
     target_len = int(total_dur * SAMPLE_RATE)
     if cursor_sample > target_len:
         target_len = min(cursor_sample, int((total_dur + 1.2) * SAMPLE_RATE))
     master_pcm = master_pcm[:target_len]
 
-    # Normalize loudness cleanly
     peak = float(np.max(np.abs(master_pcm))) if len(master_pcm) > 0 else 0.0
     if peak > 0.01:
         master_pcm = (master_pcm / peak) * 0.92
@@ -657,7 +817,22 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str):
             )
             await asyncio.to_thread(
                 run_cmd,
-                [FFMPEG_BIN, "-y", "-i", orig_video, "-vn", "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "8000", audio_8k_pcm],
+                [
+                    FFMPEG_BIN,
+                    "-y",
+                    "-i",
+                    orig_video,
+                    "-vn",
+                    "-f",
+                    "s16le",
+                    "-acodec",
+                    "pcm_s16le",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "8000",
+                    audio_8k_pcm,
+                ],
                 60,
             )
 
@@ -678,14 +853,13 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str):
                 chat_id,
                 status_id,
                 f"🎙️ မြန်မာအသံသွင်းပြီး Video Edit လုပ်နေပါပြီ...\n"
-                f"(👩 မိန်းကလေးသံ {f_count} ကြောင်း / 👨 ယောက်ျားလေးသံ {m_count} ကြောင်း)",
+                f"(👩 မိန်းကလေးသံ {f_count} ပိုင်း / 👨 ယောက်ျားလေးသံ {m_count} ပိုင်း)",
             )
 
             dub_mp3 = os.path.join(work_dir, "burmese_dub.mp3")
             await synthesize_dubbed_track(segments, dur, work_dir, dub_mp3)
 
             final_video = os.path.join(work_dir, "final_mm.mp4")
-            # Mute original video audio (-map 0:v:0) and attach Burmese voiceover (-map 1:a:0) with fast lossless stream copy
             await asyncio.to_thread(
                 run_cmd,
                 [
@@ -712,7 +886,6 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str):
                 120,
             )
 
-            # Compress softly only if file > 48MB (Telegram Bot API limit is 50MB)
             if os.path.exists(final_video) and os.path.getsize(final_video) > 48 * 1024 * 1024:
                 compressed_video = os.path.join(work_dir, "final_mm_small.mp4")
                 await asyncio.to_thread(
