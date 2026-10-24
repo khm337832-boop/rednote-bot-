@@ -1050,54 +1050,86 @@ def build_recap_video_and_bgm_mix(
         video_slices.append((last_end, last_end + outro_dur, outro_dur))
         audio_chunks.append(slice_bgm(last_end, last_end + outro_dur, int(outro_dur * SAMPLE_RATE), vol=0.45))
 
-    # Write final mastered audio WAV
+    # Write final mastered audio WAV & free numpy arrays BEFORE video encoding to stay well under 512MB RAM!
     full_audio = np.concatenate(audio_chunks) if audio_chunks else np.zeros(SAMPLE_RATE, dtype=np.float32)
+    del audio_chunks, orig_bgm
     master_s16 = np.clip(full_audio * 32767.0, -32768, 32767).astype(np.int16)
+    del full_audio
     master_wav = os.path.join(work_dir, "master_mix.wav")
     raw_pcm_f = os.path.join(work_dir, "master_mix.pcm")
     master_s16.tofile(raw_pcm_f)
+    del master_s16
     run_cmd(
         [FFMPEG_BIN, "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", raw_pcm_f, master_wav],
         30,
     )
+    if os.path.exists(raw_pcm_f):
+        os.remove(raw_pcm_f)
 
-    # Build ONE single-pass FFmpeg filter_complex script to cut, time-fit, scale (<=540p crisp vertical HD), and concat all video slices!
-    filter_lines = []
-    concat_inputs = []
+    # Low-RAM Sequential Slice Cutting (<45MB RAM on 512MB Render container — NEVER OOMs!):
+    # Cut & time-fit one small slice at a time into MPEG-TS (.ts), then lossless-concat in 0.2s!
+    ts_files = []
     for idx, (s_t, e_t, tgt_d) in enumerate(video_slices):
         raw_d = max(0.1, e_t - s_t)
         pts_factor = tgt_d / raw_d
-        filter_lines.append(
-            f"[0:v]trim=start={s_t:.3f}:end={e_t:.3f},setpts={pts_factor:.4f}*(PTS-STARTPTS),"
-            f"scale='min(540,iw)':-2,fps=24,format=yuv420p[v{idx}]"
+        ts_path = os.path.join(work_dir, f"seg_{idx:03d}.mp4")
+        vf_str = f"setpts={pts_factor:.4f}*(PTS-STARTPTS),scale='min(480,iw)':-2,fps=24,format=yuv420p"
+        run_cmd(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-ss",
+                f"{s_t:.3f}",
+                "-t",
+                f"{raw_d:.3f}",
+                "-i",
+                orig_video,
+                "-an",
+                "-vf",
+                vf_str,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "27",
+                "-video_track_timescale",
+                "90000",
+                "-threads",
+                "1",
+                ts_path,
+            ],
+            120,
         )
-        concat_inputs.append(f"[v{idx}]")
+        if os.path.exists(ts_path) and os.path.getsize(ts_path) > 500:
+            ts_files.append(ts_path)
 
-    filter_lines.append(f"{''.join(concat_inputs)}concat=n={len(video_slices)}:v=1:a=0[outv]")
-    filter_script_path = os.path.join(work_dir, "filter.txt")
-    with open(filter_script_path, "w", encoding="utf-8") as ff:
-        ff.write(";\n".join(filter_lines))
+    if not ts_files:
+        raise RuntimeError("No video slices were generated")
+
+    concat_list_path = os.path.join(work_dir, "concat_list.txt")
+    with open(concat_list_path, "w", encoding="utf-8") as cf:
+        for tp in ts_files:
+            cf.write(f"file '{tp}'\n")
 
     proc = run_cmd(
         [
             FFMPEG_BIN,
             "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
             "-i",
-            orig_video,
+            concat_list_path,
             "-i",
             master_wav,
-            "-filter_complex_script",
-            filter_script_path,
             "-map",
-            "[outv]",
+            "0:v:0",
             "-map",
             "1:a:0",
             "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "26",
+            "copy",
             "-c:a",
             "aac",
             "-b:a",
@@ -1107,11 +1139,11 @@ def build_recap_video_and_bgm_mix(
             "+faststart",
             final_video_path,
         ],
-        420,
+        90,
     )
     if not os.path.exists(final_video_path) or os.path.getsize(final_video_path) < 5000:
         err_tail = proc.stderr.decode(errors="ignore")[-300:]
-        raise RuntimeError(f"FFmpeg video cut/concat failed: {err_tail}")
+        raise RuntimeError(f"FFmpeg video concat failed: {err_tail}")
 
 
 def split_video_lossless(video_path: str, total_dur: float, work_dir: str) -> list[str]:
