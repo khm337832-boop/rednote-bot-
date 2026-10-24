@@ -1,15 +1,15 @@
 import asyncio
 import gc
-import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
-from collections import OrderedDict, deque
+from collections import deque
 from contextlib import asynccontextmanager
 
 import edge_tts
@@ -60,15 +60,12 @@ CHARON_VOICE = "Charon"
 FALLBACK_THIHA_VOICE = "my-MM-ThihaNeural"
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 47 * 1024 * 1024
+MAX_VIDEO_SECONDS = 3600  # Supports long videos up to 60 minutes!
 
-processed_updates = deque(maxlen=500)
+processed_updates = deque(maxlen=600)
 job_semaphore = asyncio.Semaphore(1)
-STATS = {"completed": 0, "completed_4k": 0, "started_at": int(time.time())}
-
-# Short key -> Rednote URL cache for inline buttons (Telegram callback_data max 64 bytes)
-URL_CACHE: OrderedDict[str, str] = OrderedDict()
-# Per-chat default mode: "ask" (show menu), "std" (original fast recap), "4k" (4K Ultra-HD recap)
-USER_DEFAULT_MODE: dict[int, str] = {}
+ACTIVE_JOBS = 0
+STATS = {"completed_orig": 0, "completed_4k": 0, "started_at": int(time.time())}
 
 PREFERRED_MODELS = [
     "gemini-3-flash-preview",
@@ -88,51 +85,27 @@ PREFERRED_TTS_MODELS = [
 ]
 
 
-def remember_url(url: str) -> str:
-    key = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
-    URL_CACHE[key] = url
-    URL_CACHE.move_to_end(key)
-    while len(URL_CACHE) > 400:
-        URL_CACHE.popitem(last=False)
-    return key
+def run_cmd(cmd: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            proc.kill()
+        out, err = proc.communicate()
+        return subprocess.CompletedProcess(cmd, -9, out, err)
 
 
-def mode_selection_keyboard(url_key: str) -> dict:
-    return {
-        "inline_keyboard": [
-            [{"text": "⚡ မူလ Smart Recap (အမြန် · လက်ရှိအတိုင်း)", "callback_data": f"rn|std|{url_key}"}],
-            [{"text": "💎 4K Ultra-HD Recap (အကြည်ဆုံး 4K Final)", "callback_data": f"rn|4k|{url_key}"}],
-            [{"text": "🎞️ Lossless Master Dub (မဖြတ်ဘဲ မူရင်းအကြည်)", "callback_data": f"rn|lossless|{url_key}"}],
-            [{"text": "📥 မူရင်း Video အကြည်ဆုံး ဒေါင်းမယ် (No Watermark)", "callback_data": f"rn|raw|{url_key}"}],
-        ]
-    }
-
-
-def followup_keyboard(url_key: str, done_mode: str) -> dict:
-    rows = []
-    if done_mode != "4k":
-        rows.append([{"text": "💎 ဒီ Video ကို 4K Ultra-HD ထပ်ထုတ်မယ်", "callback_data": f"rn|4k|{url_key}"}])
-    if done_mode != "std":
-        rows.append([{"text": "⚡ မူလ Smart Recap (အမြန်) ထုတ်မယ်", "callback_data": f"rn|std|{url_key}"}])
-    if done_mode != "raw":
-        rows.append([{"text": "📥 မူရင်း Raw အကြည်ဆုံး ယူမယ်", "callback_data": f"rn|raw|{url_key}"}])
-    return {"inline_keyboard": rows}
-
-
-def default_mode_keyboard(current: str) -> dict:
-    def mark(m: str, label: str) -> str:
-        return f"✅ {label}" if current == m else label
-
-    return {
-        "inline_keyboard": [
-            [{"text": mark("ask", "🎛️ Link ပို့တိုင်း Mode ရွေးမယ် (Default)"), "callback_data": "setmode|ask"}],
-            [{"text": mark("4k", "💎 အမြဲ 4K Ultra-HD တန်းထုတ်မယ်"), "callback_data": "setmode|4k"}],
-            [{"text": mark("std", "⚡ အမြဲ မူလ Smart Recap တန်းထုတ်မယ်"), "callback_data": "setmode|std"}],
-        ]
-    }
-
-
-async def tg_api(method: str, data: dict = None, files: dict = None, timeout: float = 180.0):
+async def tg_api(method: str, data: dict = None, files: dict = None, timeout: float = 240.0):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     async with httpx.AsyncClient(timeout=timeout) as client:
         if files:
@@ -142,24 +115,19 @@ async def tg_api(method: str, data: dict = None, files: dict = None, timeout: fl
         return resp.json()
 
 
-async def send_text(chat_id: int, text: str, reply_to: int = None, reply_markup: dict = None):
+async def send_text(chat_id: int, text: str, reply_to: int = None):
     payload = {"chat_id": chat_id, "text": text}
     if reply_to:
         payload["reply_to_message_id"] = reply_to
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
     res = await tg_api("sendMessage", payload)
     return res.get("result", {}).get("message_id")
 
 
-async def edit_text(chat_id: int, message_id: int, text: str, reply_markup: dict = None):
+async def edit_text(chat_id: int, message_id: int, text: str):
     if not message_id:
         return
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
     try:
-        await tg_api("editMessageText", payload)
+        await tg_api("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text})
     except Exception:
         pass
 
@@ -183,17 +151,37 @@ async def register_webhook(base_url: str) -> dict:
     return res
 
 
+async def active_job_keepalive_loop():
+    """Prevents Render Free Tier from spinning down mid-job on long (>8–60 min) videos!"""
+    while True:
+        await asyncio.sleep(180)
+        if ACTIVE_JOBS > 0 and RENDER_EXTERNAL_URL:
+            try:
+                ping_url = RENDER_EXTERNAL_URL.rstrip("/") + "/healthz"
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    await client.get(ping_url)
+            except Exception:
+                pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ka_task = asyncio.create_task(active_job_keepalive_loop())
     if RENDER_EXTERNAL_URL and BOT_TOKEN:
         try:
             await register_webhook(RENDER_EXTERNAL_URL)
         except Exception as e:
             logger.error(f"Startup webhook error: {e}")
     yield
+    ka_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/healthz")
+async def healthz():
+    return JSONResponse({"ok": True, "active_jobs": ACTIVE_JOBS})
 
 
 def render_workflow_dashboard_html(wh_ok: bool, groq_ready: bool, gemini_ready: bool) -> str:
@@ -205,14 +193,13 @@ def render_workflow_dashboard_html(wh_ok: bool, groq_ready: bool, gemini_ready: 
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Smart Recap &amp; 4K Ultra-HD Studio (v4) · Rednote ➔ Myanmar</title>
+<title>AI Smart Recap ➔ 4K Ultra-HD Pipeline (v5) · @Aihjklbot</title>
 <style>
   :root {{
     --bg: #070913;
-    --panel: rgba(16, 22, 42, 0.84);
+    --panel: rgba(16, 22, 42, 0.86);
     --border: rgba(99, 179, 237, 0.25);
     --cyan: #00f2fe;
-    --blue: #4facfe;
     --purple: #a855f7;
     --green: #10b981;
     --gold: #fbbf24;
@@ -225,53 +212,27 @@ def render_workflow_dashboard_html(wh_ok: bool, groq_ready: bool, gemini_ready: 
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     min-height: 100vh;
-    overflow-x: hidden;
     padding: 24px 16px 56px;
   }}
-  .grid-bg {{
-    position: fixed; inset: 0; pointer-events: none; z-index: 0;
-    background-image:
-      linear-gradient(rgba(79,172,254,0.06) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(79,172,254,0.06) 1px, transparent 1px);
-    background-size: 34px 34px;
-  }}
-  .wrap {{ position: relative; z-index: 1; max-width: 980px; margin: 0 auto; }}
+  .wrap {{ max-width: 960px; margin: 0 auto; }}
   .topbar {{
     display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
     gap: 12px; padding: 16px 20px; border-radius: 18px;
     background: var(--panel); border: 1px solid var(--border);
-    backdrop-filter: blur(14px);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
     margin-bottom: 24px;
   }}
   .brand {{ display: flex; align-items: center; gap: 12px; }}
-  .pulse-dot {{
-    width: 12px; height: 12px; border-radius: 50%; background: var(--green);
-    box-shadow: 0 0 14px var(--green);
-    animation: pulse 1.8s infinite;
-  }}
-  @keyframes pulse {{
-    0%, 100% {{ transform: scale(1); opacity: 1; }}
-    50% {{ transform: scale(1.35); opacity: 0.65; }}
-  }}
-  .title {{ font-size: 18px; font-weight: 800; letter-spacing: 0.3px; }}
+  .pulse-dot {{ width: 12px; height: 12px; border-radius: 50%; background: var(--green); box-shadow: 0 0 14px var(--green); }}
+  .title {{ font-size: 18px; font-weight: 800; }}
   .subtitle {{ font-size: 12px; color: var(--muted); margin-top: 2px; }}
   .badges {{ display: flex; flex-wrap: wrap; gap: 8px; }}
   .pill {{
     font-size: 11px; font-weight: 700; padding: 6px 11px; border-radius: 999px;
-    background: rgba(16, 185, 129, 0.14); color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.35);
-    letter-spacing: 0.4px;
+    background: rgba(16, 185, 129, 0.14); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35);
   }}
-  .pill.ai {{
-    background: rgba(168, 85, 247, 0.14); color: #d8b4fe;
-    border-color: rgba(168, 85, 247, 0.38);
-  }}
-  .pill.uhd {{
-    background: rgba(251, 191, 36, 0.16); color: #fde68a;
-    border-color: rgba(251, 191, 36, 0.45);
-  }}
-  .hero {{ text-align: center; margin: 18px 0 30px; }}
+  .pill.uhd {{ background: rgba(251, 191, 36, 0.16); color: #fde68a; border-color: rgba(251, 191, 36, 0.45); }}
+  .pill.ai {{ background: rgba(168, 85, 247, 0.14); color: #d8b4fe; border-color: rgba(168, 85, 247, 0.38); }}
+  .hero {{ text-align: center; margin: 18px 0 28px; }}
   .hero h1 {{
     font-size: clamp(22px, 4.5vw, 34px); font-weight: 900;
     background: linear-gradient(90deg, #00f2fe, #4facfe, #fbbf24, #f472b6);
@@ -281,136 +242,84 @@ def render_workflow_dashboard_html(wh_ok: bool, groq_ready: bool, gemini_ready: 
   .hero p {{ color: var(--muted); font-size: 14px; }}
   .pipeline {{ display: flex; flex-direction: column; align-items: center; }}
   .node {{
-    width: 100%; max-width: 680px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 18px;
-    padding: 18px 20px;
-    display: flex; align-items: center; gap: 16px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    width: 100%; max-width: 680px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 18px; padding: 16px 20px; display: flex; align-items: center; gap: 16px;
   }}
   .icon-box {{
-    width: 52px; height: 52px; border-radius: 14px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 24px;
-    background: linear-gradient(135deg, rgba(79,172,254,0.2), rgba(0,242,254,0.08));
-    border: 1px solid rgba(0,242,254,0.35);
+    width: 50px; height: 50px; border-radius: 14px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 23px;
+    background: rgba(79,172,254,0.16); border: 1px solid rgba(0,242,254,0.35);
   }}
-  .node.gold .icon-box {{
-    background: linear-gradient(135deg, rgba(251,191,36,0.26), rgba(245,158,11,0.1));
-    border-color: rgba(251,191,36,0.5);
-  }}
-  .node.purple .icon-box {{
-    background: linear-gradient(135deg, rgba(168,85,247,0.24), rgba(236,72,153,0.1));
-    border-color: rgba(168,85,247,0.45);
-  }}
-  .node.green .icon-box {{
-    background: linear-gradient(135deg, rgba(16,185,129,0.24), rgba(6,182,212,0.1));
-    border-color: rgba(16,185,129,0.45);
-  }}
-  .n-body {{ flex: 1; min-width: 0; }}
-  .n-step {{ font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: var(--cyan); }}
+  .node.gold .icon-box {{ background: rgba(251,191,36,0.18); border-color: rgba(251,191,36,0.5); }}
+  .n-step {{ font-size: 10px; font-weight: 800; color: var(--cyan); letter-spacing: 1px; }}
   .node.gold .n-step {{ color: var(--gold); }}
-  .node.purple .n-step {{ color: #d8b4fe; }}
-  .node.green .n-step {{ color: #6ee7b7; }}
-  .n-title {{ font-size: 16px; font-weight: 800; margin: 3px 0 4px; color: #fff; }}
+  .n-title {{ font-size: 16px; font-weight: 800; margin: 3px 0; color: #fff; }}
   .n-desc {{ font-size: 13px; color: var(--muted); line-height: 1.45; }}
-  .n-tag {{
-    font-size: 11px; font-weight: 700; padding: 5px 10px; border-radius: 8px;
-    background: rgba(255,255,255,0.06); color: #e2e8f0; white-space: nowrap;
-  }}
-  .wire {{
-    width: 3px; height: 32px; background: rgba(79,172,254,0.22);
-    position: relative; overflow: hidden;
-  }}
-  .wire::after {{
-    content: ""; position: absolute; left: 0; top: -18px;
-    width: 100%; height: 18px;
-    background: linear-gradient(180deg, transparent, var(--cyan), #fff);
-    animation: flow 1.3s linear infinite;
-  }}
-  @keyframes flow {{ 0% {{ top: -18px; }} 100% {{ top: 34px; }} }}
-  .cta-bar {{
-    margin-top: 30px; text-align: center;
-    display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;
-  }}
+  .wire {{ width: 3px; height: 26px; background: linear-gradient(180deg, var(--cyan), var(--gold)); }}
+  .cta-bar {{ margin-top: 28px; text-align: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }}
   .btn {{
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 13px 24px; border-radius: 999px; font-weight: 800; font-size: 14px;
-    text-decoration: none; color: #041019;
+    display: inline-flex; align-items: center; gap: 8px; padding: 13px 24px; border-radius: 999px;
+    font-weight: 800; font-size: 14px; text-decoration: none; color: #041019;
     background: linear-gradient(90deg, var(--cyan), var(--gold));
-    box-shadow: 0 0 24px rgba(0, 242, 254, 0.35);
   }}
   .stat-card {{
-    display: inline-flex; align-items: center; gap: 10px;
-    padding: 12px 20px; border-radius: 999px;
-    background: var(--panel); border: 1px solid var(--border);
-    font-size: 13px; color: var(--text); font-weight: 600;
+    padding: 12px 20px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border);
+    font-size: 13px; font-weight: 600;
   }}
-  @media (max-width: 560px) {{ .n-tag {{ display: none; }} .node {{ padding: 14px 15px; }} }}
 </style>
 </head>
 <body>
-<div class="grid-bg"></div>
 <div class="wrap">
   <div class="topbar">
     <div class="brand">
       <div class="pulse-dot"></div>
       <div>
-        <div class="title">AI SMART RECAP &amp; 4K ULTRA-HD ENGINE (v4)</div>
-        <div class="subtitle">Original Fast Recap + Highest-Quality Master Downloader + True 4K Output</div>
+        <div class="title">AI SMART RECAP ➔ 4K ULTRA-HD ENGINE (v5)</div>
+        <div class="subtitle">Long Video Support (Up to 60m) · Original Recap First ➔ 4K Final Upgrade</div>
       </div>
     </div>
     <div class="badges">
       <span class="pill">{wh_badge}</span>
-      <span class="pill uhd">4K ULTRA-HD MASTER · READY</span>
+      <span class="pill uhd">60-MIN + 4K PIPELINE · READY</span>
       <span class="pill ai">{groq_badge}</span>
       <span class="pill ai">{gem_badge}</span>
     </div>
   </div>
-
   <div class="hero">
-    <h1>Rednote ➔ Myanmar Charon AI + 4K Studio</h1>
-    <p>Original Fast Smart Recap (Untouched) + Highest-Bitrate Raw Extractor + 4K Ultra-HD (2160p) Final</p>
+    <h1>Rednote Best Download ➔ Original Recap ➔ 4K Final</h1>
+    <p>အကြည်ဆုံး Version ဒေါင်းမည် ➔ မူလအတိုင်း Smart Recap အရင်ထုတ်ပို့မည် ➔ ထို Video ကို 4K ပြောင်းပို့မည်</p>
   </div>
-
   <div class="pipeline">
+    <div class="node">
+      <div class="icon-box">📥</div>
+      <div>
+        <div class="n-step">STEP 01 · HIGHEST QUALITY DOWNLOAD</div>
+        <div class="n-title">originVideoKey Raw Master (No-Watermark · Up to 60 Mins)</div>
+        <div class="n-desc">Rednote မှ အကြည်ဆုံး မူရင်း Video ကို ဆွဲထုတ်ခြင်း (၈ မိနစ် ကန့်သတ်ချက် မရှိတော့ပါ — ၁ နာရီအထိ ရသည်)</div>
+      </div>
+    </div>
+    <div class="wire"></div>
+    <div class="node">
+      <div class="icon-box">✂️</div>
+      <div>
+        <div class="n-step">STEP 02 · ORIGINAL SMART RECAP FIRST</div>
+        <div class="n-title">Charon 1.0x Male Voice + BGM Ducking + Smart Scene Cut</div>
+        <div class="n-desc">မူလအတိုင်း အသံသြသြ၊ နောက်ခံ BGM သံနှင့် ဖြတ်/ဆက်လုပ်၍ မူလ Smart Recap Video ကို အရင်ဆုံး ထုတ်ပေးခြင်း</div>
+      </div>
+    </div>
+    <div class="wire"></div>
     <div class="node gold">
       <div class="icon-box">💎</div>
-      <div class="n-body">
-        <div class="n-step">NODE 01 · HIGHEST-QUALITY EXTRACTOR</div>
-        <div class="n-title">originVideoKey Raw Master (No-Watermark Highest Bitrate)</div>
-        <div class="n-desc">Rednote မှ အကြည်ဆုံး မူရင်း Master Stream (originVideoKey / Largest Bitrate) ကို ဦးစားပေး တိုက်ရိုက်ဆွဲထုတ်ခြင်း</div>
+      <div>
+        <div class="n-step">STEP 03 · 4K ULTRA-HD POST-UPGRADE</div>
+        <div class="n-title">Finished Recap Video ➔ True 4K Ultra-HD (2160×3840)</div>
+        <div class="n-desc">မူလအတိုင်း ထွက်လာပြီးသား Recap Video ကိုမှ Edge-Sharpened 4K Ultra-HD သို့ အဆင့်မြှင့်ပြောင်းလဲပြီး ပို့ပေးခြင်း</div>
       </div>
-      <div class="n-tag">Max Quality</div>
-    </div>
-    <div class="wire"></div>
-
-    <div class="node purple">
-      <div class="icon-box">🎙️</div>
-      <div class="n-body">
-        <div class="n-step">NODE 02 · UNTOUCHED CHARON AI + BGM</div>
-        <div class="n-title">Groq Whisper v3 + Gemini 3 + Charon (1.0x) + BGM Ducking</div>
-        <div class="n-desc">မူလအတိုင်း အသံသြသြ သဘာဝအမြန်နှုန်း 100% နှင့် နောက်ခံ BGM သံ ခပ်တိုးတိုးဖြင့် စတူဒီယိုအရည်အသွေး ပေါင်းစပ်ခြင်း</div>
-      </div>
-      <div class="n-tag">Charon 1.0x</div>
-    </div>
-    <div class="wire"></div>
-
-    <div class="node green">
-      <div class="icon-box">🎬</div>
-      <div class="n-body">
-        <div class="n-step">NODE 03 · DUAL OUTPUT ENGINE</div>
-        <div class="n-title">⚡ Original Fast Smart Recap + 💎 True 4K Ultra-HD (2160×3840)</div>
-        <div class="n-desc">မူလ အမြန် Smart Recap သာမက အသစ်ပေါင်းထည့်ထားသော 4K Ultra-HD Final နှင့် Lossless Raw Master များကို စိတ်ကြိုက်ရွေးထုတ်နိုင်ခြင်း</div>
-      </div>
-      <div class="n-tag">Dual 4K + Fast</div>
     </div>
   </div>
-
   <div class="cta-bar">
     <a class="btn" href="https://t.me/Aihjklbot" target="_blank">🚀 Open @Aihjklbot on Telegram</a>
-    <div class="stat-card">⚡ Total Completed: {STATS["completed"]} · 💎 4K Delivered: {STATS["completed_4k"]}</div>
+    <div class="stat-card">✅ Recap Sent: {STATS["completed_orig"]} · 💎 4K Upgraded: {STATS["completed_4k"]}</div>
   </div>
 </div>
 </body>
@@ -450,49 +359,11 @@ async def telegram_webhook(request: Request):
     if update_id is not None:
         processed_updates.append(update_id)
 
-    # Handle inline button taps
     cb = update.get("callback_query")
     if cb:
         cb_id = cb.get("id")
-        data = cb.get("data") or ""
-        msg = cb.get("message") or {}
-        chat_id = msg.get("chat", {}).get("id")
-        msg_id = msg.get("message_id")
-        asyncio.create_task(tg_api("answerCallbackQuery", {"callback_query_id": cb_id}))
-
-        if data.startswith("setmode|") and chat_id:
-            chosen = data.split("|", 1)[1]
-            USER_DEFAULT_MODE[chat_id] = chosen
-            label_map = {
-                "ask": "🎛️ Link ပို့တိုင်း Mode ရွေးမယ်",
-                "4k": "💎 အမြဲ 4K Ultra-HD တန်းထုတ်မယ်",
-                "std": "⚡ အမြဲ မူလ Smart Recap တန်းထုတ်မယ်",
-            }
-            asyncio.create_task(
-                edit_text(
-                    chat_id,
-                    msg_id,
-                    f"✅ Default Mode ပြောင်းပြီးပါပြီ — {label_map.get(chosen, chosen)}",
-                    reply_markup=default_mode_keyboard(chosen),
-                )
-            )
-            return JSONResponse({"ok": True})
-
-        if data.startswith("rn|") and chat_id:
-            parts = data.split("|", 2)
-            if len(parts) == 3:
-                _, mode, url_key = parts
-                raw_url = URL_CACHE.get(url_key)
-                if not raw_url:
-                    asyncio.create_task(
-                        send_text(
-                            chat_id,
-                            "⚠️ ဒီ Link သက်တမ်းကုန်သွားလို့ Rednote Link ကို နောက်တစ်ခေါက် ပြန်ပို့ပေးပါနော်။",
-                            reply_to=msg_id,
-                        )
-                    )
-                else:
-                    asyncio.create_task(handle_video_job(chat_id, msg_id, raw_url, url_key, mode=mode))
+        if cb_id:
+            asyncio.create_task(tg_api("answerCallbackQuery", {"callback_query_id": cb_id}))
         return JSONResponse({"ok": True})
 
     msg = update.get("message") or update.get("edited_message")
@@ -511,26 +382,12 @@ async def telegram_webhook(request: Request):
             send_text(
                 chat_id,
                 "မင်္ဂလာပါ! 🎬💎🔥\n\n"
-                "Rednote (小红书) Video Link ပို့ပေးလိုက်ပါ!\n\n"
-                "✨ v4 Dual Studio Engine (မူလအကောင်းဆုံး + 4K အသစ်ပေါင်းစပ်ပြီး) —\n"
-                "⚡ မူလ Smart Recap (အမြန်) — လက်ရှိအတိုင်း အသံသြသြ + BGM + ဖြတ်/ဆက်\n"
-                "💎 4K Ultra-HD Final (အသစ်) — အကြည်ဆုံး Version ဒေါင်းပြီး Final ကို 4K (2160×3840) ပြောင်းပေးမယ်\n"
-                "🎞️ Lossless Master Dub — မဖြတ်ဘဲ မူရင်းအကြည်အတိုင်း မြန်မာအသံထည့်ပေးမယ်\n"
-                "📥 အကြည်ဆုံး Raw Download — Watermark မပါ အကြည်ဆုံး မူရင်း Video ထုတ်ပေးမယ်\n\n"
-                "⚙️ Auto Mode ပြောင်းချင်ရင် /mode ကို နှိပ်နိုင်ပါတယ်!",
+                "Rednote (小红书) Video Link ပို့ပေးလိုက်ပါ! (Video အရှည် ၁ နာရီအထိ ရပါပြီ!)\n\n"
+                "✨ v5 အလိုအလျောက် လုပ်ဆောင်ပုံ —\n"
+                "1️⃣ Rednote မှ အကြည်ဆုံး မူရင်း Version (No-Watermark) ကို ဒေါင်းမယ်\n"
+                "2️⃣ မူလအတိုင်း Charon ယောက်ျားလေးအသံ + BGM + Smart ဖြတ်/ဆက်နဲ့ Video ကို အရင်ထုတ်ပြီး ပို့ပေးမယ်\n"
+                "3️⃣ ပြီးတာနဲ့ အဲ့ဒီထွက်လာတဲ့ Video ကိုပဲ 4K Ultra-HD (2160×3840) ဆက်ပြောင်းပြီး ထပ်ပို့ပေးပါမယ်!",
                 reply_to=msg_id,
-            )
-        )
-        return JSONResponse({"ok": True})
-
-    if text.startswith("/mode"):
-        cur = USER_DEFAULT_MODE.get(chat_id, "ask")
-        asyncio.create_task(
-            send_text(
-                chat_id,
-                "⚙️ Rednote Link ပို့လိုက်တဲ့အခါ ဘယ်လို အလုပ်လုပ်စေချင်လဲ ရွေးထားနိုင်ပါတယ် 👇",
-                reply_to=msg_id,
-                reply_markup=default_mode_keyboard(cur),
             )
         )
         return JSONResponse({"ok": True})
@@ -547,36 +404,12 @@ async def telegram_webhook(request: Request):
         return JSONResponse({"ok": True})
 
     raw_url = url_match.group(0).rstrip(".,!?;:)")
-    url_key = remember_url(raw_url)
-    pref_mode = USER_DEFAULT_MODE.get(chat_id, "ask")
-
-    if pref_mode == "ask":
-        asyncio.create_task(
-            send_text(
-                chat_id,
-                "🎬 Rednote Video Link လက်ခံရရှိပါပြီ!\n"
-                "ဘယ် Version နဲ့ ထုတ်ပေးရမလဲ ရွေးနှိပ်ပေးပါ 👇",
-                reply_to=msg_id,
-                reply_markup=mode_selection_keyboard(url_key),
-            )
-        )
-    else:
-        asyncio.create_task(handle_video_job(chat_id, msg_id, raw_url, url_key, mode=pref_mode))
+    asyncio.create_task(handle_video_job(chat_id, msg_id, raw_url))
     return JSONResponse({"ok": True})
 
 
-def run_cmd(cmd: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False)
-
-
 async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str]:
-    """
-    Upgraded Highest-Quality Rednote Extractor:
-    1. Tier 1: Extracts unwatermarked `originVideoKey` raw creator master (True 4K / 2K / 1080p60) across CDN mirrors.
-    2. Tier 2: Probes all `masterUrl` & CDN streams and ranks by LARGEST Content-Length (highest bitrate/resolution).
-    3. Tier 3: Falls back to `og:video` direct stream.
-    4. Tier 4: Falls back to uncapped `yt-dlp` (`bestvideo+bestaudio/best`).
-    """
+    """Downloads the sharpest unwatermarked version from Rednote (`originVideoKey` -> largest `masterUrl` -> uncapped `yt-dlp`)."""
     mobile_headers = {
         "User-Agent": (
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
@@ -616,7 +449,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
                 expanded_url = str(r.url)
                 html = r.text
 
-                # 1. Raw Creator Master (originVideoKey -> Unwatermarked Highest Quality)
                 for key in re.findall(r'"originVideoKey"\s*:\s*"([^"]+)"', html):
                     k = _clean(key).lstrip("/")
                     if k:
@@ -627,7 +459,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
                         ):
                             origin_urls.append(f"{host}/{k}")
 
-                # 2. High-bitrate masterUrl & CDN streams
                 for m in re.findall(r'"masterUrl"\s*:\s*"([^"]+)"', html):
                     u_c = _clean(m)
                     if u_c.startswith("http"):
@@ -638,7 +469,6 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
                     if u_c.startswith("http"):
                         master_urls.append(u_c)
 
-                # 3. og:video fallback
                 og_m = re.findall(
                     r'<meta[^>]+(?:name|property)=["\']og:video["\'][^>]+content=["\']([^"\']+)["\']',
                     html,
@@ -686,7 +516,7 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
 
         async def _stream_to_disk(vurl: str) -> bool:
             try:
-                async with client.stream("GET", vurl, headers=dl_headers, timeout=180.0) as resp:
+                async with client.stream("GET", vurl, headers=dl_headers, timeout=300.0) as resp:
                     if resp.status_code in (200, 206):
                         with open(out_path, "wb") as f:
                             async for chunk in resp.aiter_bytes(chunk_size=131072):
@@ -697,22 +527,18 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
                 logger.warning(f"Stream download warning: {e}")
             return False
 
-        # Priority 1: Unwatermarked originVideoKey Master (highest filesize first)
         for _, best_u in await _probe_and_rank(origin_urls):
             if await _stream_to_disk(best_u):
                 return True, "Raw Master (No-Watermark)"
 
-        # Priority 2: Highest-bitrate masterUrl / CDN stream
         for _, best_u in await _probe_and_rank(master_urls):
             if await _stream_to_disk(best_u):
-                return True, "High-Bitrate CDN"
+                return True, "High-Bitrate Master"
 
-        # Priority 3: og:video stream
         for _, best_u in await _probe_and_rank(og_urls):
             if await _stream_to_disk(best_u):
                 return True, "HD Direct"
 
-    # Priority 4: Uncapped yt-dlp bestvideo+bestaudio
     candidate_urls = [expanded_url]
     if "rednote.com" in expanded_url:
         candidate_urls.append(expanded_url.replace("rednote.com", "xiaohongshu.com"))
@@ -726,6 +552,8 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
             "yt-dlp",
             "--no-playlist",
             "--no-warnings",
+            "--socket-timeout",
+            "20",
             "-f",
             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
             "--merge-output-format",
@@ -734,9 +562,9 @@ async def download_rednote_video(raw_url: str, out_path: str) -> tuple[bool, str
             out_path,
             u,
         ]
-        await asyncio.to_thread(run_cmd, cmd, 180)
+        await asyncio.to_thread(run_cmd, cmd, 300)
         if os.path.exists(out_path) and os.path.getsize(out_path) > 25_000:
-            return True, "Max Stream (yt-dlp)"
+            return True, "Max Quality (yt-dlp)"
 
     return False, ""
 
@@ -757,7 +585,6 @@ def probe_video_info(path: str) -> tuple[float, int, int, str]:
         vcodec = vm.group(1).lower()
         w, h = int(vm.group(2)), int(vm.group(3))
 
-    # Account for 90/270 rotation metadata so portrait/landscape 4K dimensions never swap
     rot_m = re.search(r"rotation of\s*(-?\d+)|rotate\s*:\s*(-?\d+)", out, flags=re.I)
     if rot_m:
         ang = abs(int(rot_m.group(1) or rot_m.group(2) or 0)) % 180
@@ -767,12 +594,7 @@ def probe_video_info(path: str) -> tuple[float, int, int, str]:
     return dur, w, h, vcodec
 
 
-def get_media_duration(path: str) -> float:
-    return probe_video_info(path)[0]
-
-
 def target_4k_dims(src_w: int, src_h: int) -> tuple[int, int]:
-    """Computes exact aspect-preserving 4K UHD dimensions (e.g. 2160x3840 portrait or 3840x2160 landscape)."""
     if src_w <= 0 or src_h <= 0:
         return 2160, 3840
     long_edge = max(src_w, src_h)
@@ -799,12 +621,14 @@ def has_speakable_text(text: str) -> bool:
 
 
 async def groq_whisper_transcribe(audio_mp3_path: str) -> list[dict]:
-    if not GROQ_API_KEY:
+    if not GROQ_API_KEY or not os.path.exists(audio_mp3_path):
+        return []
+    if os.path.getsize(audio_mp3_path) > 24 * 1024 * 1024:
         return []
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     for w_model in ("whisper-large-v3-turbo", "whisper-large-v3"):
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 with open(audio_mp3_path, "rb") as af:
                     resp = await client.post(
                         "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -843,21 +667,26 @@ async def transcribe_and_script_scenes(audio_mp3_path: str, total_dur: float) ->
     with open(audio_mp3_path, "rb") as f:
         audio_bytes = f.read()
 
+    # Scale scene blocks smoothly for both short (<2m) and long (8–60m) videos
+    if total_dur <= 300:
+        min_sc, max_sc = 4, 14
+    else:
+        min_sc = max(10, min(18, int(total_dur // 45)))
+        max_sc = max(min_sc + 4, min(28, int(total_dur // 25)))
+
     whisper_hint = ""
     if whisper_segs:
-        whisper_json = json.dumps(whisper_segs, ensure_ascii=False)
-        whisper_hint = f"""
-Exact Whisper Large-v3 speech timestamps & transcript:
-{whisper_json}
-"""
+        # Cap hint length cleanly for very long transcripts
+        whisper_json = json.dumps(whisper_segs[:220], ensure_ascii=False)
+        whisper_hint = f"\nExact Whisper Large-v3 speech timestamps & transcript:\n{whisper_json}\n"
 
     prompt = f"""
 You are a top Myanmar male video narrator / recap scriptwriter.
 Listen to this {total_dur:.1f}-second video audio.
 {whisper_hint}
 Task:
-1. Group the spoken content into **4 to 14 smooth, coherent scene blocks** (`start` and `end` timestamps in seconds within `0.0` to `{total_dur:.1f}`).
-   - Merge tiny choppy 1-second fragments into natural 3 to 9 second sentences!
+1. Group the spoken content into **{min_sc} to {max_sc} smooth, coherent scene blocks** (`start` and `end` timestamps in seconds within `0.0` to `{total_dur:.1f}`).
+   - Merge tiny choppy 1-second fragments into natural 4 to 10 second sentences covering the full story from beginning to end!
    - Skip silent dead air or music-only filler sections (our video editor will automatically trim out unused filler gaps!).
    - If there is NO spoken content at all, return `[]`.
 2. Rewrite each scene block into **100% natural, clear, punchy colloquial spoken Burmese (မြန်မာအပြောစကားစစ်စစ်)** for a **single confident male narrator**:
@@ -876,7 +705,11 @@ Return ONLY valid JSON (no markdown fences):
 ]
 """.strip()
 
-    audio_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/mp3")
+    contents_payload = [prompt]
+    if len(audio_bytes) <= 19 * 1024 * 1024:
+        contents_payload.insert(0, types.Part.from_bytes(data=audio_bytes, mime_type="audio/mp3"))
+    del audio_bytes
+
     cfg = types.GenerateContentConfig(temperature=0.25, response_mime_type="application/json")
 
     raw_json_text = None
@@ -886,7 +719,7 @@ Return ONLY valid JSON (no markdown fences):
             resp = await asyncio.to_thread(
                 client.models.generate_content,
                 model=model_name,
-                contents=[audio_part, prompt],
+                contents=contents_payload,
                 config=cfg,
             )
             if resp and resp.text:
@@ -985,9 +818,9 @@ def split_master_pcm_into_n_clips(master_pcm: np.ndarray, scenes: list[dict]) ->
     return clips
 
 
-async def synthesize_charon_clips(scenes: list[dict], work_dir: str) -> list[np.ndarray]:
+async def _synthesize_charon_batch(batch_scenes: list[dict], batch_idx: int, work_dir: str) -> list[np.ndarray] | None:
     client = genai.Client(api_key=GEMINI_API_KEY)
-    joined_script = "\n\n".join(s["burmese"] for s in scenes)
+    joined_script = "\n\n".join(s["burmese"] for s in batch_scenes)
 
     for tts_model in PREFERRED_TTS_MODELS:
         try:
@@ -1008,29 +841,15 @@ async def synthesize_charon_clips(scenes: list[dict], work_dir: str) -> list[np.
             audio_bytes = part.data
             mime = (part.mime_type or "").lower()
             if audio_bytes and len(audio_bytes) > 1000:
-                tmp_raw = os.path.join(work_dir, "charon_raw.bin")
-                tmp_pcm = os.path.join(work_dir, "charon_24k.pcm")
+                tmp_raw = os.path.join(work_dir, f"charon_raw_{batch_idx}.bin")
+                tmp_pcm = os.path.join(work_dir, f"charon_24k_{batch_idx}.pcm")
                 with open(tmp_raw, "wb") as f:
                     f.write(audio_bytes)
 
                 if audio_bytes[:4] == b"RIFF":
                     run_cmd(
-                        [
-                            FFMPEG_BIN,
-                            "-y",
-                            "-i",
-                            tmp_raw,
-                            "-f",
-                            "s16le",
-                            "-acodec",
-                            "pcm_s16le",
-                            "-ac",
-                            "1",
-                            "-ar",
-                            str(SAMPLE_RATE),
-                            tmp_pcm,
-                        ],
-                        45,
+                        [FFMPEG_BIN, "-y", "-i", tmp_raw, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), tmp_pcm],
+                        60,
                     )
                 else:
                     rate_m = re.search(r"rate=(\d+)", mime)
@@ -1057,43 +876,76 @@ async def synthesize_charon_clips(scenes: list[dict], work_dir: str) -> list[np.
                             str(SAMPLE_RATE),
                             tmp_pcm,
                         ],
-                        45,
+                        60,
                     )
+                if os.path.exists(tmp_raw):
+                    os.remove(tmp_raw)
                 if os.path.exists(tmp_pcm) and os.path.getsize(tmp_pcm) > 1000:
                     master_pcm = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                    logger.info(f"Charon 1-call master synthesized via {tts_model} ({len(master_pcm)/SAMPLE_RATE:.1f}s)")
-                    return split_master_pcm_into_n_clips(master_pcm, scenes)
+                    os.remove(tmp_pcm)
+                    logger.info(f"Charon batch {batch_idx} via {tts_model} ({len(master_pcm)/SAMPLE_RATE:.1f}s)")
+                    return split_master_pcm_into_n_clips(master_pcm, batch_scenes)
         except Exception as e:
             logger.warning(f"Charon TTS ({tts_model}) warning: {str(e)[:160]}")
-
-    logger.info("Using fallback Thiha Deep Narrator per scene")
-    clips = []
-    for idx, sc in enumerate(scenes):
-        mp3_p = os.path.join(work_dir, f"thiha_{idx}.mp3")
-        pcm_p = os.path.join(work_dir, f"thiha_{idx}.pcm")
-        for attempt in range(3):
-            try:
-                comm = edge_tts.Communicate(sc["burmese"], FALLBACK_THIHA_VOICE, rate="+4%", pitch="-6Hz")
-                await comm.save(mp3_p)
-                if os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 300:
-                    break
-            except Exception:
-                await asyncio.sleep(1.2 * (attempt + 1))
-
-        if os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 300:
-            run_cmd(
-                [FFMPEG_BIN, "-y", "-i", mp3_p, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), pcm_p],
-                30,
-            )
-        if os.path.exists(pcm_p) and os.path.getsize(pcm_p) > 200:
-            seg = np.fromfile(pcm_p, dtype=np.int16).astype(np.float32) / 32768.0
-            clips.append(trim_pcm_silence(seg))
-        else:
-            clips.append(np.zeros(int(0.5 * SAMPLE_RATE), dtype=np.float32))
-    return clips
+    return None
 
 
-def extract_vocal_suppressed_bgm(orig_video: str, orig_dur: float, work_dir: str) -> np.ndarray:
+async def synthesize_charon_clips(scenes: list[dict], work_dir: str) -> list[np.ndarray]:
+    """
+    Uses 1 single Charon call for standard videos (<=12 scenes), and cleanly batches by 12 scenes
+    for long (8–60 min) videos so Gemini TTS never hits single-call audio duration limits!
+    """
+    all_clips: list[np.ndarray] = []
+    batch_size = 12
+    for b_i in range(0, len(scenes), batch_size):
+        batch = scenes[b_i : b_i + batch_size]
+        b_clips = await _synthesize_charon_batch(batch, b_i // batch_size, work_dir)
+        if b_clips is not None and len(b_clips) == len(batch):
+            all_clips.extend(b_clips)
+            continue
+
+        # Fallback per scene if daily Gemini TTS quota is exhausted
+        for idx, sc in enumerate(batch):
+            mp3_p = os.path.join(work_dir, f"thiha_{b_i + idx}.mp3")
+            pcm_p = os.path.join(work_dir, f"thiha_{b_i + idx}.pcm")
+            for attempt in range(3):
+                try:
+                    comm = edge_tts.Communicate(sc["burmese"], FALLBACK_THIHA_VOICE, rate="+4%", pitch="-6Hz")
+                    await comm.save(mp3_p)
+                    if os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 300:
+                        break
+                except Exception:
+                    await asyncio.sleep(1.2 * (attempt + 1))
+
+            if os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 300:
+                run_cmd(
+                    [FFMPEG_BIN, "-y", "-i", mp3_p, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), pcm_p],
+                    30,
+                )
+                os.remove(mp3_p)
+            if os.path.exists(pcm_p) and os.path.getsize(pcm_p) > 200:
+                seg = np.fromfile(pcm_p, dtype=np.int16).astype(np.float32) / 32768.0
+                os.remove(pcm_p)
+                all_clips.append(trim_pcm_silence(seg))
+            else:
+                all_clips.append(np.zeros(int(0.5 * SAMPLE_RATE), dtype=np.float32))
+    return all_clips
+
+
+def build_recap_video_and_bgm_mix(
+    orig_video: str,
+    orig_dur: float,
+    scenes: list[dict],
+    voice_clips: list[np.ndarray],
+    work_dir: str,
+    final_video_path: str,
+):
+    """
+    STAGE 1 — Exact Original Smart Recap Video Builder (Memory-Safe even for 60-minute videos!):
+    - Streams vocal-suppressed BGM slices directly from disk (`bgm_bed.pcm` seek) using <5MB RAM!
+    - Keeps Charon 1.0x natural speed + vocal-suppressed original BGM auto-ducking.
+    - Sequentially cuts/syncs scenes into clean HD Smart Recap MP4 (`recap_orig.mp4`).
+    """
     bgm_pcm_path = os.path.join(work_dir, "bgm_bed.pcm")
     vocal_suppress_af = (
         "pan=stereo|c0=0.5*c0-0.38*c1|c1=0.5*c1-0.38*c0,"
@@ -1121,41 +973,41 @@ def extract_vocal_suppressed_bgm(orig_video: str, orig_dur: float, work_dir: str
             str(SAMPLE_RATE),
             bgm_pcm_path,
         ],
-        90,
+        300,
     )
-    if os.path.exists(bgm_pcm_path) and os.path.getsize(bgm_pcm_path) > 400:
-        orig_bgm = np.fromfile(bgm_pcm_path, dtype=np.int16).astype(np.float32) / 32768.0
-        os.remove(bgm_pcm_path)
-        bgm_peak = float(np.max(np.abs(orig_bgm)))
-        if bgm_peak > 0.01:
-            orig_bgm = (orig_bgm / bgm_peak) * 0.55
-        return orig_bgm
-    return np.zeros(int(orig_dur * SAMPLE_RATE) + SAMPLE_RATE, dtype=np.float32)
 
+    has_bgm = os.path.exists(bgm_pcm_path) and os.path.getsize(bgm_pcm_path) > 400
+    total_bgm_samples = (os.path.getsize(bgm_pcm_path) // 2) if has_bgm else 0
 
-def prepare_recap_plan_and_audio(
-    orig_video: str,
-    orig_dur: float,
-    scenes: list[dict],
-    voice_clips: list[np.ndarray],
-    work_dir: str,
-) -> tuple[list[tuple[float, float, float]], str]:
-    """
-    Exact untouched Smart Recap audio + scene slice timing planner:
-    - Charon 1.0x natural speed
-    - Vocal-suppressed original BGM auto-ducked (16% under voice, 36% during pauses)
-    - Frees all numpy buffers before video encoding to stay well under 512MB RAM!
-    """
-    orig_bgm = extract_vocal_suppressed_bgm(orig_video, orig_dur, work_dir)
-    video_slices: list[tuple[float, float, float]] = []
-    audio_chunks: list[np.ndarray] = []
+    # Find BGM peak in small 1MB streaming chunks so even 60-min BGM uses <2MB RAM
+    bgm_gain = 0.55
+    if has_bgm:
+        peak_i16 = 1
+        with open(bgm_pcm_path, "rb") as bf:
+            while True:
+                buf = bf.read(524288)
+                if not buf:
+                    break
+                arr = np.frombuffer(buf, dtype=np.int16)
+                if len(arr):
+                    p = int(np.max(np.abs(arr.astype(np.int32))))
+                    if p > peak_i16:
+                        peak_i16 = p
+        if peak_i16 > 300:
+            bgm_gain = 0.55 / (peak_i16 / 32768.0)
 
-    def slice_bgm(s_sec: float, e_sec: float, target_samples: int, vol: float) -> np.ndarray:
-        s_i = max(0, min(len(orig_bgm) - 1, int(s_sec * SAMPLE_RATE)))
-        e_i = max(s_i + 1, min(len(orig_bgm), int(e_sec * SAMPLE_RATE)))
-        raw = orig_bgm[s_i:e_i]
-        if len(raw) == 0 or target_samples <= 0:
+    def read_bgm_slice(s_sec: float, e_sec: float, target_samples: int, vol: float) -> np.ndarray:
+        if not has_bgm or total_bgm_samples < 10 or target_samples <= 0:
             return np.zeros(max(0, target_samples), dtype=np.float32)
+        s_i = max(0, min(total_bgm_samples - 1, int(s_sec * SAMPLE_RATE)))
+        e_i = max(s_i + 1, min(total_bgm_samples, int(e_sec * SAMPLE_RATE)))
+        n_read = e_i - s_i
+        with open(bgm_pcm_path, "rb") as bf:
+            bf.seek(s_i * 2)
+            raw_bytes = bf.read(n_read * 2)
+        if not raw_bytes:
+            return np.zeros(target_samples, dtype=np.float32)
+        raw = (np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0) * bgm_gain
         if len(raw) != target_samples:
             x_old = np.linspace(0.0, 1.0, len(raw), dtype=np.float32)
             x_new = np.linspace(0.0, 1.0, target_samples, dtype=np.float32)
@@ -1166,107 +1018,75 @@ def prepare_recap_plan_and_audio(
             raw[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
         return raw * vol
 
-    first_start = scenes[0]["start"]
-    if first_start > 0.25:
-        intro_dur = min(0.8, first_start)
-        video_slices.append((0.0, first_start if first_start <= 1.2 else intro_dur, intro_dur))
-        audio_chunks.append(slice_bgm(0.0, intro_dur, int(intro_dur * SAMPLE_RATE), vol=0.55))
+    video_slices: list[tuple[float, float, float]] = []
+    raw_pcm_out = os.path.join(work_dir, "master_mix.pcm")
 
-    for sc, v_clip in zip(scenes, voice_clips):
-        src_s = sc["start"]
-        src_e = sc["end"]
-        src_len = max(0.4, src_e - src_s)
+    with open(raw_pcm_out, "wb") as pcm_f:
+        first_start = scenes[0]["start"]
+        if first_start > 0.25:
+            intro_dur = min(0.8, first_start)
+            video_slices.append((0.0, first_start if first_start <= 1.2 else intro_dur, intro_dur))
+            intro_arr = read_bgm_slice(0.0, intro_dur, int(intro_dur * SAMPLE_RATE), vol=0.55)
+            np.clip(intro_arr * 32767.0, -32768, 32767).astype(np.int16).tofile(pcm_f)
 
-        c_peak = float(np.max(np.abs(v_clip))) if len(v_clip) > 0 else 0.0
-        norm_voice = (v_clip / c_peak) * 0.92 if c_peak > 0.01 else v_clip
+        for sc, v_clip in zip(scenes, voice_clips):
+            src_s = sc["start"]
+            src_e = sc["end"]
+            src_len = max(0.4, src_e - src_s)
 
-        pause_after = 0.28
-        voice_dur = len(norm_voice) / SAMPLE_RATE
-        target_dur = max(0.6, voice_dur + pause_after)
-        target_samples = int(round(target_dur * SAMPLE_RATE))
+            c_peak = float(np.max(np.abs(v_clip))) if len(v_clip) > 0 else 0.0
+            norm_voice = (v_clip / c_peak) * 0.92 if c_peak > 0.01 else v_clip
 
-        if src_len > target_dur * 1.45:
-            cut_src_e = src_s + target_dur * 1.35
-        else:
-            cut_src_e = src_e
+            pause_after = 0.28
+            voice_dur = len(norm_voice) / SAMPLE_RATE
+            target_dur = max(0.6, voice_dur + pause_after)
+            target_samples = int(round(target_dur * SAMPLE_RATE))
 
-        video_slices.append((src_s, cut_src_e, target_dur))
+            if src_len > target_dur * 1.45:
+                cut_src_e = src_s + target_dur * 1.35
+            else:
+                cut_src_e = src_e
 
-        bgm_seg = slice_bgm(src_s, cut_src_e, target_samples, vol=1.0)
-        env = np.full(target_samples, 0.28, dtype=np.float32)
-        v_len = min(target_samples, len(norm_voice))
-        env[:v_len] = 0.16
-        ramp = min(int(0.05 * SAMPLE_RATE), target_samples - v_len)
-        if ramp > 2 and v_len + ramp <= target_samples:
-            env[v_len : v_len + ramp] = np.linspace(0.16, 0.36, ramp, dtype=np.float32)
-            env[v_len + ramp :] = 0.36
+            video_slices.append((src_s, cut_src_e, target_dur))
 
-        mixed = bgm_seg * env
-        mixed[:v_len] += norm_voice[:v_len]
-        audio_chunks.append(mixed)
+            bgm_seg = read_bgm_slice(src_s, cut_src_e, target_samples, vol=1.0)
+            env = np.full(target_samples, 0.28, dtype=np.float32)
+            v_len = min(target_samples, len(norm_voice))
+            env[:v_len] = 0.16
+            ramp = min(int(0.05 * SAMPLE_RATE), target_samples - v_len)
+            if ramp > 2 and v_len + ramp <= target_samples:
+                env[v_len : v_len + ramp] = np.linspace(0.16, 0.36, ramp, dtype=np.float32)
+                env[v_len + ramp :] = 0.36
 
-    last_end = scenes[-1]["end"]
-    if orig_dur - last_end > 0.25:
-        outro_dur = min(0.65, orig_dur - last_end)
-        video_slices.append((last_end, last_end + outro_dur, outro_dur))
-        audio_chunks.append(slice_bgm(last_end, last_end + outro_dur, int(outro_dur * SAMPLE_RATE), vol=0.45))
+            mixed = bgm_seg * env
+            mixed[:v_len] += norm_voice[:v_len]
+            np.clip(mixed * 32767.0, -32768, 32767).astype(np.int16).tofile(pcm_f)
 
-    full_audio = np.concatenate(audio_chunks) if audio_chunks else np.zeros(SAMPLE_RATE, dtype=np.float32)
-    del audio_chunks, orig_bgm
-    master_s16 = np.clip(full_audio * 32767.0, -32768, 32767).astype(np.int16)
-    del full_audio
+        last_end = scenes[-1]["end"]
+        if orig_dur - last_end > 0.25:
+            outro_dur = min(0.65, orig_dur - last_end)
+            video_slices.append((last_end, last_end + outro_dur, outro_dur))
+            outro_arr = read_bgm_slice(last_end, last_end + outro_dur, int(outro_dur * SAMPLE_RATE), vol=0.45)
+            np.clip(outro_arr * 32767.0, -32768, 32767).astype(np.int16).tofile(pcm_f)
+
+    if os.path.exists(bgm_pcm_path):
+        os.remove(bgm_pcm_path)
+
     master_wav = os.path.join(work_dir, "master_mix.wav")
-    raw_pcm_f = os.path.join(work_dir, "master_mix.pcm")
-    master_s16.tofile(raw_pcm_f)
-    del master_s16
+    run_cmd([FFMPEG_BIN, "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", raw_pcm_out, master_wav], 60)
+    if os.path.exists(raw_pcm_out):
+        os.remove(raw_pcm_out)
     gc.collect()
 
-    run_cmd(
-        [FFMPEG_BIN, "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", raw_pcm_f, master_wav],
-        30,
-    )
-    if os.path.exists(raw_pcm_f):
-        os.remove(raw_pcm_f)
-
-    return video_slices, master_wav
-
-
-async def encode_recap_slices_and_mux(
-    orig_video: str,
-    video_slices: list[tuple[float, float, float]],
-    master_wav: str,
-    work_dir: str,
-    final_video_path: str,
-    quality: str = "std",
-    src_w: int = 1080,
-    src_h: int = 1920,
-    progress_cb=None,
-):
-    """
-    - quality == "std": 100% Untouched original fast sequential slice cutting (480p low-RAM).
-    - quality == "4k": Edge-sharpened True 4K UHD (e.g. 2160x3840) sequential low-RAM (<275MB) encoder!
-    """
-    tw, th = target_4k_dims(src_w, src_h)
+    # Cut & time-fit each scene slice cleanly (preserving crisp 720p HD detail for both viewing & Stage 2 4K conversion!)
     seg_files = []
-    total_segs = len(video_slices)
-
     for idx, (s_t, e_t, tgt_d) in enumerate(video_slices):
-        if progress_cb and quality == "4k":
-            await progress_cb(idx + 1, total_segs, tw, th)
-
         raw_d = max(0.1, e_t - s_t)
         pts_factor = tgt_d / raw_d
         seg_path = os.path.join(work_dir, f"seg_{idx:03d}.mp4")
-
-        if quality == "4k":
-            # Sharpen source edges BEFORE fast_bilinear 4K upscale -> 2.5x faster & <275MB child RSS!
-            vf_str = (
-                f"setpts={pts_factor:.4f}*(PTS-STARTPTS),"
-                f"unsharp=3:3:0.7:3:3:0.0,"
-                f"scale={tw}:{th}:flags=fast_bilinear,"
-                f"fps=24,format=yuv420p"
-            )
-            cmd = [
+        vf_str = f"setpts={pts_factor:.4f}*(PTS-STARTPTS),scale='min(720,iw)':-2,fps=24,format=yuv420p"
+        run_cmd(
+            [
                 FFMPEG_BIN,
                 "-y",
                 "-ss",
@@ -1284,52 +1104,20 @@ async def encode_recap_slices_and_mux(
                 "ultrafast",
                 "-crf",
                 "23",
-                "-x264-params",
-                "rc-lookahead=0:sync-lookahead=0:ref=1:bframes=0:subme=0:me=dia:partitions=none:trellis=0:weightp=0:cabac=0:deblock=0:aq-mode=0:sliced-threads=0:threads=1",
                 "-video_track_timescale",
                 "90000",
                 "-threads",
                 "1",
                 seg_path,
-            ]
-            slice_timeout = 600
-        else:
-            # 100% Untouched Original Fast Smart Recap
-            vf_str = f"setpts={pts_factor:.4f}*(PTS-STARTPTS),scale='min(480,iw)':-2,fps=24,format=yuv420p"
-            cmd = [
-                FFMPEG_BIN,
-                "-y",
-                "-ss",
-                f"{s_t:.3f}",
-                "-t",
-                f"{raw_d:.3f}",
-                "-i",
-                orig_video,
-                "-an",
-                "-vf",
-                vf_str,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-crf",
-                "27",
-                "-video_track_timescale",
-                "90000",
-                "-threads",
-                "1",
-                seg_path,
-            ]
-            slice_timeout = 150
-
-        await asyncio.to_thread(run_cmd, cmd, slice_timeout)
+            ],
+            180,
+        )
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 500:
             seg_files.append(seg_path)
 
     if not seg_files:
         raise RuntimeError("No video slices were generated")
 
-    # Free original video disk space before final lossless concat
     if os.path.exists(orig_video):
         os.remove(orig_video)
 
@@ -1338,9 +1126,7 @@ async def encode_recap_slices_and_mux(
         for tp in seg_files:
             cf.write(f"file '{tp}'\n")
 
-    audio_br = "192k" if quality == "4k" else "128k"
-    proc = await asyncio.to_thread(
-        run_cmd,
+    proc = run_cmd(
         [
             FFMPEG_BIN,
             "-y",
@@ -1361,7 +1147,7 @@ async def encode_recap_slices_and_mux(
             "-c:a",
             "aac",
             "-b:a",
-            audio_br,
+            "160k",
             "-shortest",
             "-movflags",
             "+faststart",
@@ -1373,106 +1159,131 @@ async def encode_recap_slices_and_mux(
     for tp in seg_files:
         if os.path.exists(tp):
             os.remove(tp)
+    if os.path.exists(master_wav):
+        os.remove(master_wav)
 
     if not os.path.exists(final_video_path) or os.path.getsize(final_video_path) < 5000:
         err_tail = proc.stderr.decode(errors="ignore")[-300:]
         raise RuntimeError(f"FFmpeg video concat failed: {err_tail}")
 
 
-def mux_lossless_master_with_bgm(
-    orig_video: str,
-    orig_dur: float,
-    vcodec: str,
-    scenes: list[dict],
-    voice_clips: list[np.ndarray],
+async def convert_finished_recap_to_4k(
+    recap_video_path: str,
+    recap_dur: float,
+    src_w: int,
+    src_h: int,
     work_dir: str,
-    final_video_path: str,
+    out_4k_path: str,
+    progress_cb=None,
 ):
-    """Zero-loss (-c:v copy) master muxer: keeps 100% original video pixels + Charon 1.0x + BGM ducking."""
-    total_samples = max(int(round(orig_dur * SAMPLE_RATE)), SAMPLE_RATE)
-    orig_bgm = extract_vocal_suppressed_bgm(orig_video, orig_dur, work_dir)
-    if len(orig_bgm) < total_samples:
-        orig_bgm = np.pad(orig_bgm, (0, total_samples - len(orig_bgm)))
-    else:
-        orig_bgm = orig_bgm[:total_samples]
+    """
+    STAGE 2 — Takes the ALREADY-FINISHED Original Smart Recap Video (`recap_video_path`)
+    and upgrades it to Edge-Sharpened True 4K Ultra-HD (2160x3840 / 3840x2160) in safe 10s chunks (<275MB RAM)!
+    """
+    tw, th = target_4k_dims(src_w, src_h)
+    chunk_sec = 10.0
+    total_chunks = max(1, int(np.ceil(recap_dur / chunk_sec)))
+    chunk_files = []
 
-    voice_track = np.zeros(total_samples, dtype=np.float32)
-    duck_env = np.full(total_samples, 0.36, dtype=np.float32)
-    cursor = 0
+    vf_4k = f"unsharp=3:3:0.75:3:3:0.0,scale={tw}:{th}:flags=fast_bilinear,fps=24,format=yuv420p"
 
-    for sc, v_clip in zip(scenes, voice_clips):
-        if len(v_clip) == 0:
-            continue
-        c_peak = float(np.max(np.abs(v_clip)))
-        norm_v = (v_clip / c_peak) * 0.94 if c_peak > 0.01 else v_clip
-        desired_start = int(round(sc["start"] * SAMPLE_RATE))
-        place_start = max(cursor, desired_start)
-        if place_start >= total_samples:
+    for idx in range(total_chunks):
+        st = idx * chunk_sec
+        dur_c = min(chunk_sec, max(0.2, recap_dur - st + 0.1))
+        if st >= recap_dur:
             break
-        avail = min(len(norm_v), total_samples - place_start)
-        if avail <= 0:
-            continue
-        place_end = place_start + avail
-        voice_track[place_start:place_end] += norm_v[:avail]
-        duck_env[place_start:place_end] = 0.15
-        ramp = int(0.05 * SAMPLE_RATE)
-        r_s = max(0, place_start - ramp)
-        if place_start > r_s:
-            duck_env[r_s:place_start] = np.minimum(
-                duck_env[r_s:place_start], np.linspace(0.36, 0.15, place_start - r_s, dtype=np.float32)
-            )
-        r_e = min(total_samples, place_end + ramp)
-        if r_e > place_end:
-            duck_env[place_end:r_e] = np.minimum(
-                duck_env[place_end:r_e], np.linspace(0.15, 0.36, r_e - place_end, dtype=np.float32)
-            )
-        cursor = place_end + int(0.15 * SAMPLE_RATE)
 
-    mixed = np.clip(orig_bgm * duck_env + voice_track, -0.99, 0.99)
-    del orig_bgm, voice_track, duck_env
-    master_s16 = (mixed * 32767.0).astype(np.int16)
-    del mixed
-    gc.collect()
+        if progress_cb:
+            await progress_cb(idx + 1, total_chunks, tw, th)
 
-    raw_pcm_f = os.path.join(work_dir, "lossless_mix.pcm")
-    master_wav = os.path.join(work_dir, "lossless_mix.wav")
-    master_s16.tofile(raw_pcm_f)
-    del master_s16
-    run_cmd([FFMPEG_BIN, "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", raw_pcm_f, master_wav], 30)
-    if os.path.exists(raw_pcm_f):
-        os.remove(raw_pcm_f)
+        c_path = os.path.join(work_dir, f"uhd_{idx:03d}.mp4")
+        cmd = [
+            FFMPEG_BIN,
+            "-y",
+            "-ss",
+            f"{st:.3f}",
+            "-t",
+            f"{dur_c:.3f}",
+            "-i",
+            recap_video_path,
+            "-an",
+            "-vf",
+            vf_4k,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+            "-x264-params",
+            "rc-lookahead=0:sync-lookahead=0:ref=1:bframes=0:subme=0:me=dia:partitions=none:trellis=0:weightp=0:cabac=0:deblock=0:aq-mode=0:sliced-threads=0:threads=1",
+            "-video_track_timescale",
+            "90000",
+            "-threads",
+            "1",
+            c_path,
+        ]
+        await asyncio.to_thread(run_cmd, cmd, 600)
+        if os.path.exists(c_path) and os.path.getsize(c_path) > 500:
+            chunk_files.append(c_path)
 
-    cmd = [
-        FFMPEG_BIN,
-        "-y",
-        "-i",
-        orig_video,
-        "-i",
-        master_wav,
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-c:v",
-        "copy",
-    ]
-    if vcodec in ("hevc", "h265"):
-        cmd += ["-tag:v", "hvc1"]
-    cmd += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", final_video_path]
-    proc = run_cmd(cmd, 120)
-    if not os.path.exists(final_video_path) or os.path.getsize(final_video_path) < 5000:
+    if not chunk_files:
+        raise RuntimeError("4K conversion produced no chunks")
+
+    uhd_list = os.path.join(work_dir, "uhd_concat.txt")
+    with open(uhd_list, "w", encoding="utf-8") as uf:
+        for cp in chunk_files:
+            uf.write(f"file '{cp}'\n")
+
+    # Mux lossless 4K video chunks with exact audio track from finished recap_video_path
+    proc = await asyncio.to_thread(
+        run_cmd,
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            uhd_list,
+            "-i",
+            recap_video_path,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            out_4k_path,
+        ],
+        180,
+    )
+
+    for cp in chunk_files:
+        if os.path.exists(cp):
+            os.remove(cp)
+    if os.path.exists(recap_video_path):
+        os.remove(recap_video_path)
+
+    if not os.path.exists(out_4k_path) or os.path.getsize(out_4k_path) < 5000:
         err_tail = proc.stderr.decode(errors="ignore")[-300:]
-        raise RuntimeError(f"Lossless mux failed: {err_tail}")
+        raise RuntimeError(f"4K final mux failed: {err_tail}")
 
 
-def split_video_lossless(video_path: str, total_dur: float, work_dir: str) -> list[str]:
+def split_video_lossless(video_path: str, total_dur: float, work_dir: str, prefix: str = "part_") -> list[str]:
     fsize = os.path.getsize(video_path)
     if fsize <= MAX_TG_BYTES:
         return [video_path]
 
     num_parts = max(2, int(np.ceil(fsize / (41 * 1024 * 1024))))
     part_dur = max(6.0, total_dur / num_parts)
-    out_pattern = os.path.join(work_dir, "part_%02d.mp4")
+    out_pattern = os.path.join(work_dir, f"{prefix}%02d.mp4")
 
     run_cmd(
         [
@@ -1492,30 +1303,56 @@ def split_video_lossless(video_path: str, total_dur: float, work_dir: str) -> li
             "1",
             out_pattern,
         ],
-        90,
+        120,
     )
     parts = sorted(
         os.path.join(work_dir, fn)
         for fn in os.listdir(work_dir)
-        if fn.startswith("part_") and fn.endswith(".mp4") and os.path.getsize(os.path.join(work_dir, fn)) > 1000
+        if fn.startswith(prefix) and fn.endswith(".mp4") and os.path.getsize(os.path.join(work_dir, fn)) > 1000
     )
     return parts if parts else [video_path]
 
 
-async def handle_video_job(chat_id: int, reply_msg_id: int, url: str, url_key: str, mode: str = "std"):
-    mode_titles = {
-        "std": "⚡ မူလ Smart Recap",
-        "4k": "💎 4K Ultra-HD Recap",
-        "lossless": "🎞️ Lossless Master Dub",
-        "raw": "📥 မူရင်းအကြည်ဆုံး Raw Video",
-    }
-    m_title = mode_titles.get(mode, mode_titles["std"])
+async def upload_video_parts(
+    chat_id: int,
+    reply_msg_id: int,
+    parts: list[str],
+    caption_prefix: str,
+    file_prefix: str,
+    width: int = 0,
+    height: int = 0,
+) -> bool:
+    for p_idx, part_path in enumerate(parts):
+        cap = caption_prefix if len(parts) == 1 else f"{caption_prefix}\n📦 (အပိုင်း {p_idx + 1}/{len(parts)})"
+        data_payload = {
+            "chat_id": str(chat_id),
+            "caption": cap,
+            "reply_to_message_id": str(reply_msg_id),
+            "supports_streaming": "true",
+        }
+        if width and height:
+            data_payload["width"] = str(width)
+            data_payload["height"] = str(height)
+        with open(part_path, "rb") as vf:
+            send_res = await tg_api(
+                "sendVideo",
+                data=data_payload,
+                files={"video": (f"{file_prefix}_{p_idx + 1}.mp4", vf, "video/mp4")},
+                timeout=360.0,
+            )
+        if not send_res.get("ok"):
+            return False
+    return True
+
+
+async def handle_video_job(chat_id: int, reply_msg_id: int, url: str):
+    global ACTIVE_JOBS
     status_id = await send_text(
         chat_id,
-        f"⏳ [{m_title}]\nRednote မှ အကြည်ဆုံး မူရင်း Video ကို စတင်ဒေါင်းလုဒ်ဆွဲနေပါပြီ...",
+        "⏳ Rednote မှ အကြည်ဆုံး မူရင်း Video ကို စတင်ဒေါင်းလုဒ်ဆွဲနေပါပြီ...",
         reply_to=reply_msg_id,
     )
-
+    ACTIVE_JOBS += 1
     async with job_semaphore:
         work_dir = tempfile.mkdtemp(prefix="xhs_mm_", dir=WORK_ROOT)
         try:
@@ -1530,70 +1367,30 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str, url_key: s
                 )
                 return
 
-            dur, src_w, src_h, vcodec = await asyncio.to_thread(probe_video_info, orig_video)
+            dur, src_w, src_h, _ = await asyncio.to_thread(probe_video_info, orig_video)
             if dur <= 0.5:
                 await edit_text(chat_id, status_id, "❌ ဒါက Video မဟုတ်ဘဲ ပုံ (Photo post) ဖြစ်နေပါတယ်နော်။")
                 return
-            if dur > 480:
-                await edit_text(chat_id, status_id, "⚠️ Video က ၈ မိနစ်ထက် ပိုရှည်နေလို့ Free Server ပေါ်မှာ မနိုင်ပါဘူးနော်။")
+            if dur > MAX_VIDEO_SECONDS:
+                await edit_text(chat_id, status_id, "⚠️ Video က မိနစ် (၆၀) ထက် ပိုရှည်နေပါတယ်နော်။")
                 return
 
+            dur_min_str = f"{int(dur // 60)}m {int(dur % 60)}s" if dur >= 60 else f"{dur:.0f}s"
             src_res_str = f"{src_w}×{src_h}" if src_w and src_h else "HD"
 
-            # Mode 4: Raw Unwatermarked Highest-Quality Download
-            if mode == "raw":
-                await edit_text(chat_id, status_id, f"📤 မူရင်းအကြည်ဆုံး Video ({src_res_str} · {dl_tier}) ကို ပို့ပေးနေပါပြီ...")
-                parts = await asyncio.to_thread(split_video_lossless, orig_video, dur, work_dir)
-                all_ok = True
-                for p_idx, part_path in enumerate(parts):
-                    cap = (
-                        f"📥 မူရင်းအကြည်ဆုံး Rednote Video (No Watermark)\n📐 Resolution: {src_res_str} · {dl_tier}"
-                        if len(parts) == 1
-                        else f"📥 မူရင်းအကြည်ဆုံး Video (အပိုင်း {p_idx + 1}/{len(parts)}) · {src_res_str}"
-                    )
-                    kb = followup_keyboard(url_key, "raw") if p_idx == len(parts) - 1 else None
-                    data_payload = {
-                        "chat_id": str(chat_id),
-                        "caption": cap,
-                        "reply_to_message_id": str(reply_msg_id),
-                        "supports_streaming": "true",
-                    }
-                    if src_w and src_h:
-                        data_payload["width"] = str(src_w)
-                        data_payload["height"] = str(src_h)
-                    if kb:
-                        data_payload["reply_markup"] = json.dumps(kb)
-                    with open(part_path, "rb") as vf:
-                        send_res = await tg_api(
-                            "sendVideo",
-                            data=data_payload,
-                            files={"video": (f"rednote_raw_{p_idx+1}.mp4", vf, "video/mp4")},
-                            timeout=300.0,
-                        )
-                    if not send_res.get("ok"):
-                        all_ok = False
-                        await edit_text(chat_id, status_id, f"⚠️ Video ပို့ရာတွင် အခက်အခဲရှိပါသည်: {send_res}")
-                        break
-                if all_ok:
-                    STATS["completed"] += 1
-                    try:
-                        await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_id})
-                    except Exception:
-                        pass
-                return
-
-            # Modes 1, 2, 3: AI Burmese Dubbing / Smart Recap
             await edit_text(
                 chat_id,
                 status_id,
-                f"📥 Source ({src_res_str} · {dl_tier}) ရပါပြီ!\n🎧 Whisper v3 + Gemini 3 နဲ့ မြန်မာစကားပြော Script ရေးနေပါတယ်...",
+                f"📥 အကြည်ဆုံး Source ({src_res_str} · {dur_min_str} · {dl_tier}) ရပါပြီ!\n"
+                "🎧 Whisper v3 + Gemini 3 နဲ့ မြန်မာစကားပြော Script ရေးနေပါတယ်...",
             )
 
+            # 24kbps 16kHz mono speech extraction -> even a 45-min video is only ~7.8 MB!
             audio_mp3 = os.path.join(work_dir, "speech.mp3")
             await asyncio.to_thread(
                 run_cmd,
-                [FFMPEG_BIN, "-y", "-i", orig_video, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", audio_mp3],
-                60,
+                [FFMPEG_BIN, "-y", "-i", orig_video, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_mp3],
+                180,
             )
 
             scenes = await transcribe_and_script_scenes(audio_mp3, dur)
@@ -1611,137 +1408,101 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str, url_key: s
             )
             voice_clips = await synthesize_charon_clips(scenes, work_dir)
 
-            final_video = os.path.join(work_dir, "final_mm.mp4")
+            # =========================================================================
+            # STAGE 1: Produce & Send Exact Original Smart Recap Video FIRST!
+            # =========================================================================
+            await edit_text(
+                chat_id,
+                status_id,
+                "✂️ [အဆင့် ၁/၂] မူလအတိုင်း Video အပိုင်းတွေကို ဖြတ်/ဆက်ပြီး နောက်ခံ BGM သံ ညှိနေပါပြီ...",
+            )
+            recap_video = os.path.join(work_dir, "recap_orig.mp4")
+            await asyncio.to_thread(
+                build_recap_video_and_bgm_mix,
+                orig_video,
+                dur,
+                scenes,
+                voice_clips,
+                work_dir,
+                recap_video,
+            )
+            del voice_clips
+            gc.collect()
 
-            if mode == "lossless":
+            recap_dur, rec_w, rec_h, _ = await asyncio.to_thread(probe_video_info, recap_video)
+            recap_parts = await asyncio.to_thread(split_video_lossless, recap_video, recap_dur or dur, work_dir, "origpart_")
+
+            await edit_text(chat_id, status_id, "📤 [အဆင့် ၁/၂] မူလ Smart Recap Video ကို အရင်ပို့ပေးနေပါပြီ...")
+            sent_orig = await upload_video_parts(
+                chat_id,
+                reply_msg_id,
+                recap_parts,
+                caption_prefix="✅ မူလ Smart Recap + မြန်မာစကားပြော Video ပြီးပါပြီ!\n(💎 4K Ultra-HD Version ကိုလည်း ဆက်ပြောင်းပြီး ထပ်ပို့ပေးနေပါတယ်...)",
+                file_prefix="rednote_recap",
+                width=rec_w,
+                height=rec_h,
+            )
+            for rp in recap_parts:
+                if rp != recap_video and os.path.exists(rp):
+                    os.remove(rp)
+
+            if sent_orig:
+                STATS["completed_orig"] += 1
+
+            # =========================================================================
+            # STAGE 2: Convert THAT Finished Recap Video into True 4K Ultra-HD!
+            # =========================================================================
+            final_4k = os.path.join(work_dir, "final_4k.mp4")
+
+            async def _on_4k_prog(cur_c: int, tot_c: int, w4: int, h4: int):
+                pct = int(round((cur_c - 1) * 100 / max(1, tot_c)))
                 await edit_text(
                     chat_id,
                     status_id,
-                    f"🎞️ မူရင်းအကြည် ({src_res_str}) ကို Pixel မပျက်ဘဲ မြန်မာအသံ + BGM ပေါင်းစပ်နေပါပြီ...",
+                    f"💎 [အဆင့် ၂/၂] ထွက်လာတဲ့ မူလ Video ကို 4K Ultra-HD ({w4}×{h4}) ပြောင်းနေပါပြီ...\n"
+                    f"📊 ပြီးစီးမှု — {pct}% (အပိုင်း {cur_c}/{tot_c})",
                 )
-                await asyncio.to_thread(
-                    mux_lossless_master_with_bgm,
-                    orig_video,
-                    dur,
-                    vcodec,
-                    scenes,
-                    voice_clips,
-                    work_dir,
-                    final_video,
-                )
-                del voice_clips
-                gc.collect()
-                if os.path.exists(orig_video):
-                    os.remove(orig_video)
-            else:
-                video_slices, master_wav = await asyncio.to_thread(
-                    prepare_recap_plan_and_audio,
-                    orig_video,
-                    dur,
-                    scenes,
-                    voice_clips,
-                    work_dir,
-                )
-                del voice_clips
-                gc.collect()
 
-                if mode == "4k":
-                    tw, th = target_4k_dims(src_w, src_h)
+            await convert_finished_recap_to_4k(
+                recap_video,
+                recap_dur or dur,
+                rec_w or src_w,
+                rec_h or src_h,
+                work_dir,
+                final_4k,
+                progress_cb=_on_4k_prog,
+            )
 
-                    async def _on_4k_slice(cur_i: int, tot_i: int, w4: int, h4: int):
-                        pct = int(round((cur_i - 1) * 100 / max(1, tot_i)))
-                        await edit_text(
-                            chat_id,
-                            status_id,
-                            f"💎 4K Ultra-HD ({w4}×{h4}) ပြောင်းပြီး ဖြတ်/ဆက်နေပါပြီ...\n"
-                            f"📊 အပိုင်း {cur_i}/{tot_i} ({pct}%) · ခဏလေးစောင့်ပေးပါနော်...",
-                        )
+            dur_4k, out_w4, out_h4, _ = await asyncio.to_thread(probe_video_info, final_4k)
+            parts_4k = await asyncio.to_thread(split_video_lossless, final_4k, dur_4k or recap_dur, work_dir, "uhdpart_")
+            if len(parts_4k) > 1 and os.path.exists(final_4k):
+                os.remove(final_4k)
 
-                    await encode_recap_slices_and_mux(
-                        orig_video,
-                        video_slices,
-                        master_wav,
-                        work_dir,
-                        final_video,
-                        quality="4k",
-                        src_w=src_w,
-                        src_h=src_h,
-                        progress_cb=_on_4k_slice,
-                    )
-                else:
-                    await edit_text(
-                        chat_id,
-                        status_id,
-                        "✂️ အသံနဲ့ကိုက်အောင် Video အပိုင်းတွေကို ဖြတ်/ဆက်ပြီး နောက်ခံသံ ညှိနေပါပြီ...",
-                    )
-                    await encode_recap_slices_and_mux(
-                        orig_video,
-                        video_slices,
-                        master_wav,
-                        work_dir,
-                        final_video,
-                        quality="std",
-                        src_w=src_w,
-                        src_h=src_h,
-                    )
+            await edit_text(chat_id, status_id, f"📤 [အဆင့် ၂/၂] 4K Ultra-HD ({out_w4}×{out_h4}) Final Video ကို ပို့ပေးနေပါပြီ...")
+            sent_4k = await upload_video_parts(
+                chat_id,
+                reply_msg_id,
+                parts_4k,
+                caption_prefix=f"💎 4K Ultra-HD ({out_w4}×{out_h4}) Final Video ပြီးပါပြီ!\n📥 Source: {src_res_str} ({dl_tier})",
+                file_prefix="rednote_4k_uhd",
+                width=out_w4,
+                height=out_h4,
+            )
 
-            final_dur, out_w, out_h, _ = await asyncio.to_thread(probe_video_info, final_video)
-            parts = await asyncio.to_thread(split_video_lossless, final_video, final_dur or dur, work_dir)
-            if len(parts) > 1 and os.path.exists(final_video):
-                os.remove(final_video)
-
-            out_res_str = f"{out_w}×{out_h}" if out_w and out_h else src_res_str
-            await edit_text(chat_id, status_id, f"📤 Final Video ({out_res_str}) ကို Telegram ဆီ ပို့ပေးနေပါပြီ...")
-
-            all_ok = True
-            for p_idx, part_path in enumerate(parts):
-                if mode == "4k":
-                    cap_head = f"💎 4K Ultra-HD ({out_res_str}) + မြန်မာစကားပြော ပြီးပါပြီ!\n📥 Source: {src_res_str} ({dl_tier})"
-                elif mode == "lossless":
-                    cap_head = f"🎞️ Lossless Master ({out_res_str}) + မြန်မာစကားပြော ပြီးပါပြီ!\n📥 Source: {dl_tier}"
-                else:
-                    cap_head = "✅ မြန်မာစကားပြော + Smart Video Edit ပြီးပါပြီ!"
-
-                cap = cap_head if len(parts) == 1 else f"{cap_head}\n📦 (အပိုင်း {p_idx + 1}/{len(parts)})"
-                kb = followup_keyboard(url_key, mode) if p_idx == len(parts) - 1 else None
-
-                data_payload = {
-                    "chat_id": str(chat_id),
-                    "caption": cap,
-                    "reply_to_message_id": str(reply_msg_id),
-                    "supports_streaming": "true",
-                }
-                if out_w and out_h:
-                    data_payload["width"] = str(out_w)
-                    data_payload["height"] = str(out_h)
-                if kb:
-                    data_payload["reply_markup"] = json.dumps(kb)
-
-                with open(part_path, "rb") as vf:
-                    send_res = await tg_api(
-                        "sendVideo",
-                        data=data_payload,
-                        files={"video": (f"rednote_{mode}_{p_idx+1}.mp4", vf, "video/mp4")},
-                        timeout=300.0,
-                    )
-                if not send_res.get("ok"):
-                    all_ok = False
-                    await edit_text(chat_id, status_id, f"⚠️ Video ပို့ရာတွင် အခက်အခဲရှိပါသည်: {send_res}")
-                    break
-
-            if all_ok:
-                STATS["completed"] += 1
-                if mode == "4k":
-                    STATS["completed_4k"] += 1
+            if sent_4k:
+                STATS["completed_4k"] += 1
                 try:
                     await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_id})
                 except Exception:
                     pass
+            else:
+                await edit_text(chat_id, status_id, "⚠️ 4K Video ပို့ရာတွင် အခက်အခဲရှိခဲ့ပါသည် (မူလ Video ကိုတော့ အပေါ်မှာ ပို့ပေးထားပြီးပါပြီ)။")
 
         except Exception as e:
             logger.exception("Job processing error")
             await edit_text(chat_id, status_id, f"❌ အမှားအယွင်းတစ်ခု ဖြစ်သွားပါတယ်: {str(e)[:200]}")
         finally:
+            ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
