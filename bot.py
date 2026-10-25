@@ -13,7 +13,6 @@ import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 
-import edge_tts
 import httpx
 import numpy as np
 import uvicorn
@@ -21,7 +20,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from google import genai
 from google.genai import types
-from helpers import get_anim_emoji, fmt_file_size, download_video_never_stop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rednote-mm-bot")
@@ -47,6 +45,7 @@ WORK_ROOT = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://rednote-bot-gzd0.onrender.com").strip()
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "8430004524").strip() or "8430004524")
@@ -66,7 +65,16 @@ processed_updates = deque(maxlen=600)
 job_semaphore = asyncio.Semaphore(2)
 video_render_semaphore = asyncio.Semaphore(1)
 
+PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 MYANMAR_DIGITS = str.maketrans("0123456789", "၀၁၂၃၄၅၆၇၈၉")
+SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
+
+def get_anim_emoji(frame: int) -> str:
+    return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
+
+def fmt_file_size(mb: float) -> str:
+    return f"{mb:.1f} MB" if mb < 1024 else f"{mb/1024:.2f} GB"
 
 def fmt_progress_bar(pct: int) -> str:
     pct = max(0, min(100, pct)); filled = int(round(pct / 10))
@@ -188,6 +196,94 @@ async def download_telegram_file(file_id: str, dest_path: str) -> bool:
     except Exception as e: logger.warning(f"download_telegram_file error: {e}")
     return False
 
+async def download_video_never_stop(url: str, out_path: str, tracker=None) -> bool:
+    for attempt in range(5):
+        if tracker: await tracker.update(f"📥 ဒေါင်းလုဒ်ဆွဲနေပါသည်... (ကြိုးစားမှု {attempt+1}/5)", force=True)
+        cmd = ["yt-dlp", "--no-warnings", "--no-part", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out_path, url]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await proc.wait()
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 10000: return True
+        await asyncio.sleep(3)
+    return False
+
+async def groq_whisper_transcribe(audio_mp3_path: str) -> list:
+    if not GROQ_API_KEY: return []
+    if os.path.getsize(audio_mp3_path) > 24 * 1024 * 1024: return []
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            with open(audio_mp3_path, "rb") as af:
+                resp = await client.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json"}, files={"file": ("speech.mp3", af, "audio/mpeg")})
+            if resp.status_code == 200:
+                return [{"start": round(float(s.get("start", 0)), 2), "end": round(float(s.get("end", 0)), 2), "text": s.get("text", "").strip()} for s in resp.json().get("segments", []) if (s.get("text") or "").strip()]
+    except Exception: pass
+    return []
+
+async def transcribe_and_script_scenes(audio_mp3_path: str, total_dur: float, window_index: int = 0) -> list:
+    whisper_segs = await groq_whisper_transcribe(audio_mp3_path)
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    with open(audio_mp3_path, "rb") as f: audio_bytes = f.read()
+    
+    whisper_hint = f"\nWhisper transcript:\n{json.dumps(whisper_segs[:120], ensure_ascii=False)}\n" if whisper_segs else ""
+    prompt = f"""
+You are a professional Myanmar storyteller creating a YouTube-style movie recap.
+Analyze this {total_dur:.1f}-second video window.
+{whisper_hint}
+Write 5-10 narration scenes in natural spoken Burmese (third-person perspective, NOT direct translation).
+- PROPER NAMES: Write Chinese/foreign names accurately in Burmese phonetic spelling (e.g., Li Wei -> လီဝေး).
+- NO HALLUCINATION: Only describe what actually happens.
+- Return ONLY valid JSON array:
+[{{"start": 3.2, "end": 8.7, "burmese": "..."}}]
+""".strip()
+
+    contents = [prompt]
+    if len(audio_bytes) <= 19 * 1024 * 1024: contents.append(types.Part.from_bytes(data=audio_bytes, mime_type="audio/mp3"))
+    del audio_bytes
+
+    cfg = types.GenerateContentConfig(temperature=0.35, response_mime_type="application/json")
+    raw_json = None
+    for model in PREFERRED_MODELS:
+        try:
+            resp = await asyncio.to_thread(client.models.generate_content, model=model, contents=contents, config=cfg)
+            if resp and resp.text: raw_json = resp.text.strip(); break
+        except Exception: pass
+    
+    if raw_json is None: raise RuntimeError("Gemini Script Error")
+    
+    cleaned = re.sub(r"^```(?:json)?|```$", "", raw_json, flags=re.M).strip()
+    parsed = json.loads(cleaned)
+    segments = parsed if isinstance(parsed, list) else parsed.get("segments", [])
+    
+    out = []
+    for seg in segments:
+        try:
+            st = max(0.0, float(seg.get("start", 0.0))); en = min(total_dur, float(seg.get("end", st + 4.0)))
+            bm = clean_burmese_for_tts(str(seg.get("burmese", "")))
+            if bm:
+                if not bm.endswith("။"): bm += "။"
+                out.append({"start": st, "end": en, "burmese": bm})
+        except Exception: continue
+    return out
+
+async def synthesize_gemini_tts(scenes: list, work_dir: str) -> list:
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    all_clips = []
+    joined = "\n\n".join(s["burmese"] for s in scenes)
+    cfg = types.GenerateContentConfig(response_modalities=["AUDIO"], speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon"))))
+    try:
+        resp = await asyncio.to_thread(client.models.generate_content, model=PREFERRED_TTS_MODELS[0], contents=f"Read naturally:\n\n{joined}", config=cfg)
+        part = resp.candidates[0].content.parts[0].inline_data
+        tmp_raw = os.path.join(work_dir, "gem.bin"); tmp_pcm = os.path.join(work_dir, "gem.pcm")
+        with open(tmp_raw, "wb") as f: f.write(part.data)
+        run_cmd([FFMPEG_BIN, "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", tmp_raw, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), tmp_pcm], 60)
+        master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        clip_dur = len(master) // len(scenes)
+        for i in range(len(scenes)): all_clips.append(master[i * clip_dur: (i + 1) * clip_dur]) 
+        os.remove(tmp_raw); os.remove(tmp_pcm)
+    except Exception: 
+        for _ in scenes: all_clips.append(np.zeros(int(3 * SAMPLE_RATE), dtype=np.float32))
+    return all_clips
+
 def _ass_time(sec: float) -> str:
     h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec - int(sec)) * 100)
     return f"{h}:{m:02d}:{s:02d}.{ms:02d}"
@@ -218,6 +314,7 @@ async def build_final_recap(orig_video: str, orig_dur: float, st1_dims: tuple, s
     for sc, clip in zip(scenes, voice_clips):
         v_dur = len(clip) / SAMPLE_RATE
         t_dur = max(0.65, v_dur + 0.3)
+        # 80% Cut
         src_end = min(orig_dur, sc["start"] + t_dur / 0.80)
         video_slices.append((sc["start"], src_end, t_dur))
 
@@ -225,7 +322,7 @@ async def build_final_recap(orig_video: str, orig_dur: float, st1_dims: tuple, s
     for idx, (s_t, e_t, tgt_d) in enumerate(video_slices):
         raw_d = max(0.15, e_t - s_t); seg_path = os.path.join(work_dir, f"seg_{idx:03d}.mp4")
         fc = (f"[0:v]{shield_v}setpts=PTS-STARTPTS,fps=25,scale={out_w}:{out_h}:force_original_aspect_ratio=increase:flags=bicubic,crop={out_w}:{out_h},{color}{sub_filter},format=yuv420p[vout]")
-        await asyncio.to_thread(run_cmd, [FFMPEG_BIN, "-y", "-ss", f"{s_t:.3f}", "-t", f"{raw_d:.3f}", "-i", orig_video, "-an", "-filter_complex", fc, "-map", "[vout]", "-t", f"{tgt_d:.3f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", seg_path], 180)
+        await asyncio.to_thread(run_cmd, [FFMPEG_BIN, "-y", "-ss", f"{s_t:.3f}", "-t", f"{raw_d:.3f}", "-i", orig_video, "-an", "-filter_complex", fc, "-map", "[vout]", "-t", f"{tgt_d:.3f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", seg_path], 180)
         if os.path.exists(seg_path): seg_files.append(seg_path)
 
     concat_list = os.path.join(work_dir, "concat.txt")
@@ -294,14 +391,16 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
         
         await tracker.update("🎧 AI မှ စာသားရေးနေပါသည်...", force=True)
         last_activity[0] = time.time()
-        await asyncio.sleep(1) 
-        scenes = [{"start": 0, "end": 5, "burmese": "မြန်မာစာသား"}] 
-        last_activity[0] = time.time()
         
-        clips = [np.zeros(int(3 * SAMPLE_RATE), dtype=np.float32)] 
+        audio_path = os.path.join(work_dir, "audio.mp3")
+        run_cmd([FFMPEG_BIN, "-y", "-i", orig_video, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_path], 600)
+        scenes = await transcribe_and_script_scenes(audio_path, dur)
+        if os.path.exists(audio_path): os.remove(audio_path)
+        
         last_activity[0] = time.time()
         await tracker.update("🎙️ Charon AI မှ အသံသွင်းနေပါသည်...", force=True)
-        await asyncio.sleep(1) 
+        clips = await synthesize_gemini_tts(scenes, work_dir)
+        last_activity[0] = time.time()
 
         await tracker.update("🎬 ဗီဒီယို ပြင်ဆင်နေပါသည်...", force=True)
         recap_no_sub = os.path.join(work_dir, "recap_no_sub.mp4")
