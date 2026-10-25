@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from google import genai
 from google.genai import types
+from helpers import get_anim_emoji, fmt_file_size, download_video_never_stop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rednote-mm-bot")
@@ -66,13 +67,6 @@ job_semaphore = asyncio.Semaphore(2)
 video_render_semaphore = asyncio.Semaphore(1)
 
 MYANMAR_DIGITS = str.maketrans("0123456789", "၀၁၂၃၄၅၆၇၈၉")
-SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
-
-def get_anim_emoji(frame: int) -> str:
-    return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
-
-def fmt_file_size(mb: float) -> str:
-    return f"{mb:.1f} MB" if mb < 1024 else f"{mb/1024:.2f} GB"
 
 def fmt_progress_bar(pct: int) -> str:
     pct = max(0, min(100, pct)); filled = int(round(pct / 10))
@@ -192,16 +186,6 @@ async def download_telegram_file(file_id: str, dest_path: str) -> bool:
                 with open(dest_path, "wb") as f: f.write(resp.content)
                 return True
     except Exception as e: logger.warning(f"download_telegram_file error: {e}")
-    return False
-
-async def download_video_never_stop(url: str, out_path: str, tracker=None) -> bool:
-    for attempt in range(5):
-        if tracker: await tracker.update(f"📥 ဒေါင်းလုဒ်ဆွဲနေပါသည်... (ကြိုးစားမှု {attempt+1}/5)", force=True)
-        cmd = ["yt-dlp", "--no-warnings", "--no-part", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out_path, url]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await proc.wait()
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 10000: return True
-        await asyncio.sleep(3)
     return False
 
 def _ass_time(sec: float) -> str:
