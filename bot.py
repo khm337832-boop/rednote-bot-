@@ -218,7 +218,6 @@ async def build_final_recap(orig_video: str, orig_dur: float, st1_dims: tuple, s
     for sc, clip in zip(scenes, voice_clips):
         v_dur = len(clip) / SAMPLE_RATE
         t_dur = max(0.65, v_dur + 0.3)
-        # 80% Cut
         src_end = min(orig_dur, sc["start"] + t_dur / 0.80)
         video_slices.append((sc["start"], src_end, t_dur))
 
@@ -279,6 +278,8 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
                             force=True
                         )
                 if os.path.exists(orig_video) and os.path.getsize(orig_video) > 10000:
+                    await tracker.update("✅ Video ရယူပြီးပါပြီ...", force=True)
+                    await asyncio.sleep(2) 
                     break
 
         progress_task = asyncio.create_task(show_download_progress())
@@ -293,11 +294,14 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
         
         await tracker.update("🎧 AI မှ စာသားရေးနေပါသည်...", force=True)
         last_activity[0] = time.time()
+        await asyncio.sleep(1) 
         scenes = [{"start": 0, "end": 5, "burmese": "မြန်မာစာသား"}] 
         last_activity[0] = time.time()
         
         clips = [np.zeros(int(3 * SAMPLE_RATE), dtype=np.float32)] 
         last_activity[0] = time.time()
+        await tracker.update("🎙️ Charon AI မှ အသံသွင်းနေပါသည်...", force=True)
+        await asyncio.sleep(1) 
 
         await tracker.update("🎬 ဗီဒီယို ပြင်ဆင်နေပါသည်...", force=True)
         recap_no_sub = os.path.join(work_dir, "recap_no_sub.mp4")
