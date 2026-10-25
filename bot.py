@@ -65,10 +65,18 @@ processed_updates = deque(maxlen=600)
 job_semaphore = asyncio.Semaphore(2)
 video_render_semaphore = asyncio.Semaphore(1)
 
-PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest"]
-PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 MYANMAR_DIGITS = str.maketrans("0123456789", "၀၁၂၃၄၅၆၇၈၉")
 SPINNING_EMOJIS = ["", "", "", ""]
+
+def get_anim_emoji(frame: int) -> str:
+    return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
+
+def fmt_file_size(mb: float) -> str:
+    return f"{mb:.1f} MB" if mb < 1024 else f"{mb/1024:.2f} GB"
+
+def fmt_progress_bar(pct: int) -> str:
+    pct = max(0, min(100, pct)); filled = int(round(pct / 10))
+    return "" * filled + "" * (10 - filled) + f" {pct}%"
 
 def run_cmd(cmd: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -124,10 +132,6 @@ async def tg_upload_media(method: str, data: dict, field_name: str, file_name: s
         return {"ok": False}
     finally: del payload_bytes; gc.collect()
 
-def fmt_progress_bar(pct: int) -> str:
-    pct = max(0, min(100, pct)); filled = int(round(pct / 10))
-    return "" * filled + "" * (10 - filled) + f" {pct}%"
-
 class ProgressTracker:
     def __init__(self, chat_id: int, message_id: int, reply_markup: dict = None, min_interval: float = 3.0, job_id: str = None):
         self.chat_id = chat_id; self.message_id = message_id; self.reply_markup = reply_markup
@@ -138,7 +142,7 @@ class ProgressTracker:
         now = time.monotonic()
         if not force and (now - self.last_ts) < self.min_interval: return
         self.last_ts = now; self.last_text = text; self.anim_frame += 1
-        animated_text = f"{SPINNING_EMOJIS[self.anim_frame % len(SPINNING_EMOJIS)]} {text}"
+        animated_text = f"{get_anim_emoji(self.anim_frame)} {text}"
         await edit_text(self.chat_id, self.message_id, animated_text, reply_markup=self.reply_markup)
 
 async def send_text(chat_id: int, text: str, reply_to: int = None, reply_markup: dict = None):
@@ -188,19 +192,21 @@ async def download_telegram_file(file_id: str, dest_path: str) -> bool:
                 with open(dest_path, "wb") as f: f.write(resp.content)
                 return True
     except Exception as e: logger.warning(f"download_telegram_file error: {e}")
-    return Falsedef _ass_time(sec: float) -> str:
-    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec - int(sec)) * 100)
-    return f"{h}:{m:02d}:{s:02d}.{ms:02d}"
+    return False
 
 async def download_video_never_stop(url: str, out_path: str, tracker=None) -> bool:
     for attempt in range(5):
         if tracker: await tracker.update(f" ဒေါင်းလုဒ်ဆွဲနေပါသည်... (ကြိုးစားမှု {attempt+1}/5)", force=True)
-        cmd = ["yt-dlp", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "--no-part", "-o", out_path, url]
+        cmd = ["yt-dlp", "--no-warnings", "--no-part", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out_path, url]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await proc.wait()
         if os.path.exists(out_path) and os.path.getsize(out_path) > 10000: return True
         await asyncio.sleep(3)
     return False
+
+def _ass_time(sec: float) -> str:
+    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec - int(sec)) * 100)
+    return f"{h}:{m:02d}:{s:02d}.{ms:02d}"
 
 async def build_final_recap(orig_video: str, orig_dur: float, st1_dims: tuple, scenes: list, voice_clips: list, work_dir: str, out_path: str, has_subtitle: bool = False):
     out_w, out_h = st1_dims
@@ -228,8 +234,8 @@ async def build_final_recap(orig_video: str, orig_dur: float, st1_dims: tuple, s
     for sc, clip in zip(scenes, voice_clips):
         v_dur = len(clip) / SAMPLE_RATE
         t_dur = max(0.65, v_dur + 0.3)
-        # 65% Cut
-        src_end = min(orig_dur, sc["start"] + t_dur / 0.65)
+        # 80% Cut
+        src_end = min(orig_dur, sc["start"] + t_dur / 0.80)
         video_slices.append((sc["start"], src_end, t_dur))
 
     seg_files = []
@@ -267,9 +273,37 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
     wd_task = asyncio.create_task(watchdog())
     try:
         orig_video = os.path.join(work_dir, "source.mp4")
-        if fid: await download_telegram_file(fid, orig_video)
-        else: await download_video_never_stop(url, orig_video, tracker)
         
+        dl_start = time.time()
+        last_report = 0
+        async def show_download_progress():
+            nonlocal last_report
+            while True:
+                await asyncio.sleep(2)
+                if os.path.exists(orig_video):
+                    mb = os.path.getsize(orig_video) / (1024 * 1024)
+                    elapsed = int(time.time() - dl_start)
+                    speed = mb / elapsed if elapsed > 0 else 0
+                    if time.time() - last_report > 3:
+                        last_report = time.time()
+                        await tracker.update(
+                            f" ဒေါင်းလုဒ်ဆွဲနေပါသည်...\n"
+                            f" ရရှိပြီး: {fmt_file_size(mb)}\n"
+                            f" အမြန်နှုန်း: {fmt_file_size(speed)}/s\n"
+                            f" ကြာချိန်: {elapsed} စက္ကန့်\n"
+                            f" {fmt_progress_bar(min(95, int(mb * 2)))}",
+                            force=True
+                        )
+                if os.path.exists(orig_video) and os.path.getsize(orig_video) > 10000:
+                    break
+
+        progress_task = asyncio.create_task(show_download_progress())
+        try:
+            if fid: await download_telegram_file(fid, orig_video)
+            else: await download_video_never_stop(url, orig_video, tracker)
+        finally:
+            progress_task.cancel()
+
         dur, src_w, src_h, _ = await asyncio.to_thread(probe_video_info, orig_video)
         st1_dims = compute_stage_dims(src_w, src_h)
         
