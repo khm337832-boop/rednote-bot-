@@ -23,6 +23,7 @@ from google.genai import types
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rednote-mm-bot")
 
+
 def setup_ffmpeg() -> str:
     sys_ff = shutil.which("ffmpeg")
     if sys_ff:
@@ -44,6 +45,7 @@ def setup_ffmpeg() -> str:
     except Exception:
         return "ffmpeg"
 
+
 FFMPEG_BIN = setup_ffmpeg()
 WORK_ROOT = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK) else "/tmp"
 
@@ -57,6 +59,7 @@ ALLOWED_USER_IDS = {8855067536}
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 45 * 1024 * 1024
 CHUNK_DURATION = 300
+PAUSE_AFTER_SCENE = 0.20
 
 PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
 os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
@@ -67,15 +70,17 @@ video_render_semaphore = asyncio.Semaphore(1)
 PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest"]
 PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
-PAUSE_AFTER_SCENE = 0.18
+
 
 def get_anim_emoji(frame: int) -> str:
     return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
+
 
 def fmt_progress_bar(pct: int) -> str:
     pct = max(0, min(100, pct))
     filled = int(round(pct / 10))
     return "▓" * filled + "░" * (10 - filled) + f" {pct}%"
+
 
 def fmt_time(seconds: float) -> str:
     h = int(seconds // 3600)
@@ -84,6 +89,7 @@ def fmt_time(seconds: float) -> str:
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
 
 def run_cmd(cmd: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(
@@ -103,6 +109,7 @@ def run_cmd(cmd: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
             proc.kill()
         out, err = proc.communicate()
         return subprocess.CompletedProcess(cmd, -9, out, err)
+
 
 class ProgressTracker:
     def __init__(self, chat_id: int, message_id: int, job_id: str = None):
@@ -132,6 +139,7 @@ class ProgressTracker:
         except Exception:
             pass
 
+
 async def tg_api(method: str, data: dict = None, timeout: float = 90.0):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     for attempt in range(3):
@@ -143,6 +151,7 @@ async def tg_api(method: str, data: dict = None, timeout: float = 90.0):
             await asyncio.sleep(1.5)
     return {"ok": False}
 
+
 async def send_text(chat_id: int, text: str, reply_to: int = None):
     res = await tg_api("sendMessage", {
         "chat_id": chat_id,
@@ -150,6 +159,7 @@ async def send_text(chat_id: int, text: str, reply_to: int = None):
         "reply_to_message_id": reply_to,
     })
     return res.get("result", {}).get("message_id")
+
 
 async def edit_text(chat_id: int, message_id: int, text: str):
     if not message_id:
@@ -162,6 +172,7 @@ async def edit_text(chat_id: int, message_id: int, text: str):
         })
     except Exception:
         pass
+
 
 async def tg_upload_media(method: str, data: dict, field_name: str, file_name: str, file_path: str, mime_type: str) -> dict:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
@@ -186,6 +197,7 @@ async def tg_upload_media(method: str, data: dict, field_name: str, file_name: s
         del payload_bytes
         gc.collect()
 
+
 def probe_video_info(path: str) -> tuple[float, int, int]:
     proc = run_cmd([FFMPEG_BIN, "-i", path], 30)
     out = proc.stderr.decode(errors="ignore") + proc.stdout.decode(errors="ignore")
@@ -199,6 +211,7 @@ def probe_video_info(path: str) -> tuple[float, int, int]:
         w, h = int(vm.group(2)), int(vm.group(3))
     return dur, w, h
 
+
 def compute_output_dims(src_w: int, src_h: int) -> tuple[int, int]:
     if src_w <= 0 or src_h <= 0:
         return 1280, 720
@@ -207,6 +220,7 @@ def compute_output_dims(src_w: int, src_h: int) -> tuple[int, int]:
     out_w = max(2, int(round(src_w * scale / 2.0)) * 2)
     out_h = max(2, int(round(src_h * scale / 2.0)) * 2)
     return out_w, out_h
+
 
 async def get_source_duration(url: str) -> float:
     try:
@@ -226,6 +240,7 @@ async def get_source_duration(url: str) -> float:
         logger.warning(f"get_source_duration error: {e}")
     return 0
 
+
 async def download_chunk(url: str, start: float, end: float, out_path: str) -> float:
     cmd = [
         "yt-dlp", "--no-warnings", "--no-part",
@@ -244,6 +259,7 @@ async def download_chunk(url: str, start: float, end: float, out_path: str) -> f
         return 0
     actual_dur, _, _ = probe_video_info(out_path)
     return actual_dur
+
 
 def make_keep_ranges(duration: float, cuts: list, max_remove_ratio: float = 0.08):
     candidates = []
@@ -268,13 +284,13 @@ def make_keep_ranges(duration: float, cuts: list, max_remove_ratio: float = 0.08
     accepted_cuts = []
     removed = 0.0
     for start, end in merged:
-        remaining_budget = removal_limit - removed
-        if remaining_budget <= 0:
+        remaining = removal_limit - removed
+        if remaining <= 0:
             break
-        cut_length = min(end - start, remaining_budget)
-        if cut_length > 0:
-            accepted_cuts.append((start, start + cut_length))
-            removed += cut_length
+        cut_len = min(end - start, remaining)
+        if cut_len > 0:
+            accepted_cuts.append((start, start + cut_len))
+            removed += cut_len
 
     keep_ranges = []
     cursor = 0.0
@@ -285,6 +301,7 @@ def make_keep_ranges(duration: float, cuts: list, max_remove_ratio: float = 0.08
     if cursor < duration:
         keep_ranges.append((cursor, duration))
     return keep_ranges
+
 
 def split_pcm_by_weights(master: np.ndarray, scenes: list) -> list[np.ndarray]:
     if len(scenes) == 0:
@@ -325,7 +342,7 @@ def split_pcm_by_weights(master: np.ndarray, scenes: list) -> list[np.ndarray]:
         clips.append(seg)
     return clips
 
-# 🟢 TTS ကို သဘာဝကျပြီး ဇာတ်ကောင်ရှုထောင့်က ပြောပြသလို ဖတ်ခိုင်း
+
 async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
     client = genai.Client(api_key=GEMINI_API_KEY)
     joined = "\n\n".join(s["burmese"] for s in scenes)
@@ -345,8 +362,10 @@ async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
             model=PREFERRED_TTS_MODELS[0],
             contents=f"""
 အောက်ပါစာသားကို မြန်မာဘာသာဖြင့် သဘာဝကျသော စကားပြောဟန်ဖြင့် ဖတ်ပါ။
+အသံသည် နက်ရှိုင်းသော (deep, low), ရင်အုပ်သံပါသော, ပဲ့တင်သံမပါသော အသံဖြစ်ရမည်။
 ဇာတ်လမ်းကို ကိုယ်တိုင်ကြုံတွေ့ခဲ့သော အဓိကဇာတ်ကောင်က ပြန်ပြောပြနေသလို အသံသွင်းပါ။
-အသံကို ရှင်းလင်း၊ နွေးထွေးပြီး ခံစားချက်ပါအောင် ဖတ်ပါ။ စာကြောင်းအဆုံးနှင့် ပုဒ်ဖြတ်အမှတ်အသားများတွင် သဘာဝကျကျ ခဏရပ်ပါ။
+အသံကို ရှင်းလင်း၊ နွေးထွေးပြီး ခံစားချက်ပါအောင် ဖတ်ပါ။
+စာကြောင်းအဆုံးနှင့် ပုဒ်ဖြတ်အမှတ်အသားများတွင် သဘာဝကျကျ ခဏရပ်ပါ။
 အလွန်မြန်မြန်၊ တစ်သံတည်း သို့မဟုတ် စက်ရုပ်ဆန်ဆန် မဖတ်ပါနှင့်။
 စာသားတွင် မပါသော စကားလုံးများကို မထည့်ပါနှင့်။ နာမည်များကို သေချာရှင်းလင်းစွာ အသံထွက်ပါ။
 
@@ -357,12 +376,26 @@ async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
         data = resp.candidates[0].content.parts[0].inline_data.data
         with open(tmp_raw, "wb") as f:
             f.write(data)
+
+        deep_voice_filter = (
+            "highpass=f=55,"
+            "asetrate=22080,aresample=24000,atempo=1.0870,"
+            "equalizer=f=110:t=q:w=1.0:g=4.5,"
+            "equalizer=f=230:t=q:w=1.1:g=2.5,"
+            "equalizer=f=6500:t=q:w=1.0:g=-1.5,"
+            "loudnorm=I=-16:TP=-1.5:LRA=11"
+        )
+
         run_cmd([
-            FFMPEG_BIN, "-y", "-f", "s16le", "-ar", "24000", "-ac", "1",
+            FFMPEG_BIN, "-y",
+            "-f", "s16le", "-ar", "24000", "-ac", "1",
             "-i", tmp_raw,
-            "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1",
-            "-ar", str(SAMPLE_RATE), tmp_pcm,
+            "-af", deep_voice_filter,
+            "-f", "s16le", "-acodec", "pcm_s16le",
+            "-ac", "1", "-ar", str(SAMPLE_RATE),
+            tmp_pcm,
         ], 120)
+
         if os.path.exists(tmp_pcm) and os.path.getsize(tmp_pcm) > 200:
             master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
             return split_pcm_by_weights(master, scenes)
@@ -373,6 +406,7 @@ async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
             if os.path.exists(p):
                 os.remove(p)
     return [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in scenes]
+
 
 async def extract_story_summary(scenes: list, client) -> dict:
     if not scenes:
@@ -405,6 +439,7 @@ Return JSON:
             "last_scene": scenes[-1]["burmese"],
         }
 
+
 async def build_chunk_recap(
     chunk_path: str,
     chunk_dur: float,
@@ -421,7 +456,6 @@ async def build_chunk_recap(
     target_chars = int(chunk_dur * 6.5)
     scene_count = max(15, int(chunk_dur / 8))
     chars_per_scene = max(80, target_chars // scene_count)
-
     protagonist = story_context.get("protagonist", "") if chunk_index > 1 else ""
 
     if chunk_index == 1:
@@ -454,7 +488,7 @@ async def build_chunk_recap(
 - လူပြောသလို ရိုးရှင်း၊ နားလည်လွယ်၊ ခံစားချက်ပါတဲ့ ဘာသာစကားနဲ့ ရေးပါ။ စက်ရုပ်ဆန်တဲ့ သို့မဟုတ် တရားဝင်လွန်းတဲ့ စာကြောင်းတွေ မသုံးပါနှင့်။
 - ဇာတ်ကောင်ရဲ့ ခံစားချက်၊ မြင်တဲ့အရာ၊ လုပ်တဲ့အပြုအမူကို ဗီဒီယိုထဲက သတင်းအချက်အလက်အပေါ် အခြေခံပြီး ပြောပါ။ ဗီဒီယိုမှာ မပြထားတဲ့ အတွေး၊ ခံစားချက်တွေကို မတီထွင်ပါနှင့်။
 - မူရင်းစကားပြောတွေကို တိုက်ရိုက်ကူးချမနေပါနှင့်။ ဒါပေမယ့် အဲဒီစကားရဲ့ အဓိပ္ပာယ်ကို အဓိကဇာတ်ကောင်က သူ့အမြင်နဲ့ ပြောပြနေသလို ဖော်ပြပါ။
-- ဇာတ်လမ်းဖြစ်ရပ်တွေကို မကျော်ဘဲ မူရင်းအစဉ်အတိုင်း ဆက်ပြောပါ။ အပိုင်းတွေကြား ရှုထောင့်နဲ့ အဓိကဇာတ်ကောင်ကို မပြောင်းပါနှင့်။
+- ဇာတ်လမ်းဖြစ်ရပ်တွေကို မကျော်ဘဲ မူရင်းအစဉ်အတိုင်း ဆက်ပြောပါ။ အပိုင်းတွေကြား ရှုထောင့်နဲ့ အဓိကဇာတ်ကောင် မပြောင်းပါနှင့်။
 
 အဓိကရည်မှန်းချက် —
 ဤအပိုင်းကို "အတိုချုပ် recap" မလုပ်ပါနှင့်။ မူရင်းဗီဒီယိုထဲက ဇာတ်လမ်းဖြစ်ရပ်များကို အစဉ်လိုက်၊ နီးပါးပြည့်စုံအောင် ပြန်ပြောပြပါ။
@@ -553,6 +587,8 @@ JSON object ကိုသာ ပြန်ပေးပါ။
             if isinstance(extra, dict):
                 scenes.extend(extra.get("scenes", []))
                 cuts.extend(extra.get("cuts", []))
+                if not new_protagonist:
+                    new_protagonist = extra.get("protagonist", "") or new_protagonist
             elif isinstance(extra, list):
                 scenes.extend(extra)
             logger.info(f"Added extra scenes: {len(scenes)}")
@@ -572,7 +608,9 @@ JSON object ကိုသာ ပြန်ပေးပါ။
     kept_duration = sum(end - start for start, end in keep_ranges)
 
     if kept_duration < chunk_dur * 0.90:
-        raise RuntimeError("ဗီဒီယိုကို မူရင်းကြာချိန်၏ ၉၀% အောက် လျှော့ချသွားပါသည်။")
+        logger.warning(f"Kept duration {kept_duration:.1f}s < 90% of {chunk_dur:.1f}s, forcing keep-all")
+        keep_ranges = [(0.0, chunk_dur)]
+        kept_duration = chunk_dur
 
     logger.info(f"Keep ranges: {len(keep_ranges)}, kept {kept_duration:.1f}s / {chunk_dur:.1f}s")
 
@@ -671,6 +709,7 @@ JSON object ကိုသာ ပြန်ပေးပါ။
         new_summary["protagonist"] = new_protagonist
     return out_chunk, new_summary
 
+
 async def split_for_telegram(path: str, work_dir: str) -> list[str]:
     if not os.path.exists(path):
         return []
@@ -696,6 +735,7 @@ async def split_for_telegram(path: str, work_dir: str) -> list[str]:
         if f.startswith("part_") and f.endswith(".mp4")
     )
     return parts or [path]
+
 
 async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     job_id = f"j{secrets.token_hex(5)}"
@@ -821,6 +861,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
 
+
 async def process_admin_update(update: dict):
     msg = update.get("message")
     if not msg:
@@ -832,13 +873,16 @@ async def process_admin_update(update: dict):
     if text and text.startswith("http"):
         await handle_link_job(chat_id, msg_id, text)
 
+
 app = FastAPI()
+
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
     asyncio.create_task(process_admin_update(update))
     return JSONResponse({"ok": True})
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000)
