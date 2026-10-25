@@ -76,6 +76,13 @@ def fmt_progress_bar(pct: int) -> str:
     pct = max(0, min(100, pct)); filled = int(round(pct / 10))
     return "▓" * filled + "░" * (10 - filled) + f" {pct}%"
 
+def fmt_time(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    if h > 0: return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
 def run_cmd(cmd: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try: out, err = proc.communicate(timeout=timeout); return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
@@ -111,6 +118,25 @@ async def send_text(chat_id: int, text: str, reply_to: int = None):
     res = await tg_api("sendMessage", {"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to})
     return res.get("result", {}).get("message_id")
 
+async def tg_upload_media(method: str, data: dict, field_name: str, file_name: str, file_path: str, mime_type: str) -> dict:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    payload_bytes = await asyncio.to_thread(lambda: open(file_path, "rb").read())
+    try:
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                    resp = await client.post(url, data=data, files={field_name: (file_name, payload_bytes, mime_type)})
+                    if resp.json().get("ok"): return resp.json()
+            except Exception: pass
+            await asyncio.sleep(2.5)
+        return {"ok": False}
+    finally: del payload_bytes; gc.collect()
+
+async def edit_text(chat_id: int, message_id: int, text: str):
+    if not message_id: return
+    try: await tg_api("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text})
+    except: pass
+
 def probe_video_info(path: str) -> tuple[float, int, int]:
     proc = run_cmd([FFMPEG_BIN, "-i", path], 30)
     out = proc.stderr.decode(errors="ignore") + proc.stdout.decode(errors="ignore")
@@ -128,7 +154,6 @@ def compute_stage_dims(src_w: int, src_h: int) -> tuple:
     s1_w = max(2, int(round(src_w * s1_scale / 2.0)) * 2); s1_h = max(2, int(round(src_h * s1_scale / 2.0)) * 2)
     return (s1_w, s1_h)
 
-# 🟢 Link ကနေ အပိုင်းလိုက် ဒေါင်းမယ့် Function
 async def download_chunk(url: str, start: float, end: float, out_path: str) -> bool:
     cmd = [
         "yt-dlp", "--no-warnings", "--no-part", "--force-keyframes-at-cuts",
@@ -141,19 +166,49 @@ async def download_chunk(url: str, start: float, end: float, out_path: str) -> b
     await proc.wait()
     return os.path.exists(out_path) and os.path.getsize(out_path) > 10000
 
-async def build_chunk_recap(chunk_path: str, st1_dims: tuple, tracker: ProgressTracker):
+async def build_chunk_recap(chunk_path: str, st1_dims: tuple, start_sec: float, end_sec: float, tracker: ProgressTracker):
     client = genai.Client(api_key=GEMINI_API_KEY)
     dur, src_w, src_h = probe_video_info(chunk_path)
     if dur <= 0: return None
 
-    await tracker.update("🎧 AI မှ စာသားရေးနေပါသည်...", force=True)
+    await tracker.update("🎧 AI မှ ဇာတ်လမ်းစာသား ရေးနေပါသည်...", force=True)
     audio_path = os.path.join(os.path.dirname(chunk_path), "audio.mp3")
     run_cmd([FFMPEG_BIN, "-y", "-i", chunk_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "24k", audio_path], 600)
 
-    prompt = f"Write 5-8 Burmese recap scenes for a video that is {dur} seconds long. Return JSON: [{{\"start\": 0, \"end\": 5, \"burmese\": \"စာသား\"}}]"
+    start_fmt = fmt_time(start_sec)
+    end_fmt = fmt_time(end_sec)
+    target_voice_time = fmt_time(dur * 0.8) # 🟢 ခင်ဗျား Prompt အတွက် Variable အသစ်
+
+    # 🟢 ခင်ဗျား ပေးထားတဲ့ Prompt အတိအကျ
+    prompt = f"""
+သင်သည် ဗီဒီယိုထဲရှိ ဇာတ်လမ်းကို အတိုချုံးမလုပ်ဘဲ၊ အစမှအဆုံး နီးပါးပြည့်စုံစွာ၊ အစဉ်လိုက် မြန်မာဘာသာဖြင့် စိတ်ဝင်စားဖွယ် ပြန်လည်ပြောပြပေးသည့် ဇာတ်ကြောင်းပြောသူဖြစ်သည်။ အောက်ပါညွှန်ကြားချက်အားလုံးကို လိုက်နာပါ။
+
+ဤဗီဒီယိုအပိုင်းသည် မူရင်းဗီဒီယို၏ {start_fmt} မှ {end_fmt} အထိ ဖြစ်သည်။ အပိုင်းကြာချိန်မှာ {fmt_time(dur)} ဖြစ်သည်။ ဇာတ်လမ်းပြန်ပြောသံ၏ ရည်မှန်းကြာချိန်မှာ {target_voice_time} ခန့်၊ မူရင်းအပိုင်း၏ ၈၀ ရာခိုင်နှုန်းခန့် ဖြစ်ရမည်။
+
+မဖြစ်မနေလိုက်နာရန် —
+၁။ ပထမဆုံးစာကြောင်းကို အတိအကျ ဤအတိုင်း စတင်ပါ။ "အပိုင်း — မူရင်းဗီဒီယို {start_fmt} မှ {end_fmt} အထိ။"
+၂။ အတိုချုပ် recap မရေးပါနှင့်။ ဗီဒီယိုထဲက ဇာတ်လမ်းကို အစဉ်လိုက်၊ ဖြစ်ရပ်တစ်ခုချင်းစီကို နားလည်နိုင်အောင် အသေးစိတ် ပြန်ပြောပြပါ။
+၃။ ဇာတ်လမ်းကို နားလည်ရန် လိုအပ်သော အဓိကနှင့် အလယ်အလတ်ဖြစ်ရပ်များ၊ ဇာတ်ကောင်များ၏ ဆက်နွယ်မှု၊ ဆုံးဖြတ်ချက်များ၊ ရည်ရွယ်ချက်များ၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ၊ ပဋိပက္ခများ၊ အလှည့်အပြောင်းများနှင့် ခံစားချက်ပြောင်းလဲမှုများကို မချန်ပါနှင့်။
+၄။ ဗီဒီယိုထဲတွင် ဖြစ်ပျက်သည့်အစဉ်ကို မပြောင်းပါနှင့်။ ဇာတ်ကောင်များ၏ အရေးကြီးသောလုပ်ရပ်များနှင့် စကားပြောချက်များ၏ အဓိပ္ပာယ်ကို ဇာတ်ကြောင်းထဲတွင် ထိန်းသိမ်းပါ။ စကားပြောချက်များကို မူရင်းအတိုင်း စာလုံးချင်းကူးရေးရန် မလိုပါ။
+၅။ ဇာတ်လမ်းနှင့် မသက်ဆိုင်သော ရှည်လျားသည့် တိတ်ဆိတ်နေသောအပိုင်း၊ ထပ်နေသော မြင်ကွင်း သို့မဟုတ် စကားပြောချက်၊ မလိုအပ်သောနားချိန်များကိုသာ ဖယ်ရှားပါ။ ဇာတ်လမ်း၏အဓိပ္ပာယ်ကို ပြောင်းလဲစေနိုင်သော အရေးကြီးဖြစ်ရပ်များကို မဖယ်ပါနှင့်။
+၆။ ပြောမည့်ဇာတ်ကြောင်းတစ်ခုလုံး၏ ကြာချိန်သည် {target_voice_time} ခန့်ဖြစ်အောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ မူရင်း ၅ မိနစ်အပိုင်းမှ ၁ မိနစ်စာ အကျဉ်းချုပ်သာ မထုတ်ပါနှင့်။ ၅ မိနစ်အပိုင်းအတွက် ၄ မိနစ်ခန့် သဘာဝကျသော ဇာတ်ကြောင်းပြောသံ လိုအပ်သည်။
+၇။ ဤဗီဒီယိုအပိုင်းတွင် အမှန်တကယ်ပါဝင်သော အကြောင်းအရာကိုသာ အသုံးပြုပါ။ မပါဝင်သည့်ဖြစ်ရပ်၊ ဇာတ်ကောင်၊ ဆက်နွယ်မှု၊ အကြောင်းရင်း သို့မဟုတ် အဆုံးသတ်ကို မတီထွင်ပါနှင့်။ အပိုင်းအဆုံးတွင် ဇာတ်လမ်းဆက်နေပါက နောက်ပိုင်းတွင် ဘာဖြစ်မည်ဟု မခန့်မှန်းပါနှင့်။
+၈။ ဇာတ်လမ်းဖြစ်ရပ်များ၊ ပတ်ဝန်းကျင်နှင့် ဇာတ်ကောင်များ၏ ခံစားချက်ကို ဗီဒီယိုတွင် မြင်ရသည့်အတိုင်း ရှင်းလင်းစွာ ဖော်ပြပါ။
+၉။ တရုတ်နှင့် နိုင်ငံခြားအမည်များကို ဖြစ်နိုင်သမျှ မြန်မာအသံထွက်အတိုင်း တစ်သမတ်တည်း ရေးပါ။
+၁၀။ နောက်ဆုံးအဖြေတွင် JSON စာရင်းကိုသာ ပြန်ပေးပါ။ JSON မတိုင်မီနှင့် နောက်တွင် ရှင်းလင်းချက် သို့မဟုတ် Markdown သင်္ကေတများ မထည့်ပါနှင့်။
+
+JSON ပုံစံ —
+[{{"start": 0, "end": 5, "burmese": "မြန်မာဘာသာဖြင့် ဇာတ်ကြောင်း"}}]
+
+"start" နှင့် "end" တို့သည် ဤဗီဒီယိုအပိုင်း၏ အစမှတွက်သည့် စက္ကန့်များ ဖြစ်ရမည်။ ဇာတ်လမ်းအများအပြားကို စာသားအနည်းငယ်ထဲ အလွန်အကျွံမချုံ့ပါနှင့်။ အပိုင်းတစ်ခုစီတွင် အကြောင်းအရာကို နားလည်ရလွယ်အောင် သဘာဝကျသော စကားပြောဟန်ဖြင့် ရှင်းပြပါ။
+    """.strip()
+
     resp = await asyncio.to_thread(client.models.generate_content, model=PREFERRED_MODELS[0], contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json"))
-    scenes = json.loads(resp.text.strip())
-    if isinstance(scenes, dict) and "scenes" in scenes: scenes = scenes["scenes"]
+    try:
+        scenes = json.loads(resp.text.strip())
+        if isinstance(scenes, dict) and "scenes" in scenes: scenes = scenes["scenes"]
+    except Exception:
+        scenes = [{"start": 0, "end": 5, "burmese": "စာသားရယူရာတွင် အမှားအယွင်းရှိပါသည်။"}]
 
     await tracker.update("🎙️ Charon AI မှ အသံသွင်းနေပါသည်...", force=True)
     joined = "\n\n".join(s["burmese"] for s in scenes)
@@ -194,7 +249,6 @@ async def build_chunk_recap(chunk_path: str, st1_dims: tuple, tracker: ProgressT
     out_chunk = chunk_path.replace(".mp4", "_recap.mp4")
     await asyncio.to_thread(run_cmd, [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", concat_txt, "-c:v", "copy", out_chunk], 120)
     
-    # 🟢 ဖိုင်တွေ ဖျက်မယ်
     if os.path.exists(audio_path): os.remove(audio_path)
     if os.path.exists(tmp_raw): os.remove(tmp_raw)
     if os.path.exists(tmp_pcm): os.remove(tmp_pcm)
@@ -224,7 +278,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
         total_parts = int(np.ceil(total_dur / CHUNK_DURATION))
 
         while start < total_dur:
-            if job_id in CANCELLED_JOBS: raise JobCancelled("cancelled")
+            if job_id in CANCELLED_JOBS: raise Exception("cancelled")
             end = min(start + CHUNK_DURATION, total_dur)
             
             await tracker.update(f"📥 ဒေါင်းလုဒ်ဆွဲနေပါသည်... (အပိုင်း {part_num}/{total_parts})\n📊 {fmt_progress_bar(int((start/total_dur)*100))}", force=True)
@@ -235,7 +289,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
 
             await tracker.update(f"✂️ အပိုင်း {part_num}/{total_parts} ကို Recap လုပ်နေပါသည်...", force=True)
             async with video_render_semaphore:
-                recap_chunk = await build_chunk_recap(chunk_path, (1280, 720), tracker)
+                recap_chunk = await build_chunk_recap(chunk_path, (1280, 720), start, end, tracker)
             
             if recap_chunk:
                 chunks.append(recap_chunk)
@@ -268,25 +322,6 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
-
-async def tg_upload_media(method: str, data: dict, field_name: str, file_name: str, file_path: str, mime_type: str) -> dict:
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
-    payload_bytes = await asyncio.to_thread(lambda: open(file_path, "rb").read())
-    try:
-        for attempt in range(3):
-            try:
-                async with httpx.AsyncClient(timeout=300.0) as client:
-                    resp = await client.post(url, data=data, files={field_name: (file_name, payload_bytes, mime_type)})
-                    if resp.json().get("ok"): return resp.json()
-            except Exception: pass
-            await asyncio.sleep(2.5)
-        return {"ok": False}
-    finally: del payload_bytes; gc.collect()
-
-async def edit_text(chat_id: int, message_id: int, text: str):
-    if not message_id: return
-    try: await tg_api("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text})
-    except: pass
 
 async def process_admin_update(update: dict):
     msg = update.get("message")
