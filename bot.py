@@ -66,7 +66,7 @@ job_semaphore = asyncio.Semaphore(2)
 video_render_semaphore = asyncio.Semaphore(1)
 
 MYANMAR_DIGITS = str.maketrans("0123456789", "၀၁၂၃၄၅၆၇၈၉")
-SPINNING_EMOJIS = ["", "", "", ""]
+SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
 
 def get_anim_emoji(frame: int) -> str:
     return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
@@ -76,7 +76,7 @@ def fmt_file_size(mb: float) -> str:
 
 def fmt_progress_bar(pct: int) -> str:
     pct = max(0, min(100, pct)); filled = int(round(pct / 10))
-    return "" * filled + "" * (10 - filled) + f" {pct}%"
+    return "▓" * filled + "░" * (10 - filled) + f" {pct}%"
 
 def run_cmd(cmd: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -176,7 +176,7 @@ def compute_stage_dims(src_w: int, src_h: int) -> tuple:
     return (s1_w, s1_h)
 
 def clean_burmese_for_tts(text: str) -> str:
-    t = re.sub(r"[*_#`~<>[\]()\"'-]", " ", text)
+    t = re.sub(r"[*_#`~<>[\]()\"'“”‘’…—–-]", " ", text)
     t = t.translate(MYANMAR_DIGITS)
     return re.sub(r"\s+", " ", t).strip()
 
@@ -196,7 +196,7 @@ async def download_telegram_file(file_id: str, dest_path: str) -> bool:
 
 async def download_video_never_stop(url: str, out_path: str, tracker=None) -> bool:
     for attempt in range(5):
-        if tracker: await tracker.update(f" ဒေါင်းလုဒ်ဆွဲနေပါသည်... (ကြိုးစားမှု {attempt+1}/5)", force=True)
+        if tracker: await tracker.update(f"📥 ဒေါင်းလုဒ်ဆွဲနေပါသည်... (ကြိုးစားမှု {attempt+1}/5)", force=True)
         cmd = ["yt-dlp", "--no-warnings", "--no-part", "-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4", "-o", out_path, url]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await proc.wait()
@@ -256,7 +256,7 @@ async def build_final_recap(orig_video: str, orig_dur: float, st1_dims: tuple, s
 
 async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: str = ""):
     job_id = f"j{secrets.token_hex(5)}"
-    status_id = await send_text(chat_id, " Recap စတင်နေပါပြီ...", reply_to=reply_msg_id)
+    status_id = await send_text(chat_id, "⚡ Recap စတင်နေပါပြီ...", reply_to=reply_msg_id)
     work_dir = tempfile.mkdtemp(prefix="vid_", dir=WORK_ROOT)
     tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
     
@@ -267,7 +267,7 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
             await asyncio.sleep(5)
             if job_id in CANCELLED_JOBS: break
             if time.time() - last_activity[0] > 15:
-                await tracker.update(" လုပ်ငန်းစဉ် ရပ်တန့်နေပါသည်...", force=True)
+                await tracker.update("⚠️ လုပ်ငန်းစဉ် ရပ်တန့်နေပါသည်...", force=True)
                 last_activity[0] = time.time()
 
     wd_task = asyncio.create_task(watchdog())
@@ -287,11 +287,11 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
                     if time.time() - last_report > 3:
                         last_report = time.time()
                         await tracker.update(
-                            f" ဒေါင်းလုဒ်ဆွဲနေပါသည်...\n"
-                            f" ရရှိပြီး: {fmt_file_size(mb)}\n"
-                            f" အမြန်နှုန်း: {fmt_file_size(speed)}/s\n"
-                            f" ကြာချိန်: {elapsed} စက္ကန့်\n"
-                            f" {fmt_progress_bar(min(95, int(mb * 2)))}",
+                            f"📥 ဒေါင်းလုဒ်ဆွဲနေပါသည်...\n"
+                            f"📦 ရရှိပြီး: {fmt_file_size(mb)}\n"
+                            f"⚡ အမြန်နှုန်း: {fmt_file_size(speed)}/s\n"
+                            f"⏱️ ကြာချိန်: {elapsed} စက္ကန့်\n"
+                            f"📊 {fmt_progress_bar(min(95, int(mb * 2)))}",
                             force=True
                         )
                 if os.path.exists(orig_video) and os.path.getsize(orig_video) > 10000:
@@ -307,7 +307,7 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
         dur, src_w, src_h, _ = await asyncio.to_thread(probe_video_info, orig_video)
         st1_dims = compute_stage_dims(src_w, src_h)
         
-        await tracker.update(" AI မှ စာသားရေးနေပါသည်...", force=True)
+        await tracker.update("🎧 AI မှ စာသားရေးနေပါသည်...", force=True)
         last_activity[0] = time.time()
         scenes = [{"start": 0, "end": 5, "burmese": "မြန်မာစာသား"}] 
         last_activity[0] = time.time()
@@ -315,21 +315,21 @@ async def handle_recap_job(chat_id: int, reply_msg_id: int, url: str = "", fid: 
         clips = [np.zeros(int(3 * SAMPLE_RATE), dtype=np.float32)] 
         last_activity[0] = time.time()
 
-        await tracker.update(" ဗီဒီယို ပြင်ဆင်နေပါသည်...", force=True)
+        await tracker.update("🎬 ဗီဒီယို ပြင်ဆင်နေပါသည်...", force=True)
         recap_no_sub = os.path.join(work_dir, "recap_no_sub.mp4")
         await build_final_recap(orig_video, dur, st1_dims, scenes, clips, work_dir, recap_no_sub, False)
         last_activity[0] = time.time()
         
         _, out_w, out_h, _ = await asyncio.to_thread(probe_video_info, recap_no_sub)
-        sub_kb = {"inline_keyboard": [[{"text": " မြန်မာစာတန်းထိုးမည်", "callback_data": f"sub|{job_id}"}]]}
-        await tg_upload_media("sendVideo", data={"chat_id": str(chat_id), "caption": " Recap ပြီးပါပြီ။ စာတန်းထိုးလိုပါက အောက်က ခလုတ်ကို နှိပ်ပါ။", "reply_markup": json.dumps(sub_kb)}, field_name="video", file_name="recap.mp4", file_path=recap_no_sub, mime_type="video/mp4")
+        sub_kb = {"inline_keyboard": [[{"text": "📝 မြန်မာစာတန်းထိုးမည်", "callback_data": f"sub|{job_id}"}]]}
+        await tg_upload_media("sendVideo", data={"chat_id": str(chat_id), "caption": "📹 Recap ပြီးပါပြီ။ စာတန်းထိုးလိုပါက အောက်က ခလုတ်ကို နှိပ်ပါ။", "reply_markup": json.dumps(sub_kb)}, field_name="video", file_name="recap.mp4", file_path=recap_no_sub, mime_type="video/mp4")
         
         PENDING_JOBS[job_id] = {"scenes": scenes, "clips": clips, "orig": orig_video, "dur": dur, "w": out_w, "h": out_h, "dims": st1_dims}
         try: await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_id})
         except: pass
     except Exception as e:
         logger.exception("Job Error")
-        await edit_text(chat_id, status_id, f" အမှား: {type(e).__name__}")
+        await edit_text(chat_id, status_id, f"❌ အမှား: {type(e).__name__}")
     finally:
         wd_task.cancel()
 
@@ -343,10 +343,10 @@ async def process_admin_update(update: dict):
                 job_id = data.split("|")[1]
                 job = PENDING_JOBS.get(job_id)
                 if job:
-                    await edit_text(chat_id, msg_id, " မြန်မာစာတန်းထိုး ထည့်နေပါသည်...")
+                    await edit_text(chat_id, msg_id, "🎬 မြန်မာစာတန်းထိုး ထည့်နေပါသည်...")
                     recap_with_sub = os.path.join(tempfile.mkdtemp(dir=WORK_ROOT), "recap_sub.mp4")
                     await build_final_recap(job["orig"], job["dur"], job["dims"], job["scenes"], job["clips"], os.path.dirname(recap_with_sub), recap_with_sub, True)
-                    await tg_upload_media("sendVideo", data={"chat_id": str(chat_id), "caption": " မြန်မာစာတန်းထိုး ဗီဒီယို ပြီးပါပြီ!"}, field_name="video", file_name="recap_sub.mp4", file_path=recap_with_sub, mime_type="video/mp4")
+                    await tg_upload_media("sendVideo", data={"chat_id": str(chat_id), "caption": "📝 မြန်မာစာတန်းထိုး ဗီဒီယို ပြီးပါပြီ!"}, field_name="video", file_name="recap_sub.mp4", file_path=recap_with_sub, mime_type="video/mp4")
                 return
 
         msg = update.get("message")
