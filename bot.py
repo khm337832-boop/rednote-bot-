@@ -10,7 +10,6 @@ import signal
 import subprocess
 import tempfile
 import time
-import urllib.parse
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 
@@ -26,7 +25,6 @@ from google.genai import types
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rednote-mm-bot")
 
-
 def setup_ffmpeg() -> str:
     sys_ff = shutil.which("ffmpeg")
     if sys_ff:
@@ -38,15 +36,11 @@ def setup_ffmpeg() -> str:
         os.makedirs(bin_dir, exist_ok=True)
         target = os.path.join(bin_dir, "ffmpeg")
         if not os.path.exists(target):
-            try:
-                os.symlink(exe, target)
-            except Exception:
-                shutil.copy2(exe, target)
-                os.chmod(target, 0o755)
+            try: os.symlink(exe, target)
+            except Exception: shutil.copy2(exe, target); os.chmod(target, 0o755)
         os.environ["PATH"] = f"{bin_dir}:{os.environ.get('PATH', '')}"
         return target
-    except Exception:
-        return "ffmpeg"
+    except Exception: return "ffmpeg"
 
 FFMPEG_BIN = setup_ffmpeg()
 WORK_ROOT = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK) else "/tmp"
@@ -71,54 +65,17 @@ PREVIEW_CACHE_DIR = os.path.join(WORK_ROOT, "voice_previews")
 BGM_CACHE_DIR = os.path.join(WORK_ROOT, "bgm_cache")
 FONT_CACHE_DIR = os.path.join(WORK_ROOT, "font_cache")
 PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
-for _d in (REF_CACHE_DIR, PREVIEW_CACHE_DIR, BGM_CACHE_DIR, FONT_CACHE_DIR, PUBLISH_CACHE_DIR):
-    os.makedirs(_d, exist_ok=True)
+for _d in (REF_CACHE_DIR, PREVIEW_CACHE_DIR, BGM_CACHE_DIR, FONT_CACHE_DIR, PUBLISH_CACHE_DIR): os.makedirs(_d, exist_ok=True)
 
 BUILTIN_VOICES = OrderedDict([
-    ("thiha_deep", {"label": "🎙️ ၁။ ကိုမင်းခန့် (Recap အသံနက် · 🔒)", "short": "🎙️ ၁။ ကိုမင်းခန့် (အသံနက်)", "engine": "edge", "voice": "my-MM-ThihaNeural", "rate": "+2%", "pitch": "-10Hz", "eq": "equalizer=f=180:t=q:w=1.1:g=3.4,equalizer=f=3200:t=q:w=1.2:g=1.8", "gender": "male"}),
-    ("thiha_natural", {"label": "🎙️ ၂။ ကိုသီဟ (သဘာဝ အသံကြည် · 🔒)", "short": "🎙️ ၂။ ကိုသီဟ (သဘာဝ)", "engine": "edge", "voice": "my-MM-ThihaNeural", "rate": "+3%", "pitch": "-2Hz", "eq": "", "gender": "male"}),
-    ("thiha_fast", {"label": "🎙️ ၃။ ကိုဇော် (TikTok သွက်လက် · 🔒)", "short": "🎙️ ၃။ ကိုဇော် (သွက်လက်)", "engine": "edge", "voice": "my-MM-ThihaNeural", "rate": "+9%", "pitch": "+3Hz", "eq": "equalizer=f=2800:t=q:w=1.2:g=2.0", "gender": "male"}),
-    ("nilar_sweet", {"label": "👩 ၄။ မနီလာ (မိန်းကလေး အသံချို · 🔒)", "short": "👩 ၄။ မနီလာ (အသံချို)", "engine": "edge", "voice": "my-MM-NilarNeural", "rate": "+3%", "pitch": "+0Hz", "eq": "", "gender": "female"}),
-    ("nilar_calm", {"label": "👩 ၅။ မမေ (Story မိန်းကလေး · 🔒)", "short": "👩 ၅။ မမေ (တည်ငြိမ်)", "engine": "edge", "voice": "my-MM-NilarNeural", "rate": "+4%", "pitch": "-5Hz", "eq": "equalizer=f=220:t=q:w=1.1:g=2.2", "gender": "female"}),
-    ("charon", {"label": "🤖 ၆။ Charon AI (Deep Male)", "short": "🤖 ၆။ Charon AI", "engine": "gemini", "voice": "Charon", "fallback": "thiha_deep", "gender": "male"}),
-    ("fenrir", {"label": "🤖 ၇။ Fenrir AI (Bold Male)", "short": "🤖 ၇။ Fenrir AI", "engine": "gemini", "voice": "Fenrir", "fallback": "thiha_natural", "gender": "male"}),
-    ("kore", {"label": "🤖 ၈။ Kore AI (Soft Female)", "short": "🤖 ၈။ Kore AI", "engine": "gemini", "voice": "Kore", "fallback": "nilar_sweet", "gender": "female"}),
+    ("charon", {"label": "🤖 ၁။ Charon AI (Deep Male)", "short": "🤖 ၁။ Charon AI", "engine": "gemini", "voice": "Charon", "gender": "male"}),
 ])
+VIDEO_SIZES = OrderedDict([("orig", {"label": "📐 မူရင်းအချိုးအစားအတိုင်း · HD", "st1": (0, 0), "uhd": (0, 0)})])
 
-VIDEO_SIZES = OrderedDict([
-    ("9_16", {"label": "📱 9:16 (TikTok / Reels)", "st1": (720, 1280), "uhd": (2160, 3840)}),
-    ("16_9", {"label": "🖥️ 16:9 (YouTube / FB)", "st1": (1280, 720), "uhd": (3840, 2160)}),
-    ("orig", {"label": "📐 မူရင်းအချိုးအစားအတိုင်း · HD", "st1": (0, 0), "uhd": (0, 0)}),
-    ("1_1", {"label": "🟦 1:1 (Square)", "st1": (960, 960), "uhd": (2160, 2160)}),
-    ("4_5", {"label": "🖼️ 4:5 (FB Portrait)", "st1": (864, 1080), "uhd": (2160, 2700)}),
-])
-
-VOICE_STATE = {
-    "active": "charon",
-    "video_size": "orig",
-    "copyright_shield": True,
-    "bgm_mode": "orig",
-    "custom_bgm": None,
-    "clones": [],
-    "vault_msg_id": 0,
-    "loaded_from_tg": False,
-}
-AWAITING_VOICE_SAMPLE = False
-AWAITING_BGM_UPLOAD = False
-AWAITING_TITLE_INFO = None
-PUBLISHED_JOBS: OrderedDict = OrderedDict()
-PENDING_LINKS: OrderedDict = OrderedDict()
+VOICE_STATE = {"active": "charon", "video_size": "orig", "copyright_shield": True}
 JOB_RETRY_ARGS: OrderedDict = OrderedDict()
 DOWNLOAD_TOKENS: dict = {}
 CANCELLED_JOBS: set = set()
-
-if os.path.exists(VOICE_STATE_FILE):
-    try:
-        with open(VOICE_STATE_FILE, "r", encoding="utf-8") as vf:
-            VOICE_STATE.update(json.load(vf))
-    except Exception:
-        pass
-
 processed_updates = deque(maxlen=600)
 MAX_CONCURRENT_PROJECTS = 2
 job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROJECTS)
@@ -130,30 +87,20 @@ JOB_ADMISSION_LOCK = asyncio.Lock()
 RESERVED_JOB_SLOTS = 0
 ACTIVE_JOBS = 0
 JOB_STATES: dict = {}
-JOB_MONITOR_STATE = {
-    "state": "idle", "job_id": "", "chat_id": 0, "status_message_id": 0,
-    "phase": "အဆင်သင့်", "detail": "လက်ရှိလုပ်ငန်း မရှိပါ။", "progress": 0,
-    "chunk": 0, "total_chunks": 0, "started_at": 0,
-    "last_progress_at": 0, "last_watchdog_alert": 0, "updated_at": int(time.time()),
-}
-STATS = {"completed_hd": 0, "cloned_jobs": 0, "started_at": int(time.time())}
+JOB_MONITOR_STATE = {"state": "idle", "phase": "အဆင်သင့်", "progress": 0, "updated_at": int(time.time())}
 
-PREFERRED_MODELS = ["gemini-3-flash-preview", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
-PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 TTS_COOLDOWN_UNTIL: dict = {}
-VAULT_TAG = "🔐ADMIN_VOICE_VAULT_JSON:"
 MYANMAR_DIGITS = str.maketrans("0123456789", "၀၁၂၃၄၅၆၇၈၉")
 
 def run_cmd(cmd: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    try:
-        out, err = proc.communicate(timeout=timeout)
-        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    try: out, err = proc.communicate(timeout=timeout); return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
     except subprocess.TimeoutExpired:
         try: os.killpg(proc.pid, signal.SIGKILL)
         except Exception: proc.kill()
-        out, err = proc.communicate()
-        return subprocess.CompletedProcess(cmd, -9, out, err)
+        out, err = proc.communicate(); return subprocess.CompletedProcess(cmd, -9, out, err)
 
 def _read_file_bytes(path: str) -> bytes:
     with open(path, "rb") as f: return f.read()
@@ -165,18 +112,10 @@ class VoiceEngineUnavailable(RuntimeError): pass
 async def cancellable_semaphore(semaphore: asyncio.Semaphore, job_id: str):
     acquired = False
     while not acquired:
-        if job_id in CANCELLED_JOBS:
-            yield False
-            return
-        try:
-            await asyncio.wait_for(semaphore.acquire(), timeout=0.5)
-            acquired = True
-        except asyncio.TimeoutError:
-            continue
-    if job_id in CANCELLED_JOBS:
-        semaphore.release()
-        yield False
-        return
+        if job_id in CANCELLED_JOBS: yield False; return
+        try: await asyncio.wait_for(semaphore.acquire(), timeout=0.5); acquired = True
+        except asyncio.TimeoutError: continue
+    if job_id in CANCELLED_JOBS: semaphore.release(); yield False; return
     try: yield True
     finally: semaphore.release()
 
@@ -190,8 +129,8 @@ async def tg_api(method: str, data: dict = None, files: dict = None, timeout: fl
                 else: resp = await client.post(url, json=data or {})
                 return resp.json()
         except Exception as e:
-            logger.warning(f"tg_api({method}) attempt {attempt + 1}: {e}")
-            if attempt == 2: return {"ok": False, "description": str(e)}
+            logger.warning(f"tg_api({method}) error: {e}")
+            if attempt == 2: return {"ok": False}
             await asyncio.sleep(1.5 * (attempt + 1))
     return {"ok": False}
 
@@ -204,42 +143,32 @@ async def tg_upload_media(method: str, data: dict, field_name: str, file_name: s
             try:
                 async with httpx.AsyncClient(timeout=t_cfg, http2=False) as client:
                     resp = await client.post(url, data=data, files={field_name: (file_name, payload_bytes, mime_type)})
-                    res = resp.json()
-                    if res.get("ok"): return res
-            except Exception as e: logger.warning(f"tg_upload_media({method}) attempt {attempt + 1}: {e}")
+                    if resp.json().get("ok"): return resp.json()
+            except Exception: pass
             await asyncio.sleep(2.5 * (attempt + 1))
         return {"ok": False}
-    finally:
-        del payload_bytes
-        gc.collect()
+    finally: del payload_bytes; gc.collect()
 
 def fmt_progress_bar(pct: int) -> str:
-    pct = max(0, min(100, pct))
-    filled = int(round(pct / 10))
+    pct = max(0, min(100, pct)); filled = int(round(pct / 10))
     return "▓" * filled + "░" * (10 - filled) + f" {pct}%"
 
 class ProgressTracker:
     def __init__(self, chat_id: int, message_id: int, reply_markup: dict = None, min_interval: float = 3.0, job_id: str = None):
         self.chat_id = chat_id; self.message_id = message_id; self.reply_markup = reply_markup
         self.job_id = job_id; self.min_interval = min_interval; self.last_ts = 0.0; self.last_text = ""
-
     async def update(self, text: str, force: bool = False):
         if not self.message_id or text == self.last_text: return
         now = time.monotonic()
         if not force and (now - self.last_ts) < self.min_interval: return
         self.last_ts = now; self.last_text = text
-        if self.job_id and self.job_id in JOB_STATES:
-            JOB_STATES[self.job_id]["phase"] = text.split("\n")[0][:180]
-            JOB_STATES[self.job_id]["detail"] = text[:500]
-            JOB_STATES[self.job_id]["updated_at"] = int(time.time())
         await edit_text(self.chat_id, self.message_id, text, reply_markup=self.reply_markup)
 
 async def send_text(chat_id: int, text: str, reply_to: int = None, reply_markup: dict = None):
     payload = {"chat_id": chat_id, "text": text}
     if reply_to: payload["reply_to_message_id"] = reply_to
     if reply_markup: payload["reply_markup"] = reply_markup
-    res = await tg_api("sendMessage", payload, timeout=25.0)
-    return res.get("result", {}).get("message_id")
+    return (await tg_api("sendMessage", payload, timeout=25.0)).get("result", {}).get("message_id")
 
 async def edit_text(chat_id: int, message_id: int, text: str, reply_markup: dict = None):
     if not message_id: return
@@ -248,79 +177,14 @@ async def edit_text(chat_id: int, message_id: int, text: str, reply_markup: dict
     try: await tg_api("editMessageText", payload, timeout=20.0)
     except Exception: pass
 
-def update_job_state(job_id: str, **updates):
-    state = JOB_STATES.setdefault(job_id, {"job_id": job_id})
-    state.update(updates)
-    if JOB_MONITOR_STATE.get("job_id") == job_id: JOB_MONITOR_STATE.update(updates)
-
-def format_job_status(chat_id: int = None) -> str:
-    candidates = list(JOB_STATES.values())
-    if chat_id is not None: candidates = [s for s in candidates if s.get("chat_id") == chat_id]
-    active = sorted([s for s in candidates if s.get("state") in ("running", "queued")], key=lambda s: int(s.get("started_at") or 0), reverse=True)
-    if active:
-        lines = [f"🟢 သင့် Video Project {len(active)} ခု လုပ်ဆောင်နေပါသည်။"]
-        for i, item in enumerate(active, 1):
-            lines.append(f"\n{i}. {item.get('phase') or '—'}")
-            lines.append(fmt_progress_bar(int(item.get("progress") or 0)))
-        return "\n".join(lines)
-    return "🟡 လက်ရှိ video လုပ်ငန်း မရှိပါ။ Link/File ပို့ပါ။"
-
-def save_voice_state_local():
-    try:
-        with open(VOICE_STATE_FILE, "w", encoding="utf-8") as vf: json.dump(VOICE_STATE, vf, ensure_ascii=False)
-    except Exception: pass
-
-async def sync_voice_state_to_telegram():
-    save_voice_state_local()
-
-def detect_platform_label(url: str) -> str:
-    u = url.lower()
-    if any(k in u for k in ("xiaohongshu.com", "xhslink.com", "rednote.com")): return "📕 Rednote"
-    if "douyin.com" in u: return "🎶 Douyin"
-    if "tiktok.com" in u: return "🎵 TikTok"
-    if "youtu" in u: return "▶️ YouTube/Shorts"
-    if "facebook.com" in u or "fb.watch" in u: return "📘 Facebook"
-    if "instagram.com" in u: return "📸 Instagram"
-    if "bilibili.com" in u or "b23.tv" in u: return "📺 Bilibili"
-    return "🌐 Video"
-
-def get_active_voice_id() -> str:
-    VOICE_STATE["active"] = "charon"
-    return "charon"
-
-def get_active_voice_label() -> str: return BUILTIN_VOICES["charon"]["label"]
-def get_active_voice_gender() -> str: return "male"
-def get_active_size_key() -> str: return "orig"
-def get_active_size_label() -> str: return VIDEO_SIZES["orig"]["label"]
-def get_public_base_url() -> str: return (RENDER_EXTERNAL_URL or "https://rednote-bot-gzd0.onrender.com").rstrip("/")
-
-def studio_menu_text() -> str: return "📩 Video Link (သို့) ဖိုင် ပို့ပါ။\n🎙️ Charon AI · မူရင်းအချိုးအစား · HD"
-def studio_menu_keyboard() -> dict: return {"inline_keyboard": []}
-
-async def download_telegram_file(file_id: str, dest_path: str) -> bool:
-    try:
-        r = await tg_api("getFile", {"file_id": file_id}, timeout=20.0)
-        fpath = (r.get("result") or {}).get("file_path")
-        if not fpath: return False
-        dl_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fpath}"
-        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
-            resp = await client.get(dl_url)
-            if resp.status_code == 200 and len(resp.content) > 500:
-                with open(dest_path, "wb") as f: f.write(resp.content)
-                return True
-    except Exception as e: logger.warning(f"download_telegram_file error: {e}")
-    return False
-
 def probe_video_info(path: str) -> tuple[float, int, int, str]:
     proc = run_cmd([FFMPEG_BIN, "-i", path], 30)
     out = proc.stderr.decode(errors="ignore") + proc.stdout.decode(errors="ignore")
-    dur = 0.0
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", out)
+    dur = 0.0; m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", out)
     if m: dur = float(m.group(1)) * 3600.0 + float(m.group(2)) * 60.0 + float(m.group(3))
     w, h = 0, 0; vcodec = "h264"
     vm = re.search(r"Stream #\d+:\d+.*?Video:\s*([a-zA-Z0-9_]+).*?,\s*(\d{2,5})x(\d{2,5})", out)
-    if vm:
-        vcodec = vm.group(1).lower(); w, h = int(vm.group(2)), int(vm.group(3))
+    if vm: vcodec = vm.group(1).lower(); w, h = int(vm.group(2)), int(vm.group(3))
     rot_m = re.search(r"rotation of\s*(-?\d+)|rotate\s*:\s*(-?\d+)", out, flags=re.I)
     if rot_m:
         ang = abs(int(rot_m.group(1) or rot_m.group(2) or 0)) % 180
@@ -329,17 +193,13 @@ def probe_video_info(path: str) -> tuple[float, int, int, str]:
 
 def compute_stage_dims(src_w: int, src_h: int, size_key: str) -> tuple:
     if src_w <= 0 or src_h <= 0: src_w, src_h = 1080, 1920
-    if size_key in VIDEO_SIZES and size_key != "orig": return VIDEO_SIZES[size_key]["st1"], VIDEO_SIZES[size_key]["uhd"]
     long_e = max(src_w, src_h); short_e = min(src_w, src_h)
     s1_scale = 1280.0 / float(long_e)
     s1_w = max(2, int(round(src_w * s1_scale / 2.0)) * 2); s1_h = max(2, int(round(src_h * s1_scale / 2.0)) * 2)
-    s4_scale = min(3840.0 / float(long_e), 2160.0 / float(short_e))
-    u_w = max(2, int(round(src_w * s4_scale / 2.0)) * 2); u_h = max(2, int(round(src_h * s4_scale / 2.0)) * 2)
-    return (s1_w, s1_h), (u_w, u_h)
+    return (s1_w, s1_h), (s1_w, s1_h)
 
 def clean_burmese_for_tts(text: str) -> str:
     t = re.sub(r"[*_#`~<>[\]()\"'“”‘’…—–-]", " ", text)
-    t = re.sub(r"[\U00010000-\U0010ffff]", " ", t)
     t = t.translate(MYANMAR_DIGITS)
     return re.sub(r"\s+", " ", t).strip()
 
@@ -355,7 +215,7 @@ async def groq_whisper_transcribe(audio_mp3_path: str) -> list:
                     resp = await client.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, data={"model": model, "response_format": "verbose_json", "timestamp_granularities[]": "segment"}, files={"file": ("speech.mp3", af, "audio/mpeg")})
                 if resp.status_code == 200:
                     return [{"start": round(float(s.get("start", 0)), 2), "end": round(float(s.get("end", 0)), 2), "text": s.get("text", "").strip()} for s in resp.json().get("segments", []) if (s.get("text") or "").strip()]
-        except Exception as e: logger.warning(f"Groq Whisper: {e}")
+        except Exception: pass
     return []
 
 async def transcribe_and_script_scenes(audio_mp3_path: str, total_dur: float, gender: str = "male", scene_range: tuple = None, visual_frames: list = None, window_index: int = 0) -> list:
@@ -364,23 +224,28 @@ async def transcribe_and_script_scenes(audio_mp3_path: str, total_dur: float, ge
     with open(audio_mp3_path, "rb") as f: audio_bytes = f.read()
 
     if scene_range: min_sc, max_sc = scene_range
-    elif total_dur <= 90: min_sc, max_sc = 4, 11
-    elif total_dur <= 300: min_sc, max_sc = 8, 18
-    else: min_sc = max(12, min(22, int(total_dur // 35))); max_sc = max(min_sc + 6, min(36, int(total_dur // 20)))
+    else: min_sc = max(4, int(total_dur // 30)); max_sc = min_sc + 5
 
     whisper_hint = f"\nWhisper transcript:\n{json.dumps(whisper_segs[:120], ensure_ascii=False)}\n" if whisper_segs else ""
     frame_times = [f"{s:.1f}" for s, _ in (visual_frames or [])]
-    visual_hint = f"\nFrames at seconds: {', '.join(frame_times)}.\n" if frame_times else "\nNo frames available.\n"
+    visual_hint = f"\nFrames at seconds: {', '.join(frame_times)}.\n" if frame_times else ""
 
+    # 🟢 Perfect YouTube AI Recap Prompt
     prompt = f"""
-You are a Myanmar YouTube long-form recap narrator. Analyze this {total_dur:.1f}-second window.
+You are a world-class Myanmar YouTube Storyteller and Movie Recapper. Your goal is to create a perfect, engaging recap script that keeps viewers hooked from start to finish.
+Analyze this {total_dur:.1f}-second window of the video.
 {whisper_hint}
 {visual_hint}
-Window index: {window_index}.
 
-Write {min_sc}–{max_sc} narration scenes in Burmese covering the source events chronologically.
+Follow these strict rules to write the perfect recap:
+1. THIRD-PERSON NARRATION: Do NOT translate dialogues directly. Narrate what is happening on screen. (e.g., Instead of "I will kill you", write "သူက ရန်သူကို သတ်ပစ်မယ်လို့ ခြိမ်းခြောက်လိုက်တယ်").
+2. DRAMATIC TONE: Make it sound like an exciting story. Use words that build suspense and emotion.
+3. PROPER NAMES: If there are Chinese/foreign names, write them accurately in Burmese phonetic spelling (e.g., Li Wei -> လီဝေး, Wang -> ဝမ်). Do NOT translate names.
+4. CONTINUOUS FLOW: Connect the events smoothly. Do not just list them.
+5. NO HALLUCINATION: Only describe what actually happens in the video.
+
+Write {min_sc}–{max_sc} narration scenes covering the source events chronologically.
 - Each scene's `start`/`end` within 0.0 and {total_dur:.1f}.
-- Do not invent facts. Keep proper names.
 - Return ONLY valid JSON array:
 [{{"start": 3.2, "end": 8.7, "burmese": "..."}}]
 """.strip()
@@ -392,14 +257,14 @@ Write {min_sc}–{max_sc} narration scenes in Burmese covering the source events
         contents.append(types.Part.from_bytes(data=fb, mime_type="image/jpeg"))
     del audio_bytes
 
-    cfg = types.GenerateContentConfig(temperature=0.22, response_mime_type="application/json")
-    raw_json = None; last_err = None
+    cfg = types.GenerateContentConfig(temperature=0.35, response_mime_type="application/json")
+    raw_json = None
     for model in PREFERRED_MODELS:
         try:
             resp = await asyncio.to_thread(client.models.generate_content, model=model, contents=contents, config=cfg)
             if resp and resp.text: raw_json = resp.text.strip(); break
-        except Exception as e: last_err = e
-    if raw_json is None: raise RuntimeError(f"Gemini error: {last_err}")
+        except Exception: pass
+    if raw_json is None: raise RuntimeError("Gemini Script Error")
 
     cleaned = re.sub(r"^```(?:json)?|```$", "", raw_json, flags=re.M).strip()
     parsed = json.loads(cleaned)
@@ -409,7 +274,6 @@ Write {min_sc}–{max_sc} narration scenes in Burmese covering the source events
     for seg in segments:
         try:
             st = max(0.0, float(seg.get("start", 0.0))); en = min(total_dur, float(seg.get("end", st + 4.0)))
-            if en <= st + 0.5: en = min(total_dur, st + 3.5)
             bm = clean_burmese_for_tts(str(seg.get("burmese", "")))
             if not bm or not has_speakable_text(bm): continue
             if not bm.endswith("။"): bm += "။"
@@ -419,63 +283,52 @@ Write {min_sc}–{max_sc} narration scenes in Burmese covering the source events
     return outdef trim_pcm_silence(pcm: np.ndarray, thresh: float = 0.011) -> np.ndarray:
     if len(pcm) == 0: return pcm
     hop = int(0.015 * SAMPLE_RATE)
-    if len(pcm) < hop * 2: return pcm
     active = np.where(np.abs(pcm) > thresh)[0]
     if len(active) == 0: return pcm
     pad = int(0.035 * SAMPLE_RATE)
-    s = max(0, int(active[0]) - pad); e = min(len(pcm), int(active[-1]) + pad)
-    return pcm[s:e]
+    return pcm[max(0, int(active[0]) - pad):min(len(pcm), int(active[-1]) + pad)]
 
 def normalize_clip_loudness(pcm: np.ndarray, target_rms: float = 0.155) -> np.ndarray:
     if len(pcm) < 200: return pcm
     active = pcm[np.abs(pcm) > 0.018]
     cur_rms = float(np.sqrt(np.mean(active * active))) if len(active) > 100 else float(np.sqrt(np.mean(pcm * pcm)))
     if cur_rms < 1e-4: return pcm
-    gain = float(np.clip(target_rms / cur_rms, 0.35, 3.2))
-    out = pcm * gain
+    out = pcm * float(np.clip(target_rms / cur_rms, 0.35, 3.2))
     peak = float(np.max(np.abs(out)))
     if peak > 0.92: out = np.tanh(out * (1.15 / peak)) * 0.92
     fade = min(int(0.018 * SAMPLE_RATE), len(out) // 5)
     if fade > 2:
-        out = out.copy()
-        out[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
-        out[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        out = out.copy(); out[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32); out[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
     return out.astype(np.float32)
 
 async def _synthesize_edge_locked_all(scenes: list, vcfg: dict, work_dir: str) -> list:
-    sem = speech_generation_semaphore
-    results = [None] * len(scenes)
+    sem = speech_generation_semaphore; results = [None] * len(scenes)
     async def _one(idx: int, text_bm: str):
         async with sem:
             mp3_p = os.path.join(work_dir, f"edg_{idx:03d}.mp3"); pcm_p = os.path.join(work_dir, f"edg_{idx:03d}.pcm")
             for attempt in range(3):
                 try:
-                    comm = edge_tts.Communicate(text_bm, vcfg["voice"], rate=vcfg["rate"], pitch=vcfg["pitch"])
-                    await comm.save(mp3_p)
+                    comm = edge_tts.Communicate(text_bm, vcfg["voice"], rate=vcfg["rate"], pitch=vcfg["pitch"]); await comm.save(mp3_p)
                     if os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 300: break
-                except Exception: await asyncio.sleep(1.0 * (attempt + 1))
+                except Exception: await asyncio.sleep(1.0)
             if os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 300:
                 cmd = [FFMPEG_BIN, "-y", "-i", mp3_p]
                 if vcfg.get("eq"): cmd += ["-af", vcfg["eq"]]
                 cmd += ["-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), pcm_p]
-                await asyncio.to_thread(run_cmd, cmd, 30)
-                os.remove(mp3_p)
+                await asyncio.to_thread(run_cmd, cmd, 30); os.remove(mp3_p)
             if os.path.exists(pcm_p) and os.path.getsize(pcm_p) > 200:
-                seg = np.fromfile(pcm_p, dtype=np.int16).astype(np.float32) / 32768.0
-                os.remove(pcm_p)
+                seg = np.fromfile(pcm_p, dtype=np.int16).astype(np.float32) / 32768.0; os.remove(pcm_p)
                 results[idx] = normalize_clip_loudness(trim_pcm_silence(seg))
             else: results[idx] = np.zeros(int(0.5 * SAMPLE_RATE), dtype=np.float32)
     await asyncio.gather(*(_one(i, sc["burmese"]) for i, sc in enumerate(scenes)))
     return [r if r is not None else np.zeros(int(0.5 * SAMPLE_RATE), dtype=np.float32) for r in results]
 
 def split_master_pcm_into_n_clips(master_pcm: np.ndarray, scenes: list) -> list:
-    n = len(scenes)
-    master_pcm = trim_pcm_silence(master_pcm)
+    n = len(scenes); master_pcm = trim_pcm_silence(master_pcm)
     if n <= 1 or len(master_pcm) < SAMPLE_RATE: return [normalize_clip_loudness(master_pcm)]
     weights = np.array([max(4, len(s["burmese"])) for s in scenes], dtype=np.float64)
     cum_ratios = np.cumsum(weights)[:-1] / np.sum(weights)
-    hop = int(0.02 * SAMPLE_RATE)
-    n_frames = max(1, (len(master_pcm) - hop) // hop)
+    hop = int(0.02 * SAMPLE_RATE); n_frames = max(1, (len(master_pcm) - hop) // hop)
     rms = np.array([float(np.sqrt(np.mean(master_pcm[i*hop:i*hop+hop]**2))) for i in range(n_frames)])
     cut_samples = [0]
     for r in cum_ratios:
@@ -484,26 +337,22 @@ def split_master_pcm_into_n_clips(master_pcm: np.ndarray, scenes: list) -> list:
         if hi <= lo: best = max(cut_samples[-1] // hop + 1, expected)
         else:
             dists = np.abs(np.arange(lo, hi) - expected) / max(1.0, float(win))
-            score = rms[lo:hi] + 0.015 * dists
-            best = lo + int(np.argmin(score))
+            score = rms[lo:hi] + 0.015 * dists; best = lo + int(np.argmin(score))
         cut_samples.append(min(len(master_pcm), best * hop))
     cut_samples.append(len(master_pcm))
     return [normalize_clip_loudness(trim_pcm_silence(master_pcm[cut_samples[i]:cut_samples[i+1]])) for i in range(n)]
 
 async def _synthesize_gemini_locked_all(scenes: list, gemini_voice: str, work_dir: str):
     if not GEMINI_API_KEY: return None
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    batch_size = 26
-    now_m = time.monotonic()
-    candidate_models = [m for m in PREFERRED_TTS_MODELS if TTS_COOLDOWN_UNTIL.get(m, 0.0) <= now_m]
+    client = genai.Client(api_key=GEMINI_API_KEY); batch_size = 26
+    now_m = time.monotonic(); candidate_models = [m for m in PREFERRED_TTS_MODELS if TTS_COOLDOWN_UNTIL.get(m, 0.0) <= now_m]
     if not candidate_models: return None
     style = ("Natural Burmese narration, conversational medium pace, clear syllables, no drawn-out vowels. Keep Charon speaker identity.")
 
     for chosen_model in candidate_models:
         all_clips = []; model_ok = True
         for b_idx, start_i in enumerate(range(0, len(scenes), batch_size)):
-            batch = scenes[start_i:start_i + batch_size]
-            joined = "\n\n".join(s["burmese"] for s in batch)
+            batch = scenes[start_i:start_i + batch_size]; joined = "\n\n".join(s["burmese"] for s in batch)
             if chosen_model == "gemini-3.8-flash-tts":
                 contents_payload = [{"role": "user", "parts": [{"text": joined, "speech_metadata": {"style": style}}]}]
                 cfg = {"response_modalities": ["AUDIO"], "speech_config": {"voice_config": {"voice": gemini_voice}}}
@@ -513,11 +362,10 @@ async def _synthesize_gemini_locked_all(scenes: list, gemini_voice: str, work_di
             try:
                 resp = await asyncio.to_thread(client.models.generate_content, model=chosen_model, contents=contents_payload, config=cfg)
                 cands = getattr(resp, "candidates", None) or []
-                if not cands or not getattr(cands[0], "content", None): raise RuntimeError("TTS returned no candidate")
+                if not cands or not getattr(cands[0], "content", None): raise RuntimeError("No candidate")
                 part = cands[0].content.parts[0].inline_data
-                if not part or not part.data or len(part.data) <= 1000: raise RuntimeError("TTS empty audio")
-                audio_bytes = part.data
-                mime = (part.mime_type or "").lower()
+                if not part or not part.data or len(part.data) <= 1000: raise RuntimeError("Empty audio")
+                audio_bytes = part.data; mime = (part.mime_type or "").lower()
                 tmp_raw = os.path.join(work_dir, f"gem_raw_{b_idx}.bin"); tmp_pcm = os.path.join(work_dir, f"gem_{b_idx}.pcm")
                 with open(tmp_raw, "wb") as f: f.write(audio_bytes)
                 if audio_bytes[:4] == b"RIFF": run_cmd([FFMPEG_BIN, "-y", "-i", tmp_raw, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), tmp_pcm], 60)
@@ -526,12 +374,10 @@ async def _synthesize_gemini_locked_all(scenes: list, gemini_voice: str, work_di
                     run_cmd([FFMPEG_BIN, "-y", "-f", "s16le", "-ar", pcm_rate, "-ac", "1", "-i", tmp_raw, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), tmp_pcm], 60)
                 try: os.remove(tmp_raw)
                 except: pass
-                master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                os.remove(tmp_pcm)
+                master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0; os.remove(tmp_pcm)
                 b_clips = split_master_pcm_into_n_clips(master, batch)
-                if len(b_clips) != len(batch): raise RuntimeError("TTS split mismatch")
-                all_clips.extend(b_clips)
-                del b_clips, audio_bytes
+                if len(b_clips) != len(batch): raise RuntimeError("Split mismatch")
+                all_clips.extend(b_clips); del b_clips, audio_bytes
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e): TTS_COOLDOWN_UNTIL[chosen_model] = time.monotonic() + 1500.0
                 model_ok = False; break
@@ -540,9 +386,8 @@ async def _synthesize_gemini_locked_all(scenes: list, gemini_voice: str, work_di
     return None
 
 async def synthesize_voice_clips(scenes: list, work_dir: str, voice_id_override: str = None, tracker: "ProgressTracker" = None) -> list:
-    vid = voice_id_override or get_active_voice_id()
-    vcfg = BUILTIN_VOICES.get(vid, BUILTIN_VOICES["thiha_deep"])
-    if tracker: await tracker.update(f"🎙️ [{vcfg['short']}] အသံသွင်းနေပါသည်...\n📊 {fmt_progress_bar(38)}", force=True)
+    vid = voice_id_override or get_active_voice_id(); vcfg = BUILTIN_VOICES.get(vid, BUILTIN_VOICES["charon"])
+    if tracker: await tracker.update(f" [{vcfg['short']}] အသံသွင်းနေပါသည်...\n {fmt_progress_bar(38)}", force=True)
     if vcfg["engine"] == "gemini":
         gem_clips = await _synthesize_gemini_locked_all(scenes, vcfg["voice"], work_dir)
         if gem_clips is not None and len(gem_clips) == len(scenes): return gem_clips
@@ -560,35 +405,23 @@ async def build_cinema_recap_hd(orig_video: str, orig_dur: float, src_w: int, sr
     need_blur = abs(src_ratio - tgt_ratio) / max(0.1, tgt_ratio) > 0.09
     shield_v = "crop=iw*0.96:ih*0.96,hflip," if copyright_shield else ""
     color = "eq=contrast=1.05:saturation=1.09" if copyright_shield else "eq=contrast=1.03:saturation=1.06"
-    
-    # 🟢 တရုတ်စာသားနေရာကို အမည်းရောင်ကာဖို့ Filter ထည့်မယ်
     sub_cover = "drawbox=x=0:y=ih*0.78:w=iw:h=ih*0.22:color=black@1.0:t=fill,"
 
     ass_path = os.path.join(work_dir, "burmese_subs.ass")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: {}\nPlayResY: {}\nWrapStyle: 2\n\n".format(out_w, out_h))
         f.write("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-        # မြန်မာစာသား လှလှပပ ပေါ်စေရန် Style (အဝါရောင်၊ အနက်ရောင်ဘောင်၊ အောက်ခြေမှ ၆၀ အကွာ)
         f.write("Style: Default,Noto Sans Myanmar,55,&H0000FFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,20,20,60,1\n\n")
         f.write("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 
         current_time = 0.0
         for i, (sc, v_clip) in enumerate(zip(scenes, voice_clips)):
-            norm_voice = normalize_clip_loudness(v_clip)
-            voice_dur = len(norm_voice) / SAMPLE_RATE
-            
-            # 🟢 မူရင်းဗီဒီယိုရဲ့ ကြာချိန်အတိုင်း အတိအကျ ဖြတ်မယ်
+            norm_voice = normalize_clip_loudness(v_clip); voice_dur = len(norm_voice) / SAMPLE_RATE
             avail_e = scenes[i + 1]["start"] if (i + 1 < len(scenes)) else orig_dur
             avail_e = max(sc["start"] + 0.5, min(orig_dur, avail_e))
             source_segment_duration = avail_e - sc["start"]
-            
-            target_dur = source_segment_duration
-            target_samples = int(round(target_dur * SAMPLE_RATE))
-
-            start_t = current_time
-            end_t = current_time + target_dur
-            current_time = end_t
-            
+            target_dur = source_segment_duration; target_samples = int(round(target_dur * SAMPLE_RATE))
+            start_t = current_time; end_t = current_time + target_dur; current_time = end_t
             text = sc["burmese"].replace("{", "(").replace("}", ")").replace("\\", "")
             f.write(f"Dialogue: 0,{_ass_time(start_t)},{_ass_time(end_t)},Default,,0,0,0,,{text}\n")
 
@@ -599,13 +432,9 @@ async def build_cinema_recap_hd(orig_video: str, orig_dur: float, src_w: int, sr
             norm_voice = normalize_clip_loudness(v_clip)
             avail_e = scenes[i + 1]["start"] if (i + 1 < len(scenes)) else orig_dur
             avail_e = max(sc["start"] + 0.5, min(orig_dur, avail_e))
-            target_dur = avail_e - sc["start"]
-            target_samples = int(round(target_dur * SAMPLE_RATE))
-            
+            target_dur = avail_e - sc["start"]; target_samples = int(round(target_dur * SAMPLE_RATE))
             video_slices.append((sc["start"], avail_e, target_dur))
-            
-            mixed = np.zeros(target_samples, dtype=np.float32)
-            v_len = min(target_samples, len(norm_voice))
+            mixed = np.zeros(target_samples, dtype=np.float32); v_len = min(target_samples, len(norm_voice))
             mixed[:v_len] = norm_voice[:v_len]
             peak = float(np.max(np.abs(mixed))) if len(mixed) else 0.0
             if peak > 0.95: mixed *= 0.95 / peak
@@ -617,52 +446,36 @@ async def build_cinema_recap_hd(orig_video: str, orig_dur: float, src_w: int, sr
     except: pass
     gc.collect()
 
-    seg_files = []
-    tot = max(1, len(video_slices))
+    seg_files = []; tot = max(1, len(video_slices))
     for idx, (s_t, e_t, tgt_d) in enumerate(video_slices):
         if job_id and job_id in CANCELLED_JOBS: raise JobCancelled("cancelled")
         if tracker:
             pct = 42 + int(round((idx * 28) / tot))
-            await tracker.update(f"⏳ HD Recap တည်းဖြတ်နေပါသည် (အပိုင်း {idx+1}/{tot})\n📊 {fmt_progress_bar(pct)}", force=(idx == 0 or idx == tot - 1))
-        raw_d = max(0.15, e_t - s_t)
-        seg_path = os.path.join(work_dir, f"seg_{idx:03d}.mp4")
-        
-        # 🟢 ဗီဒီယိုကို မူရင်းကြာချိန်အတိုင်း အတိအကျ ဖြတ်မယ် (Slow မလုပ်တော့ပါ)
-        pts = 1.0
-        fps_chain = "fps=25"
-        
+            await tracker.update(f" HD Recap တည်းဖြတ်နေပါသည် (အပိုင်း {idx+1}/{tot})\n {fmt_progress_bar(pct)}", force=(idx == 0 or idx == tot - 1))
+        raw_d = max(0.15, e_t - s_t); seg_path = os.path.join(work_dir, f"seg_{idx:03d}.mp4")
+        pts = 1.0; fps_chain = "fps=25"
         if need_blur:
             fc = (f"[0:v]{shield_v}setpts=PTS-STARTPTS,{fps_chain},split=2[bg][fg];"
                   f"[bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase:flags=fast_bilinear,"
                   f"crop={out_w}:{out_h},boxblur=20:3,eq=brightness=-0.08:saturation=1.12[bg2];"
                   f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=bicubic,"
-                  f"{color},{sub_cover}"
-                  f"subtitles={ass_path}[fg2];"
+                  f"{color},{sub_cover}subtitles={ass_path}[fg2];"
                   f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,format=yuv420p[vout]")
         else:
             fc = (f"[0:v]{shield_v}setpts=PTS-STARTPTS,{fps_chain},"
                   f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase:flags=bicubic,"
-                  f"crop={out_w}:{out_h},{color},{sub_cover}"
-                  f"subtitles={ass_path},format=yuv420p[vout]")
-
+                  f"crop={out_w}:{out_h},{color},{sub_cover}subtitles={ass_path},format=yuv420p[vout]")
         async with cancellable_semaphore(video_render_semaphore, job_id) as acq:
             if not acq: raise JobCancelled("cancelled")
-            await asyncio.to_thread(run_cmd,
-                [FFMPEG_BIN, "-y", "-ss", f"{s_t:.3f}", "-t", f"{raw_d:.3f}", "-i", orig_video, "-an", "-filter_complex", fc,
-                 "-map", "[vout]", "-t", f"{tgt_d:.3f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
-                 "-maxrate", "3200k", "-bufsize", "6400k", "-x264-params", "rc-lookahead=0:sync-lookahead=0:ref=1:bframes=0:threads=1",
-                 "-video_track_timescale", "90000", "-threads", "1", seg_path], 180)
+            await asyncio.to_thread(run_cmd, [FFMPEG_BIN, "-y", "-ss", f"{s_t:.3f}", "-t", f"{raw_d:.3f}", "-i", orig_video, "-an", "-filter_complex", fc, "-map", "[vout]", "-t", f"{tgt_d:.3f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-maxrate", "3200k", "-bufsize", "6400k", "-x264-params", "rc-lookahead=0:sync-lookahead=0:ref=1:bframes=0:threads=1", "-video_track_timescale", "90000", "-threads", "1", seg_path], 180)
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 500: seg_files.append(seg_path)
 
     if not seg_files: raise RuntimeError("No video slices generated")
     if delete_source and os.path.exists(orig_video): os.remove(orig_video)
-
     concat_list = os.path.join(work_dir, "concat_list.txt")
     with open(concat_list, "w") as f:
         for tp in seg_files: f.write(f"file '{tp}'\n")
-    proc = await asyncio.to_thread(run_cmd,
-        [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-i", master_wav, "-map", "0:v:0", "-map", "1:a:0",
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", recap_hd_path], 120)
+    proc = await asyncio.to_thread(run_cmd, [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-i", master_wav, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", recap_hd_path], 120)
     for tp in seg_files:
         try: os.remove(tp)
         except: pass
@@ -671,10 +484,8 @@ async def build_cinema_recap_hd(orig_video: str, orig_dur: float, src_w: int, sr
     if not os.path.exists(recap_hd_path) or os.path.getsize(recap_hd_path) < 5000: raise RuntimeError(f"Concat failed: {proc.stderr.decode()[-300:]}")
 
 async def build_long_video_recap_hd(orig_video: str, total_dur: float, src_w: int, src_h: int, stage_dims: tuple, work_dir: str, recap_hd_path: str, tracker: "ProgressTracker", job_id: str, gender: str = "male") -> float:
-    window_sec = 600.0
-    total_windows = max(1, int(np.ceil(total_dur / window_sec)))
+    window_sec = 600.0; total_windows = max(1, int(np.ceil(total_dur / window_sec)))
     all_scenes = []; analysis_sem = asyncio.Semaphore(1); analysis_counter = {"done": 0}; analysis_lock = asyncio.Lock()
-
     async def process_window(idx: int) -> tuple:
         if job_id in CANCELLED_JOBS: raise JobCancelled("cancelled")
         async with cancellable_semaphore(analysis_sem, job_id) as acq:
@@ -698,20 +509,17 @@ async def build_long_video_recap_hd(orig_video: str, total_dur: float, src_w: in
                 try: os.remove(audio_path)
                 except: pass
                 shutil.rmtree(frame_dir, ignore_errors=True)
-
     async def report_done(result):
         async with analysis_lock:
             analysis_counter["done"] += 1; done = analysis_counter["done"]; pct = 20 + int(16 * done / total_windows)
-            await tracker.update(f"🎧 Audio analysis: {done}/{total_windows}\n📊 {fmt_progress_bar(pct)}", force=(done == total_windows))
+            await tracker.update(f" Audio analysis: {done}/{total_windows}\n {fmt_progress_bar(pct)}", force=(done == total_windows))
         return result
-
     async def bounded(idx): return await report_done(await process_window(idx))
     for idx in range(total_windows):
         _, abs_scenes = await bounded(idx); all_scenes.extend(abs_scenes)
     if not all_scenes: raise RuntimeError("No spoken recap scenes")
     if job_id in CANCELLED_JOBS: raise JobCancelled("cancelled")
-
-    await tracker.update("🎛️ အသံနှင့် HD တည်းဖြတ်မှု စတင်ပါပြီ...", force=True)
+    await tracker.update(" အသံနှင့် HD တည်းဖြတ်မှု စတင်ပါပြီ...", force=True)
     async with cancellable_semaphore(recap_pipeline_semaphore, job_id) as acq:
         if not acq: raise JobCancelled("cancelled")
         all_clips = await synthesize_voice_clips(all_scenes, work_dir, voice_id_override="charon", tracker=tracker)
@@ -723,7 +531,7 @@ async def build_long_video_recap_hd(orig_video: str, total_dur: float, src_w: in
             if not idxs: continue
             window_scenes = [all_scenes[i] for i in idxs]; window_clips = [all_clips[i] for i in idxs]
             part_path = os.path.join(work_dir, f"recap_w_{w_idx:03d}.mp4")
-            await tracker.update(f"🎞️ Recap တည်းဖြတ်နေပါသည် ({w_idx+1}/{total_windows})\n📊 {fmt_progress_bar(55 + int(20 * (w_idx + 1) / total_windows))}", force=True)
+            await tracker.update(f" Recap တည်းဖြတ်နေပါသည် ({w_idx+1}/{total_windows})\n {fmt_progress_bar(55 + int(20 * (w_idx + 1) / total_windows))}", force=True)
             await build_cinema_recap_hd(orig_video, total_dur, src_w, src_h, stage_dims, window_scenes, window_clips, work_dir, part_path, True, "orig", None, tracker, False, job_id)
             window_part_paths.append(part_path); del window_clips
             for i in idxs: all_clips[i] = None
@@ -754,7 +562,7 @@ def save_download_result(video_path: str) -> str:
 async def upload_final_video(chat_id: int, reply_msg_id: int, parts: list, caption_text: str, width: int, height: int, tracker: "ProgressTracker" = None) -> bool:
     for p_idx, part_path in enumerate(parts):
         mb_sz = os.path.getsize(part_path) / (1024 * 1024)
-        if tracker: await tracker.update(f"📤 ပို့ပေးနေပါသည် ({p_idx+1}/{len(parts)} · {mb_sz:.1f} MB)...\n📊 {fmt_progress_bar(99)}", force=True)
+        if tracker: await tracker.update(f" ပို့ပေးနေပါသည် ({p_idx+1}/{len(parts)}  {mb_sz:.1f} MB)...\n {fmt_progress_bar(99)}", force=True)
         cap = caption_text if len(parts) == 1 else f"{caption_text} (အပိုင်း {p_idx+1}/{len(parts)})"
         res = await tg_upload_media("sendVideo", data={"chat_id": str(chat_id), "caption": cap, "reply_to_message_id": str(reply_msg_id), "supports_streaming": "true", "width": str(width), "height": str(height)}, field_name="video", file_name=f"recap_{p_idx+1}.mp4", file_path=part_path, mime_type="video/mp4")
         if not res.get("ok"): return False
@@ -778,7 +586,7 @@ async def run_yt_dlp_with_progress(cmd: list[str], tracker=None, job_id: str = "
             last_transfer = time.monotonic(); pct = max(0, min(100, int(float(match.group(1)))))
             if pct >= last_reported_pct and tracker:
                 last_reported_pct = pct; overall = 8 + int(round(12 * pct / 100))
-                await tracker.update(f"📥 Video ရယူနေပါသည် · {overall}%\n📦 {match.group(1)}% · {match.group(2)[:70]}\n📊 {fmt_progress_bar(overall)}", force=True)
+                await tracker.update(f" Video ရယူနေပါသည်  {overall}%\n {match.group(1)}%  {match.group(2)[:70]}\n {fmt_progress_bar(overall)}", force=True)
     if cancelled or timed_out:
         try: os.killpg(proc.pid, signal.SIGKILL)
         except: proc.kill()
@@ -799,8 +607,8 @@ async def download_any_platform_video(raw_url: str, out_path: str, tracker=None,
 async def handle_video_job(chat_id: int, reply_msg_id: int, url: str, size_key: str, voice_id: str, copyright_shield: bool = True, bgm_mode: str = "orig", custom_title: str = "", existing_status_id: int = None, input_file_id: str = ""):
     job_id = f"j{secrets.token_hex(5)}"; url = url or ""; plat_lbl = "Telegram" if input_file_id else detect_platform_label(url)
     JOB_RETRY_ARGS[job_id] = {"chat_id": chat_id, "reply_msg_id": reply_msg_id, "url": url, "size_key": "orig", "voice_id": "charon", "copyright_shield": True, "bgm_mode": "orig", "input_file_id": input_file_id}
-    cancel_kb = {"inline_keyboard": [[{"text": "⏹ ရပ်မည်", "callback_data": f"cancel|{job_id}"}, {"text": "↩️ မီနူး", "callback_data": "back|menu"}]]}
-    init_txt = f"⚡ Turbo Recap စတင်နေပါပြီ · {plat_lbl}\n📊 {fmt_progress_bar(5)}"
+    cancel_kb = {"inline_keyboard": [[{"text": " ရပ်မည်", "callback_data": f"cancel|{job_id}"}, {"text": " မီနူး", "callback_data": "back|menu"}]]}
+    init_txt = f" Turbo Recap စတင်နေပါပြီ  {plat_lbl}\n {fmt_progress_bar(5)}"
     if existing_status_id: status_id = existing_status_id; await edit_text(chat_id, status_id, init_txt, reply_markup=cancel_kb)
     else: status_id = await send_text(chat_id, init_txt, reply_to=reply_msg_id, reply_markup=cancel_kb)
     tracker = ProgressTracker(chat_id, status_id, reply_markup=cancel_kb, min_interval=3.0, job_id=job_id)
@@ -809,30 +617,28 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str, size_key: 
     try:
         async with cancellable_semaphore(job_semaphore, job_id) as acq:
             if not acq or job_id in CANCELLED_JOBS:
-                CANCELLED_JOBS.discard(job_id); update_job_state(job_id, state="stopped", phase="အလုပ်မစမီ ရပ်ပြီး"); await edit_text(chat_id, status_id, "⏹ မစမီ ရပ်လိုက်ပါပြီ။"); return
+                CANCELLED_JOBS.discard(job_id); update_job_state(job_id, state="stopped", phase="အလုပ်မစမီ ရပ်ပြီး"); await edit_text(chat_id, status_id, " မစမီ ရပ်လိုက်ပါပြီ။"); return
             update_job_state(job_id, phase="Video ရယူနေပါသည်", progress=8); work_dir = tempfile.mkdtemp(prefix="vid_4k_", dir=WORK_ROOT)
             try:
-                await tracker.update(f"📥 Video ရယူနေပါသည် · {plat_lbl}\n📊 {fmt_progress_bar(8)}", force=True)
+                await tracker.update(f" Video ရယူနေပါသည်  {plat_lbl}\n {fmt_progress_bar(8)}", force=True)
                 orig_video = os.path.join(work_dir, "source.mp4")
-                if input_file_id:
-                    ok = await download_telegram_file(input_file_id, orig_video); dl_tier = "Telegram"
-                else:
-                    ok, dl_tier = await download_any_platform_video(url, orig_video, tracker=tracker, job_id=job_id)
+                if input_file_id: ok = await download_telegram_file(input_file_id, orig_video); dl_tier = "Telegram"
+                else: ok, dl_tier = await download_any_platform_video(url, orig_video, tracker=tracker, job_id=job_id)
                 if not ok:
                     update_job_state(job_id, state="failed", phase="ရယူမရ")
-                    await edit_text(chat_id, status_id, "❌ Video link မှ ဖိုင်ရယူမရပါ။ Link စစ်ပါ။", reply_markup={"inline_keyboard": [[{"text": "🔁 ပြန်", "callback_data": f"retry|{job_id}"}, {"text": "↩️ မီနူး", "callback_data": "back|menu"}]]}); return
-                await tracker.update(f"✅ ရယူပြီး · {dl_tier}\n📊 {fmt_progress_bar(20)}", force=True)
+                    await edit_text(chat_id, status_id, " Video link မှ ဖိုင်ရယူမရပါ။ Link စစ်ပါ။", reply_markup={"inline_keyboard": [[{"text": " ပြန်", "callback_data": f"retry|{job_id}"}, {"text": " မီနူး", "callback_data": "back|menu"}]]}); return
+                await tracker.update(f" ရယူပြီး  {dl_tier}\n {fmt_progress_bar(20)}", force=True)
                 dur, src_w, src_h, _ = await asyncio.to_thread(probe_video_info, orig_video)
-                if dur <= 0.5: await edit_text(chat_id, status_id, "❌ Video မတွေ့ပါ။"); return
+                if dur <= 0.5: await edit_text(chat_id, status_id, " Video မတွေ့ပါ။"); return
                 st1_dims, _ = compute_stage_dims(src_w, src_h, "orig"); recap_hd = os.path.join(work_dir, "recap_hd.mp4")
                 await build_long_video_recap_hd(orig_video, dur, src_w, src_h, st1_dims, work_dir, recap_hd, tracker, job_id, "male")
-                await tracker.update(f"📤 ပို့ရန် ပြင်ဆင်နေပါသည်...\n📊 {fmt_progress_bar(98)}", force=True)
+                await tracker.update(f" ပို့ရန် ပြင်ဆင်နေပါသည်...\n {fmt_progress_bar(98)}", force=True)
                 if job_id in CANCELLED_JOBS: raise JobCancelled("cancelled")
                 _, out_w, out_h, _ = await asyncio.to_thread(probe_video_info, recap_hd)
                 if os.path.getsize(recap_hd) <= MAX_TG_BYTES:
-                    sent = await upload_final_video(chat_id, reply_msg_id, [recap_hd], "📹 HD Recap · မြန်မာစာတန်းထိုး · Charon AI", out_w or st1_dims[0], out_h or st1_dims[1], tracker)
+                    sent = await upload_final_video(chat_id, reply_msg_id, [recap_hd], " HD Recap  မြန်မာစာတန်းထိုး  Charon AI", out_w or st1_dims[0], out_h or st1_dims[1], tracker)
                 else:
-                    url_dl = await asyncio.to_thread(save_download_result, recap_hd); sent = bool(await send_text(chat_id, f"📹 HD Recap: {url_dl}", reply_to=reply_msg_id))
+                    url_dl = await asyncio.to_thread(save_download_result, recap_hd); sent = bool(await send_text(chat_id, f" HD Recap: {url_dl}", reply_to=reply_msg_id))
                 if sent:
                     STATS["completed_hd"] += 1; update_job_state(job_id, state="completed", phase="ပြီးပါပြီ", progress=100)
                     await sync_voice_state_to_telegram()
@@ -840,13 +646,13 @@ async def handle_video_job(chat_id: int, reply_msg_id: int, url: str, size_key: 
                     except: pass
                 else:
                     update_job_state(job_id, state="failed", phase="ပို့မရ")
-                    await edit_text(chat_id, status_id, "⚠️ ပို့မရပါ။", reply_markup={"inline_keyboard": [[{"text": "🔁 ပြန်", "callback_data": f"retry|{job_id}"}]]})
+                    await edit_text(chat_id, status_id, " ပို့မရပါ။", reply_markup={"inline_keyboard": [[{"text": " ပြန်", "callback_data": f"retry|{job_id}"}]]})
             except Exception as e:
                 if job_id in CANCELLED_JOBS or isinstance(e, JobCancelled):
-                    CANCELLED_JOBS.discard(job_id); update_job_state(job_id, state="stopped", phase="ရပ်ပြီး"); await edit_text(chat_id, status_id, "⏹ ရပ်လိုက်ပါပြီ။")
+                    CANCELLED_JOBS.discard(job_id); update_job_state(job_id, state="stopped", phase="ရပ်ပြီး"); await edit_text(chat_id, status_id, " ရပ်လိုက်ပါပြီ။")
                 else:
                     logger.exception("Job error"); update_job_state(job_id, state="failed", phase=f"Error: {type(e).__name__}")
-                    await edit_text(chat_id, status_id, f"❌ အမှား: {type(e).__name__}. Retry နှိပ်ပါ။", reply_markup={"inline_keyboard": [[{"text": "🔁 ပြန်", "callback_data": f"retry|{job_id}"}, {"text": "↩️ မီနူး", "callback_data": "back|menu"}]]})
+                    await edit_text(chat_id, status_id, f" အမှား: {type(e).__name__}. Retry နှိပ်ပါ။", reply_markup={"inline_keyboard": [[{"text": " ပြန်", "callback_data": f"retry|{job_id}"}, {"text": " မီနူး", "callback_data": "back|menu"}]]})
             finally: shutil.rmtree(work_dir, ignore_errors=True); gc.collect()
     finally:
         if JOB_STATES.get(job_id, {}).get("state") in ("running", "queued"): update_job_state(job_id, state="ended", phase="ပြီးဆုံး")
@@ -857,7 +663,7 @@ async def enqueue_video_job(**job_args) -> bool:
     async with JOB_ADMISSION_LOCK:
         if ACTIVE_JOBS + RESERVED_JOB_SLOTS >= MAX_CONCURRENT_PROJECTS: busy = True
         else: RESERVED_JOB_SLOTS += 1; asyncio.create_task(_run_admitted_video_job(dict(job_args)))
-    if busy: await send_text(chat_id, "⏳ လက်ရှိ Project ၂ ခု လုပ်နေပါပြီ။ တစ်ခုပြီးမှ ထပ်ပို့ပါ။", reply_to=reply_msg_id); return False
+    if busy: await send_text(chat_id, " လက်ရှိ Project ၂ ခု လုပ်နေပါပြီ။ တစ်ခုပြီးမှ ထပ်ပို့ပါ။", reply_to=reply_msg_id); return False
     return True
 
 async def _run_admitted_video_job(job_args: dict):
@@ -873,16 +679,16 @@ async def process_admin_update(update: dict):
         cb = update.get("callback_query")
         if cb:
             cb_id = cb.get("id"); sender_id = (cb.get("from") or {}).get("id", 0); data = cb.get("data") or ""; msg = cb.get("message") or {}; chat_id = msg.get("chat", {}).get("id"); msg_id = msg.get("message_id")
-            if sender_id not in ({ADMIN_ID} | ALLOWED_USER_IDS): await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": "🔒 ခွင့်မပြုပါ။"}); return
+            if sender_id not in ({ADMIN_ID} | ALLOWED_USER_IDS): await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": " ခွင့်မပြုပါ။"}); return
             if data.startswith("cancel|"):
                 jid = data.split("|", 1)[1]; CANCELLED_JOBS.add(jid)
                 if jid in JOB_STATES: update_job_state(jid, phase="ရပ်ရန် တောင်းဆိုချက် လက်ခံ", updated_at=int(time.time()))
-                await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": "⏹ ရပ်ရန် တောင်းဆိုချက် လက်ခံပါပြီ"})
-                await edit_text(chat_id, msg_id, "⏹ ရပ်ရန် တောင်းဆိုချက် လက်ခံပါပြီ။", reply_markup={"inline_keyboard": [[{"text": "↩️ မီနူး", "callback_data": "back|menu"}]]}); return
+                await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": " ရပ်ရန် တောင်းဆိုချက် လက်ခံပါပြီ"})
+                await edit_text(chat_id, msg_id, " ရပ်ရန် တောင်းဆိုချက် လက်ခံပါပြီ။", reply_markup={"inline_keyboard": [[{"text": " မီနူး", "callback_data": "back|menu"}]]}); return
             if data.startswith("retry|"):
                 jid = data.split("|", 1)[1]; args = JOB_RETRY_ARGS.get(jid)
                 if not args: await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": "Retry သက်တမ်းကုန်ပါပြီ။ Link ပြန်ပို့ပါ။", "show_alert": True}); return
-                await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": "🔁 ပြန်စ"})
+                await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": " ပြန်စ"})
                 await enqueue_video_job(**args, existing_status_id=msg_id); return
             if data == "back|menu":
                 await tg_api("answerCallbackQuery", {"callback_query_id": cb_id, "text": "မီနူး"}); await edit_text(chat_id, msg_id, studio_menu_text(), reply_markup=studio_menu_keyboard()); return
@@ -892,7 +698,7 @@ async def process_admin_update(update: dict):
         if not msg: return
         chat_id = msg.get("chat", {}).get("id"); sender_id = (msg.get("from") or {}).get("id", 0); msg_id = msg.get("message_id")
         if not chat_id: return
-        if sender_id != ADMIN_ID and sender_id not in ALLOWED_USER_IDS: await send_text(chat_id, "🔒 ခွင့်မပြုပါ။", reply_to=msg_id); return
+        if sender_id != ADMIN_ID and sender_id not in ALLOWED_USER_IDS: await send_text(chat_id, " ခွင့်မပြုပါ။", reply_to=msg_id); return
 
         media_obj = msg.get("video") or msg.get("video_note")
         text = (msg.get("text") or msg.get("caption") or "").strip()
@@ -902,7 +708,7 @@ async def process_admin_update(update: dict):
 
         if media_obj and not re.search(r"https?://", text):
             fid = media_obj.get("file_id")
-            if int(media_obj.get("file_size") or 0) > MAX_BOT_DOWNLOAD_BYTES: await send_text(chat_id, "⚠️ ဖိုင်ကြီးလွန်းပါတယ် (20MB အောက်)။ Link ပို့ပါ။", reply_to=msg_id); return
+            if int(media_obj.get("file_size") or 0) > MAX_BOT_DOWNLOAD_BYTES: await send_text(chat_id, " ဖိုင်ကြီးလွန်းပါတယ် (20MB အောက်)။ Link ပို့ပါ။", reply_to=msg_id); return
             if fid: await enqueue_video_job(chat_id=chat_id, reply_msg_id=msg_id, url="", input_file_id=fid, size_key="orig", voice_id="charon", copyright_shield=True, bgm_mode="orig"); return
 
         if not text: return
@@ -910,7 +716,7 @@ async def process_admin_update(update: dict):
         if command == "/status": await send_text(chat_id, format_job_status(chat_id=chat_id), reply_to=msg_id); return
         if any(text.startswith(c) for c in ("/start", "/menu")): await send_text(chat_id, studio_menu_text(), reply_to=msg_id, reply_markup=studio_menu_keyboard()); return
 
-        url_match = re.search(r"https?://[^\s，。！？,<>\"'；：）】]+", text)
+        url_match = re.search(r"https?://[^\s,<>\"']+", text)
         if not url_match: await send_text(chat_id, studio_menu_text(), reply_to=msg_id, reply_markup=studio_menu_keyboard()); return
         raw_url = url_match.group(0).rstrip(".,!?;:)")
         await enqueue_video_job(chat_id=chat_id, reply_msg_id=msg_id, url=raw_url, size_key="orig", voice_id="charon", copyright_shield=True, bgm_mode="orig")
@@ -950,7 +756,7 @@ async def download_result(token: str):
 @app.get("/", response_class=HTMLResponse)
 @app.head("/")
 async def index(request: Request):
-    return HTMLResponse('<!doctype html><html><body style="font:18px system-ui;background:#101827;color:#fff;display:grid;place-items:center;min-height:90vh"><main><h1>🎬 Recap Turbo v16</h1><p>Myanmar Subtitle & Time Sync Active</p></main></body></html>')
+    return HTMLResponse('<!doctype html><html><body style="font:18px system-ui;background:#101827;color:#fff;display:grid;place-items:center;min-height:90vh"><main><h1> Recap Turbo v16</h1><p>Myanmar Subtitle & Time Sync Active</p></main></body></html>')
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
