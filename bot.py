@@ -1532,7 +1532,7 @@ async def process_admin_update(update: dict):
 app = FastAPI()
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v2.1-button-menu-20features"
+BUILD_VERSION = "v2.2-button-menu-20features"
 BUILD_FEATURES = 20
 
 

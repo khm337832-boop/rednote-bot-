@@ -1,0 +1,18 @@
+# Render Blueprint — ဒီ repo ကို ဒီအတိုင်း deploy လုပ်ရန် သတ်မှတ်ချက်။
+# Service အသစ်ဆောက်ရင် (သို့) repo ပြန်ချိတ်ရင် ဒီ setting တွေ အတိအကျ ရပါမယ်။
+services:
+  - type: web
+    name: rednote-bot
+    runtime: docker
+    branch: main            # ⬅️ အမြဲ main branch (code အသစ် ရှိတဲ့ နေရာ)
+    autoDeploy: true        # ⬅️ main ထဲ push/merge တိုင်း အလိုအလျောက် deploy
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false         # Render dashboard မှာ ကိုယ်တိုင် ထည့်ရမယ့် secret
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      # RENDER_EXTERNAL_URL ကို Render က အလိုအလျောက် ပေးပါတယ် (မထည့်ရပါ)
