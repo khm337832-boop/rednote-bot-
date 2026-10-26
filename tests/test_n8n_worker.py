@@ -468,6 +468,149 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coverage["missing_group_ids"], [])
         self.assertEqual(coverage["underfilled_group_ids"], [2])
 
+    def test_final_duration_window_is_literal_source_percentage(self):
+        settings = {"coverage": 90, "rate": 10.0, "speed": 2.0}
+        target, low, high = bot._final_duration_window(600, settings)
+
+        # A 10-minute source must produce a 9-minute final.  Voice speed
+        # changes how much text is needed, never the requested final time.
+        self.assertEqual((target, low, high), (540.0, 528.0, 552.0))
+        self.assertEqual(bot.script_target_chars(100, settings), 1800)
+        self.assertTrue(bot._duration_is_on_target(540, 600, settings))
+        self.assertFalse(bot._duration_is_on_target(33, 600, settings))
+        self.assertFalse(bot._duration_is_on_target(599, 600, settings))
+        self.assertEqual(bot._duration_status(33, 600, settings), "short")
+        self.assertEqual(bot._duration_status(599, 600, settings), "long")
+
+        scenes = [
+            {"group_id": 1, "start": 0, "burmese": first_person_text(100)},
+            {"group_id": 2, "start": 10, "burmese": first_person_text(100)},
+        ]
+        trimmed = bot.trim_scenes_proportionally(scenes, 100)
+        self.assertEqual(bot.script_total_chars(trimmed), 100)
+        self.assertTrue(
+            all(
+                bot._scene_is_first_person(scene["burmese"], MALE_PRONOUN)
+                for scene in trimmed
+            )
+        )
+
+    def test_first_person_validation_uses_actual_scene_text(self):
+        possessive = "ကျွန်တော့်ရဲ့ အတွေ့အကြုံကို အစကနေပြန်ပြောပါမယ်။"
+        opposite = FEMALE_PRONOUN + " အစကနေပြန်ပြောပါမယ်။"
+        mixed = first_person_text(30) + opposite
+
+        self.assertTrue(bot._scene_is_first_person(possessive, MALE_PRONOUN))
+        self.assertFalse(bot._scene_is_first_person(opposite, MALE_PRONOUN))
+        self.assertFalse(bot._scene_is_first_person(mixed, MALE_PRONOUN))
+        self.assertFalse(
+            bot._scene_is_first_person("သူ အိမ်ပြန်သွားတယ်။", MALE_PRONOUN)
+        )
+
+        metrics = bot._first_person_metrics(
+            [possessive, "သူ အိမ်ပြန်သွားတယ်။"], MALE_PRONOUN
+        )
+        self.assertEqual(metrics["bad_scene_indexes"], [1])
+        self.assertFalse(metrics["all_scenes_first_person"])
+
+    async def test_worker_first_person_repair_rewrites_third_person_scene(self):
+        groups = [
+            {
+                "group_id": 1,
+                "source_segment_ids": [1],
+                "start": 0,
+                "end": 10,
+                "speech_seconds": 10,
+                "timeline_seconds": 10,
+                "source_text": "The hero walks home and opens the door.",
+            }
+        ]
+        scenes_by_group = {1: "သူ အိမ်ပြန်သွားပြီး တံခါးဖွင့်လိုက်တယ်။" * 4}
+        story_context = {"pronoun": MALE_PRONOUN, "protagonist": "Hero"}
+
+        async def fake_gemini(prompt, client):
+            self.assertIn("FIRST-PERSON REPAIR", prompt)
+            return {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "scenes": [
+                    {"group_id": 1, "burmese": first_person_text(200)}
+                ],
+            }
+
+        self.start_patch(
+            patch.object(bot, "_worker_gemini_json", new=fake_gemini)
+        )
+        selected, bad = await bot._repair_worker_first_person_scenes(
+            groups,
+            scenes_by_group,
+            {1: 100},
+            story_context,
+            {"coverage": 90, "voice": "Charon"},
+            object(),
+            rounds=1,
+        )
+
+        self.assertEqual(selected, MALE_PRONOUN)
+        self.assertEqual(bad, [])
+        self.assertTrue(
+            bot._scene_is_first_person(scenes_by_group[1], MALE_PRONOUN)
+        )
+
+    async def test_worker_duration_adjustment_accepts_first_person_expansion(self):
+        script = {
+            "story_context": {"pronoun": MALE_PRONOUN, "protagonist": "Hero"},
+            "groups": [
+                {
+                    "group_id": 1,
+                    "source_segment_ids": [1],
+                    "start": 0,
+                    "end": 10,
+                    "speech_seconds": 10,
+                    "timeline_seconds": 10,
+                    "source_text": "The hero walks home and opens the door.",
+                }
+            ],
+        }
+        scenes = [
+            {
+                "group_id": 1,
+                "start": 0,
+                "end": 10,
+                "burmese": first_person_text(100),
+            }
+        ]
+
+        async def fake_gemini(prompt, client):
+            self.assertIn('"desired_burmese_chars": 200', prompt)
+            return {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "scenes": [
+                    {"group_id": 1, "burmese": first_person_text(200)}
+                ],
+            }
+
+        self.start_patch(
+            patch.object(bot.genai, "Client", lambda api_key: object())
+        )
+        self.start_patch(
+            patch.object(bot, "_worker_gemini_json", new=fake_gemini)
+        )
+
+        updated, changed, selected = await bot._worker_adjust_scenes_for_duration(
+            {"job_id": "adjust-test", "chat_id": 1},
+            script,
+            scenes,
+            {1: 200},
+            "expand",
+            {"coverage": 90, "voice": "Charon"},
+        )
+
+        self.assertEqual(selected, MALE_PRONOUN)
+        self.assertEqual(changed, [1])
+        self.assertEqual(len(updated[0]["burmese"]), 200)
+
     async def test_direct_recap_rejects_script_far_below_global_90_target(self):
         video_file = SimpleNamespace(
             state=SimpleNamespace(name="ACTIVE"),
@@ -528,6 +671,168 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIn("/900 chars", str(raised.exception))
 
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    async def test_direct_recap_repairs_first_person_and_renders_90_percent(self):
+        chunk_path = self.tmp_path / "direct_chunk.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=green:s=64x64:r=25:d=3",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(chunk_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+        third_person = "သူ " + ("က" * 24)
+        repaired = first_person_text(27)
+        generate_calls = []
+
+        def fake_generate(model, contents, config):
+            prompt = str(contents[1]) if len(contents) > 1 else ""
+            generate_calls.append(prompt)
+            if "FIRST-PERSON REPAIR ONLY" in prompt:
+                payload = {
+                    "pronoun": MALE_PRONOUN,
+                    "scenes": [
+                        {
+                            "scene_index": 0,
+                            "start": 0,
+                            "end": 3,
+                            "burmese": repaired,
+                        }
+                    ],
+                }
+            elif "ယခင် scenes များကို ပြန်မပေးပါနှင့်" in prompt:
+                payload = {
+                    "pronoun": MALE_PRONOUN,
+                    "scenes": [
+                        {
+                            "start": 1.5,
+                            "end": 3,
+                            "burmese": first_person_text(28),
+                        }
+                    ],
+                    "cuts": [],
+                }
+            else:
+                payload = {
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                    "scenes": [
+                        {"start": 0, "end": 3, "burmese": third_person}
+                    ],
+                    "cuts": [],
+                }
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=fake_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        async def fake_direct_tts(tts_scenes, work_dir, settings):
+            # Simulate a voice that actually speaks at 20 chars/sec while
+            # the initial estimate was 10: the first 27-char script is only
+            # 1.35s, so build_chunk_recap must expand and synthesize again.
+            return [
+                np.full(
+                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 20.0)),
+                    0.5,
+                    dtype=np.float32,
+                )
+                for scene in tts_scenes
+            ]
+
+        self.start_patch(
+            patch.object(bot, "synthesize_tts", new=fake_direct_tts)
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(
+                    return_value={
+                        "summary": "done",
+                        "characters": [],
+                        "last_scene": "end",
+                        "protagonist": "Hero",
+                        "pronoun": MALE_PRONOUN,
+                    }
+                ),
+            )
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        out_chunk, summary = await bot.build_chunk_recap(
+            str(chunk_path),
+            3,
+            0,
+            3,
+            {},
+            1,
+            tracker,
+            settings={
+                "coverage": 90,
+                "rate": 10.0,
+                "speed": 1.0,
+                "pause": 0,
+                "voice": "Charon",
+                "resolution": 64,
+                "shield": False,
+                "color": False,
+                "quality": 35,
+                "fast_mode": True,
+            },
+        )
+
+        self.assertEqual(summary["pronoun"], MALE_PRONOUN)
+        self.assertEqual(len(generate_calls), 3)
+        self.assertIn("FIRST-PERSON REPAIR ONLY", generate_calls[1])
+        self.assertIn("ယခင် scenes များကို ပြန်မပေးပါနှင့်", generate_calls[2])
+        final_duration, _, _ = bot.probe_video_info(out_chunk)
+        self.assertAlmostEqual(final_duration, 2.75, delta=0.2)
+
     def test_alignment_borrows_only_to_next_scene_and_freezes_last(self):
         scenes = [
             {"group_id": 1, "source_segment_ids": [1], "start": 0, "end": 10},
@@ -572,8 +877,18 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "script.json",
             {
                 "scenes": [
-                    {"group_id": 2, "start": 10, "end": 15, "burmese": "second"},
-                    {"group_id": 1, "start": 0, "end": 5, "burmese": "first"},
+                    {
+                        "group_id": 2,
+                        "start": 10,
+                        "end": 15,
+                        "burmese": first_person_text(20),
+                    },
+                    {
+                        "group_id": 1,
+                        "start": 0,
+                        "end": 5,
+                        "burmese": first_person_text(20),
+                    },
                 ]
             },
         )
@@ -617,7 +932,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                     "target_narration_seconds": 90,
                 },
                 "scenes": [
-                    {"group_id": 1, "start": 0, "end": 100, "burmese": "scene"}
+                    {
+                        "group_id": 1,
+                        "start": 0,
+                        "end": 100,
+                        "burmese": first_person_text(900),
+                    }
                 ],
             },
         )
@@ -626,10 +946,117 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
 
-        with self.assertRaises(bot.WorkerJobError):
+        async def no_expansion(state_arg, script, scenes, targets, mode, settings, tracker=None):
+            return scenes, [], MALE_PRONOUN
+
+        self.start_patch(
+            patch.object(bot, "_worker_adjust_scenes_for_duration", new=no_expansion)
+        )
+
+        with self.assertRaises(bot.WorkerJobError) as raised:
             await bot._worker_stage_tts(state)
+        self.assertIn("could not be calibrated", str(raised.exception))
         self.assertNotEqual(state["stages"]["tts"]["status"], "done")
         self.assertFalse((Path(state["job_dir"]) / "audio.json").exists())
+
+    async def test_tts_calibrates_measured_45_seconds_to_90(self):
+        state = self.create_job(
+            job_id="job-tts-calibration",
+            chat_id=10011,
+            settings={
+                "coverage": 90,
+                "pause": 0,
+                "rate": 10.0,
+                "speed": 1.0,
+                "voice": "Charon",
+            },
+        )
+        state.setdefault("metrics", {})["source"] = {"duration_seconds": 100}
+        self.write_job_json(
+            state,
+            "script.json",
+            {
+                "story_context": {
+                    "pronoun": MALE_PRONOUN,
+                    "protagonist": "Hero",
+                },
+                "coverage": {
+                    "source_duration_seconds": 100,
+                    "target_narration_seconds": 90,
+                },
+                "groups": [
+                    {
+                        "group_id": 1,
+                        "source_segment_ids": [1],
+                        "start": 0,
+                        "end": 100,
+                        "speech_seconds": 100,
+                        "timeline_seconds": 100,
+                        "source_text": "A long chronological source scene.",
+                    }
+                ],
+                "scenes": [
+                    {
+                        "group_id": 1,
+                        "source_segment_ids": [1],
+                        "start": 0,
+                        "end": 100,
+                        "burmese": first_person_text(900),
+                    }
+                ],
+            },
+        )
+
+        tts_calls = []
+
+        async def fake_tts(scenes, work_dir, settings):
+            # This job's real voice speaks at 20 chars/sec, not the initial
+            # 10 chars/sec estimate: 900 chars therefore measure only 45s.
+            clips = []
+            for scene in scenes:
+                tts_calls.append(len(scene["burmese"]))
+                seconds = len(scene["burmese"]) / 20.0
+                clips.append(
+                    np.full(
+                        max(1, int(bot.SAMPLE_RATE * seconds)),
+                        0.5,
+                        dtype=np.float32,
+                    )
+                )
+            return clips
+
+        async def fake_expand(state_arg, script, scenes, targets, mode, settings, tracker=None):
+            self.assertEqual(mode, "expand")
+            updated = []
+            changed = []
+            for scene in scenes:
+                gid = int(scene["group_id"])
+                new_scene = dict(scene)
+                new_scene["burmese"] = first_person_text(int(targets[gid]))
+                updated.append(new_scene)
+                changed.append(gid)
+            return updated, changed, MALE_PRONOUN
+
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        self.start_patch(
+            patch.object(bot, "_worker_adjust_scenes_for_duration", new=fake_expand)
+        )
+
+        await bot._worker_stage_tts(state)
+
+        audio = json.loads(
+            (Path(state["job_dir"]) / "audio.json").read_text(encoding="utf-8")
+        )
+        script = json.loads(
+            (Path(state["job_dir"]) / "script.json").read_text(encoding="utf-8")
+        )
+        self.assertAlmostEqual(audio["total_narration_seconds"], 90.0, delta=0.05)
+        self.assertEqual(script["coverage"]["actual_burmese_chars"], 1800)
+        self.assertGreaterEqual(len(audio["duration_calibration_history"]), 3)
+        self.assertEqual(audio["duration_calibration_history"][0]["narration_seconds"], 45.0)
+        self.assertGreaterEqual(len(tts_calls), 3)
+        self.assertTrue(script["coverage"]["first_person"]["all_scenes_first_person"])
+        self.assertEqual(state["stages"]["tts"]["status"], "done")
 
     async def test_split_for_telegram_recursively_resplits_oversized_parts(self):
         source = self.tmp_path / "large.mp4"
@@ -705,6 +1132,26 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["metrics"]["delivery"]["part_count"], 1)
         self.mock_send_text.assert_awaited()
 
+    async def test_deliver_stage_refuses_33_second_final_from_100_second_source(self):
+        state = self.create_job(
+            job_id="job-deliver-too-short",
+            chat_id=10013,
+            settings={"coverage": 90, "split_tg": True},
+        )
+        state.setdefault("metrics", {})["source"] = {"duration_seconds": 100}
+        final = Path(state["job_dir"]) / "final.mp4"
+        final.write_bytes(b"x" * 100)
+        self.start_patch(
+            patch.object(bot, "probe_video_info", lambda path: (33.0, 64, 64))
+        )
+
+        with self.assertRaises(bot.WorkerJobError) as raised:
+            await bot._worker_stage_deliver(state)
+
+        self.assertIn("before delivery", str(raised.exception))
+        self.mock_tg_upload.assert_not_awaited()
+        self.assertNotEqual(state["stages"]["deliver"]["status"], "done")
+
     @unittest.skipUnless(
         os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
         "ffmpeg is not available",
@@ -764,7 +1211,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                         "source_segment_ids": [1],
                         "start": 0,
                         "end": 3,
-                        "burmese": "scene",
+                        "burmese": first_person_text(20),
                     }
                 ]
             },
@@ -855,7 +1302,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                         "source_segment_ids": [1],
                         "start": 0,
                         "end": 3,
-                        "burmese": "short scene",
+                        "burmese": first_person_text(20),
                     }
                 ]
             },
@@ -880,16 +1327,151 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             await bot._worker_stage_render(state)
         self.assertNotEqual(state["stages"]["render"]["status"], "done")
 
+    def test_telegram_button_keyboards_are_structured_correctly(self):
+        persistent = bot.persistent_menu_keyboard()
+        labels = [
+            button["text"]
+            for row in persistent["keyboard"]
+            for button in row
+        ]
+        self.assertTrue(persistent["is_persistent"])
+        self.assertTrue(persistent["resize_keyboard"])
+        self.assertEqual(
+            labels,
+            [
+                bot.PERSISTENT_BUTTON_RECAP,
+                bot.PERSISTENT_BUTTON_SETTINGS,
+                bot.PERSISTENT_BUTTON_STATUS,
+                bot.PERSISTENT_BUTTON_CANCEL,
+                bot.PERSISTENT_BUTTON_SUMMARY,
+                bot.PERSISTENT_BUTTON_HELP,
+            ],
+        )
+
+        callbacks = [
+            button["callback_data"]
+            for row in bot.job_progress_keyboard()["inline_keyboard"]
+            for button in row
+        ]
+        self.assertEqual(
+            callbacks,
+            ["menu:cancel", "menu:status", "menu:settings", "menu:main"],
+        )
+
+    async def test_start_and_persistent_buttons_route_to_real_actions(self):
+        chat_id = int(bot.ADMIN_ID)
+
+        def message_update(text):
+            return {
+                "message": {
+                    "message_id": 10,
+                    "chat": {"id": chat_id},
+                    "from": {"id": chat_id},
+                    "text": text,
+                }
+            }
+
+        self.mock_send_text.reset_mock()
+        await bot.process_admin_update(message_update("/start"))
+        self.assertEqual(self.mock_send_text.await_count, 2)
+        first_markup = self.mock_send_text.await_args_list[0].kwargs["reply_markup"]
+        second_markup = self.mock_send_text.await_args_list[1].kwargs["reply_markup"]
+        self.assertTrue(first_markup["is_persistent"])
+        self.assertIn("inline_keyboard", second_markup)
+
+        self.mock_send_text.reset_mock()
+        await bot.process_admin_update(
+            message_update(bot.PERSISTENT_BUTTON_SETTINGS)
+        )
+        self.mock_send_text.assert_awaited_once()
+        self.assertEqual(
+            self.mock_send_text.await_args.kwargs["reply_markup"],
+            bot.settings_keyboard(chat_id),
+        )
+
+        self.mock_send_text.reset_mock()
+        await bot.process_admin_update(message_update(bot.PERSISTENT_BUTTON_RECAP))
+        recap_text = self.mock_send_text.await_args.args[1]
+        self.assertIn("90%", recap_text)
+        self.assertEqual(
+            self.mock_send_text.await_args.kwargs["reply_markup"],
+            bot.main_menu_keyboard(chat_id),
+        )
+
+    async def test_progress_buttons_stay_attached_and_cancel_worker_job(self):
+        chat_id = int(bot.ADMIN_ID)
+        state = self.create_job(
+            job_id="job-button-cancel",
+            chat_id=chat_id,
+            status_message_id=55,
+        )
+        tracker = bot.ProgressTracker(chat_id, 55, job_id=state["job_id"])
+        self.mock_tg_api.reset_mock()
+        await tracker.update("working", force=True)
+        self.mock_tg_api.assert_awaited_once()
+        method, payload = self.mock_tg_api.await_args.args
+        self.assertEqual(method, "editMessageText")
+        self.assertEqual(payload["reply_markup"], bot.job_progress_keyboard())
+
+        self.mock_send_text.reset_mock()
+        self.mock_edit_text.reset_mock()
+        status_callback = {
+            "callback_query": {
+                "id": "cb-status",
+                "data": "menu:status",
+                "from": {"id": chat_id},
+                "message": {
+                    "message_id": 55,
+                    "chat": {"id": chat_id},
+                },
+            }
+        }
+        await bot.process_admin_update(status_callback)
+        self.mock_send_text.assert_awaited_once()
+        self.mock_edit_text.assert_not_awaited()
+
+        callback = {
+            "callback_query": {
+                "id": "cb-1",
+                "data": "menu:cancel",
+                "from": {"id": chat_id},
+                "message": {
+                    "message_id": 55,
+                    "chat": {"id": chat_id},
+                },
+            }
+        }
+        await bot.process_admin_update(callback)
+
+        loaded = bot._load_worker_job(state["job_id"])
+        self.assertIn(state["job_id"], bot.CANCELLED_JOBS)
+        self.assertTrue(loaded["cancel_requested"])
+        self.assertEqual(loaded["status"], "cancelled")
+        self.assertNotIn(chat_id, bot.ACTIVE_JOBS)
+        self.mock_edit_text.assert_awaited()
+
     async def test_worker_api_auth_and_health(self):
         async with self.api_client() as client:
             health = await client.get("/health")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "v3.2-coverage-guard")
+            self.assertEqual(health.json()["version"], bot.BUILD_VERSION)
             self.assertEqual(health.json()["minimum_script_coverage_percent"], 90)
+            self.assertEqual(health.json()["target_final_duration_percent"], 90)
+            self.assertEqual(
+                health.json()["final_duration_enforcement"],
+                "measured_tts_and_rendered_file",
+            )
+            self.assertEqual(
+                health.json()["first_person_enforcement"], "per_scene_validated"
+            )
+            self.assertEqual(
+                health.json()["telegram_buttons"], "inline_and_persistent"
+            )
 
             root = await client.get("/")
             self.assertEqual(root.status_code, 200)
             self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
+            self.assertEqual(root.json()["target_final_duration_percent"], 90)
             self.assertTrue(root.json()["worker_api_configured"])
 
             missing_auth = await client.get("/api/v1/jobs/nope")
