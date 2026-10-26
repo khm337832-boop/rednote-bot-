@@ -5,7 +5,7 @@ Telegram bot that turns a video link into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v3.4-button-webhook-fix` installs the persistent bottom buttons
+Version `v3.5-button-webhook-healthz-fix` installs the persistent bottom buttons
 from `/start`, `/menu`, **or the first ordinary message/video link sent to
 each newly deployed process**. `/start` and `/menu` always force-install
 them again and open the inline main menu:
@@ -114,14 +114,18 @@ webhook base is resolved in this order: explicit `WEBHOOK_BASE_URL` /
 `getWebhookInfo` and retried with backoff.
 
 A deployment is **not** verified until the live service reports the new
-build itself. Open both URLs for the actual Render service:
+build itself. Open these URLs for the actual Render service:
 
 ```text
 https://<service>.onrender.com/
 https://<service>.onrender.com/health
+https://<service>.onrender.com/healthz
 ```
 
-For this release both must show `"version":"v3.4-button-webhook-fix"`,
+`/healthz` is deliberately retained as an alias because the older live
+service used that path; a Render service still configured to check it must
+not fail new deployments with a 404 health check. For this release these
+URLs must show `"version":"v3.5-button-webhook-healthz-fix"`,
 `"telegram_buttons":"inline_persistent_and_menu"`, the service's real
 `public_host`, and the deployed `render_git_repo_slug`,
 `render_git_commit`, and `render_git_branch`.
