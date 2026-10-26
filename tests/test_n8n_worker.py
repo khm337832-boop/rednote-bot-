@@ -324,6 +324,210 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             await bot._worker_stage_rewrite(state)
         self.assertFalse((Path(state["job_dir"]) / "script.json").exists())
 
+    async def test_rewrite_rejects_present_but_far_too_short_scenes(self):
+        state = self.create_job(
+            job_id="job-rewrite-too-short",
+            chat_id=10008,
+            settings={"coverage": 50, "rate": 10.0},
+        )
+        # A stale/user-selected value below 90 is raised to the global floor.
+        self.assertEqual(state["settings"]["coverage"], 90)
+        self.write_job_json(
+            state,
+            "transcript.json",
+            {
+                "segments": [
+                    {"id": 1, "start": 0, "end": 12, "text": "first long passage"},
+                    {"id": 2, "start": 20, "end": 32, "text": "second long passage"},
+                ]
+            },
+        )
+
+        async def fake_gemini(prompt, client=None):
+            return {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "scenes": [
+                    {"group_id": 1, "burmese": first_person_text(20)},
+                    {"group_id": 2, "burmese": first_person_text(20)},
+                ],
+            }
+
+        self.start_patch(
+            patch.object(bot, "genai", SimpleNamespace(Client=lambda api_key: object()))
+        )
+        self.start_patch(patch.object(bot, "_worker_gemini_json", new=fake_gemini))
+        self.start_patch(
+            patch.object(bot, "extract_story_summary", new=AsyncMock(return_value={}))
+        )
+
+        with self.assertRaises(bot.WorkerJobError):
+            await bot._worker_stage_rewrite(state)
+        self.assertFalse((Path(state["job_dir"]) / "script.json").exists())
+
+    async def test_rewrite_targets_source_duration_not_only_active_speech(self):
+        state = self.create_job(
+            job_id="job-rewrite-source-duration",
+            chat_id=10009,
+            settings={"coverage": 90, "rate": 10.0},
+        )
+        self.write_job_json(
+            state,
+            "transcript.json",
+            {
+                "source_duration_seconds": 100,
+                "speech_duration_seconds": 24,
+                "segments": [
+                    {"id": 1, "start": 0, "end": 12, "text": "opening dialogue"},
+                    {"id": 2, "start": 88, "end": 100, "text": "closing dialogue"},
+                ],
+            },
+        )
+
+        async def fake_gemini(prompt, client=None):
+            return {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "scenes": [
+                    {"group_id": 1, "burmese": first_person_text(792)},
+                    {"group_id": 2, "burmese": first_person_text(108)},
+                ],
+            }
+
+        self.start_patch(
+            patch.object(bot, "genai", SimpleNamespace(Client=lambda api_key: object()))
+        )
+        self.start_patch(patch.object(bot, "_worker_gemini_json", new=fake_gemini))
+        self.start_patch(
+            patch.object(bot, "extract_story_summary", new=AsyncMock(return_value={}))
+        )
+
+        await bot._worker_stage_rewrite(state)
+
+        script = json.loads(
+            (Path(state["job_dir"]) / "script.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(script["coverage"]["target_basis"], "source_duration")
+        self.assertEqual(script["coverage"]["target_basis_seconds"], 100.0)
+        self.assertEqual(script["coverage"]["target_narration_seconds"], 90.0)
+        self.assertEqual(script["coverage"]["target_burmese_chars"], 900)
+        self.assertEqual(script["coverage"]["actual_burmese_chars"], 900)
+        self.assertEqual(script["target_by_group"], {"1": 792, "2": 108})
+        self.assertEqual(
+            [scene["timeline_seconds"] for scene in script["scenes"]],
+            [88.0, 12.0],
+        )
+
+    async def test_rewrite_rejects_transcript_truncated_to_first_33_seconds(self):
+        state = self.create_job(
+            job_id="job-rewrite-truncated-transcript",
+            chat_id=10011,
+            settings={"coverage": 90, "rate": 10.0},
+        )
+        self.write_job_json(
+            state,
+            "transcript.json",
+            {
+                "source_duration_seconds": 540,
+                "speech_duration_seconds": 33,
+                "segments": [
+                    {"id": 1, "start": 0, "end": 33, "text": "opening only"}
+                ],
+            },
+        )
+
+        with self.assertRaises(bot.WorkerJobError):
+            await bot._worker_stage_rewrite(state)
+        self.assertFalse((Path(state["job_dir"]) / "script.json").exists())
+
+    def test_required_coverage_floor_and_one_liner_coverage(self):
+        self.assertEqual(bot._with_required_coverage({"coverage": 50})["coverage"], 90)
+        self.assertEqual(bot._with_required_coverage({"coverage": 95})["coverage"], 95)
+        self.assertEqual(bot._with_required_coverage({"coverage": "bad"})["coverage"], 90)
+        with patch.dict(bot._PERSISTED_USERS, {"987654321": {"coverage": 50}}):
+            self.assertEqual(bot.get_user_settings(987654321)["coverage"], 90)
+
+        groups = [
+            {
+                "group_id": 1,
+                "source_segment_ids": [1],
+                "speech_seconds": 10,
+            },
+            {
+                "group_id": 2,
+                "source_segment_ids": [2],
+                "speech_seconds": 10,
+            },
+        ]
+        coverage = bot._calculate_transcript_coverage(
+            groups,
+            {1: "x" * 100, 2: "short"},
+            target_by_group={1: 100, 2: 100},
+        )
+        self.assertEqual(coverage["speech_seconds_covered"], 10.0)
+        self.assertEqual(coverage["missing_group_ids"], [])
+        self.assertEqual(coverage["underfilled_group_ids"], [2])
+
+    async def test_direct_recap_rejects_script_far_below_global_90_target(self):
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+        response_payload = {
+            "protagonist": "Hero",
+            "pronoun": MALE_PRONOUN,
+            "scenes": [
+                {
+                    "start": 0,
+                    "end": 100,
+                    "burmese": first_person_text(20),
+                }
+            ],
+            "cuts": [],
+        }
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(
+                generate_content=lambda model, contents, config: SimpleNamespace(
+                    text=json.dumps(response_payload, ensure_ascii=False)
+                )
+            ),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        with self.assertRaises(RuntimeError) as raised:
+            await bot.build_chunk_recap(
+                str(self.tmp_path / "chunk.mp4"),
+                100,
+                0,
+                100,
+                {},
+                1,
+                tracker,
+                settings={"coverage": 50, "rate": 10.0},
+            )
+        self.assertIn("/900 chars", str(raised.exception))
+
     def test_alignment_borrows_only_to_next_scene_and_freezes_last(self):
         scenes = [
             {"group_id": 1, "source_segment_ids": [1], "start": 0, "end": 10},
@@ -395,6 +599,37 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(wav.getframerate(), bot.SAMPLE_RATE)
             self.assertEqual(wav.getnframes(), 38400)
         self.assertEqual(state["stages"]["tts"]["status"], "done")
+
+    async def test_tts_rejects_narration_far_below_source_coverage_target(self):
+        state = self.create_job(
+            job_id="job-tts-too-short",
+            chat_id=10010,
+            settings={"coverage": 50, "pause": 0, "voice": "Charon"},
+        )
+        self.assertEqual(state["settings"]["coverage"], 90)
+        state.setdefault("metrics", {})["source"] = {"duration_seconds": 100}
+        self.write_job_json(
+            state,
+            "script.json",
+            {
+                "coverage": {
+                    "source_duration_seconds": 100,
+                    "target_narration_seconds": 90,
+                },
+                "scenes": [
+                    {"group_id": 1, "start": 0, "end": 100, "burmese": "scene"}
+                ],
+            },
+        )
+        fake_tts = AsyncMock(
+            return_value=[np.full(bot.SAMPLE_RATE, 0.5, dtype=np.float32)]
+        )
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+
+        with self.assertRaises(bot.WorkerJobError):
+            await bot._worker_stage_tts(state)
+        self.assertNotEqual(state["stages"]["tts"]["status"], "done")
+        self.assertFalse((Path(state["job_dir"]) / "audio.json").exists())
 
     async def test_split_for_telegram_recursively_resplits_oversized_parts(self):
         source = self.tmp_path / "large.mp4"
@@ -512,7 +747,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.skipTest("could not generate a local MP4 fixture")
 
         narration = job_dir / "narration.wav"
-        samples = np.full(int(bot.SAMPLE_RATE * 0.4), 1000, dtype="<i2")
+        samples = np.full(int(bot.SAMPLE_RATE * 2.7), 1000, dtype="<i2")
         with wave.open(str(narration), "wb") as wav:
             wav.setnchannels(1)
             wav.setsampwidth(2)
@@ -544,7 +779,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "scene_index": 1,
                         "group_id": 1,
-                        "duration_seconds": 0.4,
+                        "duration_seconds": 2.7,
                     }
                 ],
             },
@@ -555,20 +790,106 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         final = job_dir / "final.mp4"
         self.assertTrue(final.exists() and final.stat().st_size > 0)
         final_duration, _, _ = bot.probe_video_info(str(final))
-        self.assertAlmostEqual(final_duration, 0.4, delta=0.15)
+        self.assertAlmostEqual(final_duration, 2.7, delta=0.15)
         plan = json.loads((job_dir / "render_plan.json").read_text(encoding="utf-8"))["items"]
-        self.assertEqual(plan[0]["desired_output_seconds"], 0.4)
-        self.assertEqual(plan[0]["input_seconds"], 0.4)
+        self.assertEqual(plan[0]["desired_output_seconds"], 2.7)
+        self.assertEqual(plan[0]["input_seconds"], 2.7)
         self.assertEqual(state["metrics"]["render"]["audio_alignment_filters_used"], [])
+
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    async def test_render_stage_rejects_final_video_far_below_90_target(self):
+        state = self.create_job(
+            job_id="job-render-too-short",
+            chat_id=10012,
+            settings={
+                "resolution": 64,
+                "quality": 35,
+                "shield": False,
+                "color": False,
+                "pause": 0,
+                "fast_mode": True,
+            },
+        )
+        job_dir = Path(state["job_dir"])
+        source = job_dir / "source.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:r=25:d=3",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(source),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        narration = job_dir / "narration.wav"
+        samples = np.full(int(bot.SAMPLE_RATE * 0.4), 1000, dtype="<i2")
+        with wave.open(str(narration), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(bot.SAMPLE_RATE)
+            wav.writeframes(samples.tobytes())
+
+        self.write_job_json(
+            state,
+            "script.json",
+            {
+                "scenes": [
+                    {
+                        "group_id": 1,
+                        "source_segment_ids": [1],
+                        "start": 0,
+                        "end": 3,
+                        "burmese": "short scene",
+                    }
+                ]
+            },
+        )
+        self.write_job_json(
+            state,
+            "audio.json",
+            {
+                "pause_seconds": 0,
+                "narration_file": "narration.wav",
+                "clips": [
+                    {
+                        "scene_index": 1,
+                        "group_id": 1,
+                        "duration_seconds": 0.4,
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaises(bot.WorkerJobError):
+            await bot._worker_stage_render(state)
+        self.assertNotEqual(state["stages"]["render"]["status"], "done")
 
     async def test_worker_api_auth_and_health(self):
         async with self.api_client() as client:
             health = await client.get("/health")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "v3.1-n8n-worker")
+            self.assertEqual(health.json()["version"], "v3.2-coverage-guard")
+            self.assertEqual(health.json()["minimum_script_coverage_percent"], 90)
 
             root = await client.get("/")
             self.assertEqual(root.status_code, 200)
+            self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
             self.assertTrue(root.json()["worker_api_configured"])
 
             missing_auth = await client.get("/api/v1/jobs/nope")

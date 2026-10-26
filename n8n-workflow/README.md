@@ -196,9 +196,10 @@ Stage start သည် idempotent ဖြစ်နိုင်ရန် စီစ�
 ## Coverage နှင့် Video Alignment မှတ်ချက်များ
 
 - Gemini က Whisper timestamp များကို ကိုယ်တိုင် မတီထွင်ရပါ။ Worker က Whisper segment များကို group လုပ်ပြီး group ID/start/end ကို ထိန်းထားပါသည်။
-- Rewrite အောင်မြင်ရန် script ထဲတွင် ကိုယ်စားပြုထားသည့် Whisper speech duration သည် user ရွေးထားသော coverage (default 90%) အထက် ရှိရပါမည်။
-- Burmese စာသားပမာဏ target ကိုလည်း speech duration၊ coverage နှင့် Settings ထဲက characters/second ဖြင့် တွက်ပြီး မပြည့်သေးသော group များကို top-up လုပ်ပါသည်။
-- မူရင်း video ထဲရှိ silence/gap များကြောင့် final narration သည် မူရင်းကြာချိန်၏ 80% ဝန်းကျင် ဖြစ်နိုင်ပါသည်။ ၎င်းသည် hard target မဟုတ်ပါ။
+- Job/link တိုင်းအတွက် coverage အနည်းဆုံး **90%** ဖြစ်သည်။ Settings တွင် 90% အောက် သိမ်းထားသော တန်ဖိုးဟောင်း ရှိနေလျှင်လည်း worker က 90% သို့ အလိုအလျောက် မြှင့်သည်။ 95% သို့မဟုတ် 100% ရွေးထားလျှင် ၎င်းအတိုင်း သုံးသည်။
+- Rewrite အောင်မြင်ရန် script ထဲတွင် ကိုယ်စားပြုထားသည့် Whisper speech duration သည် ရွေးထားသော coverage (အနည်းဆုံး 90%) အထက် ရှိရမည်။ Scene စာသားတစ်ကြောင်းတည်း ရှိနေရုံနှင့် covered မသတ်မှတ်ပါ။
+- Burmese စာသားပမာဏ target ကို source video duration (မသိလျှင်သာ Whisper speech duration)၊ coverage နှင့် Settings ထဲက characters/second ဖြင့် တွက်ပြီး group တစ်ခုစီကို source timeline အလိုက် ခွဲဝေကာ မပြည့်သေးသော group များကို top-up လုပ်ပါသည်။
+- Script စာလုံးပမာဏ၊ တကယ့် TTS narration ကြာချိန်နှင့် final render ကြာချိန် သုံးခုလုံးကို target နှင့် ထပ်စစ်ပါသည်။ ပမာဏမပြည့်သော recap ကို Telegram သို့ မပို့ဘဲ stage ကို failed ဖြစ်စေပါသည်။
 - Final render တွင် narration ကို `atempo` သို့မဟုတ် audio stretch/pad များဖြင့် မညှိပါ။ Video ကိုပဲ scene အစနှင့် align လုပ်ပြီး ဖြတ်/ကြားခံ footage သုံး/မဖြစ်မနေလိုပါက final frame freeze လုပ်ပါသည်။
 - မူရင်း BGM/audio ကို V1 တွင် မထားဘဲ Gemini TTS narration တစ်ခုတည်း ထည့်ပါသည်။
 - Subtitle burn-in ကို V1 တွင် မလုပ်သေးပါ။

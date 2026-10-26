@@ -20,7 +20,7 @@ Commands still work too: `/start` `/menu` `/settings` `/status`
 
 ## The 20 features (⚙️ ဆက်တင်များ)
 
-1. 🎯 Script ပမာဏ — script output as % of input duration (50–100%, default **90%**)
+1. 🎯 Script ပမာဏ — script output as % of input duration (90–100%; **90% minimum for every job**, default **90%**)
 2. 🎙️ အသံ (Voice) — Charon / Fenrir / Puck / Kore / Aoede
 3. 🔊 Deep အသံ — deep-voice filter on/off
 4. ⏩ အမြန်နှုန်း — voice speed 0.9x–1.2x
