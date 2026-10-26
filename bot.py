@@ -5416,7 +5416,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.4-button-webhook-fix"
+BUILD_VERSION = "v3.5-button-webhook-healthz-fix"
 BUILD_FEATURES = 20
 
 
@@ -5450,7 +5450,12 @@ async def root():
     })
 
 
+# Keep the legacy /healthz path from the previously deployed service as
+# well as /health.  If the existing Render service still health-checks
+# /healthz, returning 404 there can make every new deploy fail its health
+# check and silently leave the old container serving traffic.
 @app.get("/health")
+@app.get("/healthz")
 async def health():
     return JSONResponse({
         "ok": True,

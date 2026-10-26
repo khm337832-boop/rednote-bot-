@@ -1609,6 +1609,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 health.json()["render_git_repo_slug"], bot.RENDER_GIT_REPO_SLUG
             )
 
+            legacy_health = await client.get("/healthz")
+            self.assertEqual(legacy_health.status_code, 200)
+            self.assertEqual(legacy_health.json(), health.json())
+
             root = await client.get("/")
             self.assertEqual(root.status_code, 200)
             self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
