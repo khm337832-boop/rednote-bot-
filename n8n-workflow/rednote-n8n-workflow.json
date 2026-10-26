@@ -1,0 +1,1810 @@
+{
+  "name": "Rednote Bot — Whisper First Person Recap (Worker API)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Setup မှတ်ချက်\n\nဒီ workflow မှာ **Telegram Trigger မသုံးပါ**။ လက်ရှိ Telegram bot ကပဲ Telegram webhook/menu/settings/status ကို ကိုင်တွယ်ပြီး ဒီ Webhook ဆီ job ပို့ပါမယ်။\n\nn8n environment မှာ အောက်ပါတို့ ထည့်ပါ:\n\n- `WORKER_BASE_URL=https://your-render-service.onrender.com`\n- `WORKER_API_KEY=<Render မှာ ထည့်ထားတဲ့ တူညီသောလျှို့ဝှက်ကုဒ်>`\n- `N8N_WEBHOOK_SECRET=<Render မှာ ထည့်ထားတဲ့ တူညီသောလျှို့ဝှက်ကုဒ်>`\n\nSelf-hosted n8n ဆိုလျှင် expression တွေက env ဖတ်နိုင်ရန် `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` လည်း လိုနိုင်ပါတယ်။\n\nစစ်ဆေးပြီးနောက် workflow ကို **Activate** လုပ်ပါ။ Production webhook URL ကို Render `N8N_WEBHOOK_URL` ထဲ ထည့်ပြီးမှ `PIPELINE_MODE=n8n` ပြောင်းပါ။\n\nအသေးစိတ်ကို repository ထဲက `n8n-workflow/README.md` မှာ ကြည့်ပါ။\n",
+        "height": 560,
+        "width": 720,
+        "color": 4
+      },
+      "id": "892462b5-deca-5df7-9fbd-74bc1a528f93",
+      "name": "Setup မှတ်ချက်",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -820,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rednote-recap-job",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "51d22e37-17e1-5723-9b59-310790ec416b",
+      "name": "Telegram Bot မှလာသော Job",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = ($input.first() && $input.first().json) || {};\nconst data = root.body && typeof root.body === 'object' ? root.body : root;\nconst headers = root.headers || data.headers || {};\nconst lowerHeaders = {};\nfor (const [key, value] of Object.entries(headers)) {\n  lowerHeaders[String(key).toLowerCase()] = value;\n}\n\nconst expectedSecret = String($env.N8N_WEBHOOK_SECRET || '');\nconst suppliedSecret = String(lowerHeaders['x-n8n-secret'] || '');\nif (expectedSecret && suppliedSecret !== expectedSecret) {\n  throw new Error('Invalid X-N8N-Secret header');\n}\n\nconst url = String(data.url || '').trim();\nif (!/^https?:\\/\\//i.test(url)) {\n  throw new Error('A valid http/https video url is required');\n}\n\nconst chatId = Number(data.chat_id);\nif (!Number.isFinite(chatId) || chatId === 0) {\n  throw new Error('A valid chat_id is required');\n}\n\nconst generatedJobId =\n  'j' + Date.now().toString(36) +\n  Math.random().toString(36).slice(2, 10);\nconst jobId = String(data.job_id || generatedJobId).trim();\nif (!/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) {\n  throw new Error('Invalid job_id');\n}\n\nconst optionalNumber = (value) => {\n  if (value === null || value === undefined || value === '') return null;\n  const number = Number(value);\n  return Number.isFinite(number) ? number : null;\n};\n\nconst payload = {\n  job_id: jobId,\n  chat_id: chatId,\n  reply_msg_id: optionalNumber(data.reply_msg_id),\n  status_message_id: optionalNumber(data.status_message_id),\n  url,\n  create_status_message:\n    data.create_status_message === undefined\n      ? !optionalNumber(data.status_message_id)\n      : Boolean(data.create_status_message),\n};\n\nif (data.settings && typeof data.settings === 'object' && !Array.isArray(data.settings)) {\n  payload.settings = data.settings;\n}\n\nreturn [{ json: payload }];"
+      },
+      "id": "99aee9a6-77d0-5d2e-a8d2-0059d8af217d",
+      "name": "Payload စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "f3af478d-5ad1-5b1f-a112-e0842810b675",
+      "name": "Worker Job ဖန်တီး/အတည်ပြု",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/stages/download' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "id": "474acca1-fbb6-5a03-85aa-c21314d7b30f",
+      "name": "Download စတင်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "0df17a98-dc99-5122-b454-6db1d2ab61be",
+      "name": "Download စောင့်",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "3dede9cc-2dc0-5c3c-b802-5ee6077edef7",
+      "name": "Download status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst info = ((data.stages || {})['download']) || {};\nconst stageStatus = String(info.status || '').toLowerCase();\nconst jobStatus = String(data.status || '').toLowerCase();\n\nreturn [{\n  json: {\n    ...data,\n    stage: 'download',\n    stage_status: stageStatus,\n    stage_done: stageStatus === 'done',\n    stage_failed:\n      stageStatus === 'failed' ||\n      stageStatus === 'cancelled' ||\n      jobStatus === 'failed' ||\n      jobStatus === 'cancelled',\n    stage_error: String(info.error || data.error || ''),\n  },\n}];"
+      },
+      "id": "2780b31e-d64d-520d-8189-1185aa480c37",
+      "name": "Download status စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "76f77fec-2a5b-5e03-aaf9-2323bc197f5a",
+              "name": "76f77fec-2a5b-5e03-aaf9-2323bc197f5a",
+              "leftValue": "={{ $json.stage_done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "49ad7b2b-b86e-575c-8bca-f06f3d191a66",
+      "name": "Download ပြီးပြီလား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7822169d-abb2-5458-883e-e8e730681745",
+              "name": "7822169d-abb2-5458-883e-e8e730681745",
+              "leftValue": "={{ $json.stage_failed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2234ede4-85c8-50f9-9cd7-fc71335dc32b",
+      "name": "Download ပျက်လား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/stages/transcribe' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "id": "435f09a9-fe48-5318-9ebf-6e8f0c6656d1",
+      "name": "Transcribe စတင်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2140,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "3bbd39d5-4bd9-5c79-8ce7-3ae6b4b55804",
+      "name": "Transcribe စောင့်",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "fb11f80d-e127-5c03-8b79-d9479ba41d2b",
+      "name": "Transcribe status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2700,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst info = ((data.stages || {})['transcribe']) || {};\nconst stageStatus = String(info.status || '').toLowerCase();\nconst jobStatus = String(data.status || '').toLowerCase();\n\nreturn [{\n  json: {\n    ...data,\n    stage: 'transcribe',\n    stage_status: stageStatus,\n    stage_done: stageStatus === 'done',\n    stage_failed:\n      stageStatus === 'failed' ||\n      stageStatus === 'cancelled' ||\n      jobStatus === 'failed' ||\n      jobStatus === 'cancelled',\n    stage_error: String(info.error || data.error || ''),\n  },\n}];"
+      },
+      "id": "24b5ee95-a450-5cba-b135-b275bef49740",
+      "name": "Transcribe status စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "31166a26-2fc8-563f-86a1-97a31e8ac15d",
+              "name": "31166a26-2fc8-563f-86a1-97a31e8ac15d",
+              "leftValue": "={{ $json.stage_done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "975c9c8a-f751-569a-89b2-7c56782be195",
+      "name": "Transcribe ပြီးပြီလား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "642b90a2-c0a1-522d-8747-644190919e6f",
+              "name": "642b90a2-c0a1-522d-8747-644190919e6f",
+              "leftValue": "={{ $json.stage_failed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e3bb58d9-9b69-5ed8-a0d4-6714b8f8c92b",
+      "name": "Transcribe ပျက်လား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3260,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/stages/rewrite' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "id": "b76a5d23-7437-57ce-9529-2771faebc4e6",
+      "name": "Rewrite စတင်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "afbfaa54-cda5-5c7e-a5a5-138fca061298",
+      "name": "Rewrite စောင့်",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3740,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "9a74571a-5262-502c-b688-7eb9d1afe55c",
+      "name": "Rewrite status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4020,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst info = ((data.stages || {})['rewrite']) || {};\nconst stageStatus = String(info.status || '').toLowerCase();\nconst jobStatus = String(data.status || '').toLowerCase();\n\nreturn [{\n  json: {\n    ...data,\n    stage: 'rewrite',\n    stage_status: stageStatus,\n    stage_done: stageStatus === 'done',\n    stage_failed:\n      stageStatus === 'failed' ||\n      stageStatus === 'cancelled' ||\n      jobStatus === 'failed' ||\n      jobStatus === 'cancelled',\n    stage_error: String(info.error || data.error || ''),\n  },\n}];"
+      },
+      "id": "7f1ee5be-7614-5c4e-b843-ecffb4f99659",
+      "name": "Rewrite status စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "84697b25-70d7-5627-80ff-d975ce88bd8a",
+              "name": "84697b25-70d7-5627-80ff-d975ce88bd8a",
+              "leftValue": "={{ $json.stage_done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4d980ab3-34e3-5978-829c-9ad6804f3df5",
+      "name": "Rewrite ပြီးပြီလား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e0c4b073-27c5-5873-96b4-d3feb00206e7",
+              "name": "e0c4b073-27c5-5873-96b4-d3feb00206e7",
+              "leftValue": "={{ $json.stage_failed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2ab70a23-1b13-52f5-ba0f-02a294d52ef3",
+      "name": "Rewrite ပျက်လား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4580,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/stages/tts' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "id": "eb7a61bb-c710-5485-bba3-89fbb65aad30",
+      "name": "TTS စတင်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4780,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "9db066b2-b316-59d8-bf9e-215aa4c25eb5",
+      "name": "TTS စောင့်",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5060,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "152c5ac2-34e5-5995-bab6-5b77c7e0b9d4",
+      "name": "TTS status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5340,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst info = ((data.stages || {})['tts']) || {};\nconst stageStatus = String(info.status || '').toLowerCase();\nconst jobStatus = String(data.status || '').toLowerCase();\n\nreturn [{\n  json: {\n    ...data,\n    stage: 'tts',\n    stage_status: stageStatus,\n    stage_done: stageStatus === 'done',\n    stage_failed:\n      stageStatus === 'failed' ||\n      stageStatus === 'cancelled' ||\n      jobStatus === 'failed' ||\n      jobStatus === 'cancelled',\n    stage_error: String(info.error || data.error || ''),\n  },\n}];"
+      },
+      "id": "5401402a-e1a3-53c9-933b-45d2263d4d27",
+      "name": "TTS status စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5620,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9df317a2-85b6-5f8c-b91c-59ac3ff64f55",
+              "name": "9df317a2-85b6-5f8c-b91c-59ac3ff64f55",
+              "leftValue": "={{ $json.stage_done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "92f2902e-98ec-5b11-adc6-1f31d444ace0",
+      "name": "TTS ပြီးပြီလား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "30dc4d3c-4d50-5387-84ad-0d3d866e7053",
+              "name": "30dc4d3c-4d50-5387-84ad-0d3d866e7053",
+              "leftValue": "={{ $json.stage_failed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d018590e-fe2c-5ba6-be4e-e82ff6c96670",
+      "name": "TTS ပျက်လား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5900,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/stages/render' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "id": "c4a0b450-85ce-5e0b-958d-70ce3757b59f",
+      "name": "Render စတင်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6100,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "a4bf30e5-11f7-5ccf-9fd4-8cf7ddfe8855",
+      "name": "Render စောင့်",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        6380,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "60aa9923-6aaf-51a3-bb91-b883f0067f96",
+      "name": "Render status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6660,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst info = ((data.stages || {})['render']) || {};\nconst stageStatus = String(info.status || '').toLowerCase();\nconst jobStatus = String(data.status || '').toLowerCase();\n\nreturn [{\n  json: {\n    ...data,\n    stage: 'render',\n    stage_status: stageStatus,\n    stage_done: stageStatus === 'done',\n    stage_failed:\n      stageStatus === 'failed' ||\n      stageStatus === 'cancelled' ||\n      jobStatus === 'failed' ||\n      jobStatus === 'cancelled',\n    stage_error: String(info.error || data.error || ''),\n  },\n}];"
+      },
+      "id": "8fa91c92-ea77-5939-81b9-2abc2c8eb12e",
+      "name": "Render status စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6940,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0ee684b0-ef0e-5148-97c5-8158d0f1812a",
+              "name": "0ee684b0-ef0e-5148-97c5-8158d0f1812a",
+              "leftValue": "={{ $json.stage_done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c6623b91-aace-5f01-867a-95f69e0b0af7",
+      "name": "Render ပြီးပြီလား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6ad73282-46c4-5c6c-ad0a-f73f3eb0a849",
+              "name": "6ad73282-46c4-5c6c-ad0a-f73f3eb0a849",
+              "leftValue": "={{ $json.stage_failed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "81bdbc49-a86e-5c0b-b6ea-54ba90b2fede",
+      "name": "Render ပျက်လား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7220,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/stages/deliver' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "id": "265f3f2d-91fe-5938-b5b3-43c9c87ddbf2",
+      "name": "Deliver စတင်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7420,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "b9604100-203e-5457-b376-e7246f4d8f69",
+      "name": "Deliver စောင့်",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        7700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "f49cbdd7-2f17-586c-9ed7-630ab26243b9",
+      "name": "Deliver status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7980,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst info = ((data.stages || {})['deliver']) || {};\nconst stageStatus = String(info.status || '').toLowerCase();\nconst jobStatus = String(data.status || '').toLowerCase();\n\nreturn [{\n  json: {\n    ...data,\n    stage: 'deliver',\n    stage_status: stageStatus,\n    stage_done: stageStatus === 'done',\n    stage_failed:\n      stageStatus === 'failed' ||\n      stageStatus === 'cancelled' ||\n      jobStatus === 'failed' ||\n      jobStatus === 'cancelled',\n    stage_error: String(info.error || data.error || ''),\n  },\n}];"
+      },
+      "id": "50e4a198-c9a0-556f-920a-5a168f71c04f",
+      "name": "Deliver status စစ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a2d3a356-38da-5d5f-9d2d-23b3ce2f8f84",
+              "name": "a2d3a356-38da-5d5f-9d2d-23b3ce2f8f84",
+              "leftValue": "={{ $json.stage_done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3ee03a84-5556-54e8-b77a-65a0c2d5d6a9",
+      "name": "Deliver ပြီးပြီလား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0d59898f-13b4-50cf-97b1-774bf8f57a79",
+              "name": "0d59898f-13b4-50cf-97b1-774bf8f57a79",
+              "leftValue": "={{ $json.stage_failed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "acaee549-155e-589f-abff-ca443456ab26",
+      "name": "Deliver ပျက်လား",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8540,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "f58c7ad7-8833-59d2-bb59-6c9fac252ecc",
+      "name": "ပြီးလျှင် Job ရှင်း",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8740,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nreturn [{\n  json: {\n    ok: true,\n    job_id: data.job_id || '',\n    deleted: data.deleted !== false,\n    message: `Worker job completed and cleaned up: ${data.job_id || ''}`,\n  },\n}];"
+      },
+      "id": "d77f77d9-b6a9-51d8-8db5-cafbcf255ad0",
+      "name": "ပြီးဆုံးကြောင်း မှတ်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9040,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = ($input.first() && $input.first().json) || {};\nconst reason = String(\n  data.stage_error ||\n  data.error ||\n  `${data.stage || 'worker'} stage failed`\n).slice(0, 1000);\n\nreturn [{\n  json: {\n    job_id: data.job_id,\n    stage: data.stage || '',\n    stage_status: data.stage_status || data.status || 'failed',\n    reason,\n  },\n}];"
+      },
+      "id": "bb1dfb5b-5799-5772-999e-d884452e3e6a",
+      "name": "အမှားအချက်အလက် ပြင်",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        860
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) + '/fail' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ reason: $json.reason }) }}"
+      },
+      "id": "cd367bff-15d5-5170-a288-69ab8294e48d",
+      "name": "Worker ကို Failed မှတ်",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        860
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ ($env.WORKER_BASE_URL || '').replace(/\\/+$/, '') + '/api/v1/jobs/' + encodeURIComponent($json.job_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Key",
+              "value": "={{ $env.WORKER_API_KEY || '' }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "41cfe247-c029-5514-865a-366be84719f7",
+      "name": "အမှားဖြစ်လျှင် Job ရှင်း",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        860
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "errorMessage": "={{ 'Worker job failed and was cleaned up: ' + ($json.job_id || '') }}"
+      },
+      "id": "e9dc378f-5929-525d-9b38-2d1ed06c5f18",
+      "name": "Workflow Error အဖြစ် ရပ်",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        860
+      ]
+    }
+  ],
+  "connections": {
+    "Telegram Bot မှလာသော Job": {
+      "main": [
+        [
+          {
+            "node": "Payload စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload စစ်": {
+      "main": [
+        [
+          {
+            "node": "Worker Job ဖန်တီး/အတည်ပြု",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker Job ဖန်တီး/အတည်ပြု": {
+      "main": [
+        [
+          {
+            "node": "Download စတင်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download စတင်": {
+      "main": [
+        [
+          {
+            "node": "Download စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download စောင့်": {
+      "main": [
+        [
+          {
+            "node": "Download status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download status": {
+      "main": [
+        [
+          {
+            "node": "Download status စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download status စစ်": {
+      "main": [
+        [
+          {
+            "node": "Download ပြီးပြီလား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download ပျက်လား": {
+      "main": [
+        [
+          {
+            "node": "အမှားအချက်အလက် ပြင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download ပြီးပြီလား": {
+      "main": [
+        [
+          {
+            "node": "Transcribe စတင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download ပျက်လား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe စတင်": {
+      "main": [
+        [
+          {
+            "node": "Transcribe စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe စောင့်": {
+      "main": [
+        [
+          {
+            "node": "Transcribe status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe status": {
+      "main": [
+        [
+          {
+            "node": "Transcribe status စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe status စစ်": {
+      "main": [
+        [
+          {
+            "node": "Transcribe ပြီးပြီလား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe ပျက်လား": {
+      "main": [
+        [
+          {
+            "node": "အမှားအချက်အလက် ပြင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transcribe စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe ပြီးပြီလား": {
+      "main": [
+        [
+          {
+            "node": "Rewrite စတင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transcribe ပျက်လား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite စတင်": {
+      "main": [
+        [
+          {
+            "node": "Rewrite စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite စောင့်": {
+      "main": [
+        [
+          {
+            "node": "Rewrite status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite status": {
+      "main": [
+        [
+          {
+            "node": "Rewrite status စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite status စစ်": {
+      "main": [
+        [
+          {
+            "node": "Rewrite ပြီးပြီလား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite ပျက်လား": {
+      "main": [
+        [
+          {
+            "node": "အမှားအချက်အလက် ပြင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rewrite စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite ပြီးပြီလား": {
+      "main": [
+        [
+          {
+            "node": "TTS စတင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rewrite ပျက်လား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS စတင်": {
+      "main": [
+        [
+          {
+            "node": "TTS စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS စောင့်": {
+      "main": [
+        [
+          {
+            "node": "TTS status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS status": {
+      "main": [
+        [
+          {
+            "node": "TTS status စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS status စစ်": {
+      "main": [
+        [
+          {
+            "node": "TTS ပြီးပြီလား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS ပျက်လား": {
+      "main": [
+        [
+          {
+            "node": "အမှားအချက်အလက် ပြင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TTS စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS ပြီးပြီလား": {
+      "main": [
+        [
+          {
+            "node": "Render စတင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TTS ပျက်လား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render စတင်": {
+      "main": [
+        [
+          {
+            "node": "Render စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render စောင့်": {
+      "main": [
+        [
+          {
+            "node": "Render status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render status": {
+      "main": [
+        [
+          {
+            "node": "Render status စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render status စစ်": {
+      "main": [
+        [
+          {
+            "node": "Render ပြီးပြီလား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render ပျက်လား": {
+      "main": [
+        [
+          {
+            "node": "အမှားအချက်အလက် ပြင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Render စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render ပြီးပြီလား": {
+      "main": [
+        [
+          {
+            "node": "Deliver စတင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Render ပျက်လား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver စတင်": {
+      "main": [
+        [
+          {
+            "node": "Deliver စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver စောင့်": {
+      "main": [
+        [
+          {
+            "node": "Deliver status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver status": {
+      "main": [
+        [
+          {
+            "node": "Deliver status စစ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver status စစ်": {
+      "main": [
+        [
+          {
+            "node": "Deliver ပြီးပြီလား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver ပျက်လား": {
+      "main": [
+        [
+          {
+            "node": "အမှားအချက်အလက် ပြင်",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deliver စောင့်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver ပြီးပြီလား": {
+      "main": [
+        [
+          {
+            "node": "ပြီးလျှင် Job ရှင်း",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deliver ပျက်လား",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ပြီးလျှင် Job ရှင်း": {
+      "main": [
+        [
+          {
+            "node": "ပြီးဆုံးကြောင်း မှတ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "အမှားအချက်အလက် ပြင်": {
+      "main": [
+        [
+          {
+            "node": "Worker ကို Failed မှတ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker ကို Failed မှတ်": {
+      "main": [
+        [
+          {
+            "node": "အမှားဖြစ်လျှင် Job ရှင်း",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "အမှားဖြစ်လျှင် Job ရှင်း": {
+      "main": [
+        [
+          {
+            "node": "Workflow Error အဖြစ် ရပ်",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "saveExecutionProgress": true,
+    "executionOrder": "v1",
+    "timezone": "Asia/Yangon"
+  },
+  "staticData": null,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

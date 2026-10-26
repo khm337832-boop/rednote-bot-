@@ -72,3 +72,18 @@ anywhere in the pipeline with `get_user_settings(chat_id)["my_feature"]`
 BOT_TOKEN=... GEMINI_API_KEY=... ADMIN_ID=... python bot.py
 # FastAPI webhook on :10000  (POST /webhook)
 ```
+
+## Optional n8n pipeline
+
+The existing direct bot pipeline remains the default. An optional n8n
+orchestrated pipeline is available in [`n8n-workflow/`](n8n-workflow/):
+
+```text
+Telegram bot -> n8n Webhook -> Render worker API
+  download -> Whisper transcribe -> Gemini rewrite -> Gemini TTS
+  -> video-only alignment/render -> Telegram delivery -> cleanup
+```
+
+Set `PIPELINE_MODE=n8n` only after importing and activating the workflow and
+configuring the required worker/Whisper secrets. See
+[`n8n-workflow/README.md`](n8n-workflow/README.md) for setup and safety notes.
