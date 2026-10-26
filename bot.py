@@ -14,7 +14,6 @@ import tempfile
 import time
 import unicodedata
 import wave
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
@@ -125,20 +124,25 @@ MAX_TG_BYTES = 45 * 1024 * 1024
 CHUNK_DURATION = 300
 PAUSE_AFTER_SCENE = 0.20
 
-# --- Script coverage (input -> script output) ---
-# Script (narration) must cover 90% of the input chunk duration.
-# e.g. a 300s chunk must produce narration that, when spoken, lasts
-# ~270s (0.90 * 300). Burmese TTS (Charon) speaks at roughly
-# 6.5 characters/second, so the character target is derived from that.
-SCRIPT_TARGET_RATIO = 0.90      # output script = 90% of input duration
+# --- Final-duration target (input -> final video) ---
+# The product requirement is about the *actual final video duration*, not
+# a character estimate: e.g. a 600-second source at the default 90% setting
+# must deliver a final video of about 540 seconds.  Character counts are
+# only the initial estimate; after TTS the measured narration duration is
+# fed back into Gemini expansion/trimming rounds until it is on target.
+SCRIPT_TARGET_RATIO = 0.90      # default final duration = 90% of input
 MINIMUM_SCRIPT_COVERAGE_PERCENT = 90  # every job/link must target at least 90%
-SCRIPT_CHARS_PER_SEC = 6.5      # estimated Burmese TTS speaking rate
-SCRIPT_MAX_RATIO = 1.05         # never exceed 105% of the 90% target
-SCRIPT_TOPUP_ATTEMPTS = 6       # retry top-ups until 90% is reached
-SCRIPT_MIN_CHAR_RATIO = 0.98    # script must reach 98% of its char target
+SCRIPT_CHARS_PER_SEC = 6.5      # initial estimate only; TTS is re-measured
+SCRIPT_MAX_RATIO = 1.05         # initial script cap before measured calibration
+SCRIPT_TOPUP_ATTEMPTS = 6       # character-estimate top-ups before TTS
+SCRIPT_MIN_CHAR_RATIO = 0.98    # initial script must reach 98% of estimate
 SCRIPT_MIN_GROUP_CHAR_RATIO = 0.75  # one-liners do not count as covered
-SCRIPT_MIN_NARRATION_RATIO = 0.90  # actual TTS/render vs expected target time
+SCRIPT_MIN_NARRATION_RATIO = 0.90  # legacy metric name; final gates use window below
 TRANSCRIPT_MIN_SPAN_RATIO = 0.75  # transcript must span most of the source
+DURATION_CALIBRATION_ROUNDS = 4  # measured TTS -> expand/trim -> TTS again
+FIRST_PERSON_REPAIR_ROUNDS = 3   # rewrite scenes missing ကျွန်တော်/ကျွန်မ
+FINAL_DURATION_TOLERANCE_RATIO = 0.02  # final must be target ±2% of source
+FINAL_DURATION_TOLERANCE_MIN_SECONDS = 0.35
 
 PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
 os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
@@ -201,8 +205,8 @@ DEFAULT_SETTINGS = {
 }
 
 FEATURES = [
-    {"key": "coverage", "icon": "🎯", "label": "Script ပမာဏ", "kind": "cycle",
-     "desc": "Input ကြာချိန်ရဲ့ ဘယ်နှုန်း% script ထွက်မလဲ (အနည်းဆုံး 90%)",
+    {"key": "coverage", "icon": "🎯", "label": "Final ကြာချိန်", "kind": "cycle",
+     "desc": "Final video အမှန်တကယ်ကြာချိန်သည် မူရင်း video ကြာချိန်၏ ဘယ်နှုန်း% ဖြစ်မလဲ (အနည်းဆုံး 90%)",
      "options": [(90, "90% ⭐"), (95, "95%"), (100, "100%")]},
     {"key": "voice", "icon": "🎙️", "label": "အသံ (Voice)", "kind": "cycle",
      "desc": "TTS အသံသရုပ်ဆောင် ရွေးပါ",
@@ -353,7 +357,7 @@ def main_menu_keyboard(chat_id) -> dict:
     s = get_user_settings(chat_id)
     rows = [
         [btn("🎬 Recap စတင်မယ်", "menu:recap"), btn("⚙️ ဆက်တင်များ (20)", "menu:settings")],
-        [btn(f"🎯 Script: {s['coverage']}%", "feat:coverage"), btn(f"🎙️ အသံ: {s['voice']}", "feat:voice")],
+        [btn(f"🎯 Final: မူရင်း၏ {s['coverage']}%", "feat:coverage"), btn(f"🎙️ အသံ: {s['voice']}", "feat:voice")],
         [btn("📊 အလုပ်အခြေအနေ", "menu:status"), btn("🛑 လုပ်နေတာ ရပ်မယ်", "menu:cancel")],
         [btn("📋 ဆက်တင် အကျဉ်း", "menu:summary"), btn("📈 စာရင်းချုပ်", "menu:stats")],
         [btn("❓ အသုံးပြုနည်း", "menu:help"), btn("🔄 ဆက်တင် ပြန်ချိန်", "menu:reset")],
@@ -396,6 +400,45 @@ def confirm_keyboard() -> dict:
     ]]}
 
 
+def job_progress_keyboard() -> dict:
+    """Buttons that stay attached to the live progress message."""
+    return {"inline_keyboard": [
+        [btn("🛑 ဒီအလုပ်ကို ရပ်မယ်", "menu:cancel"), btn("📊 အခြေအနေ", "menu:status")],
+        [btn("⚙️ ဆက်တင်များ", "menu:settings"), btn("🏠 ပင်မ မီနူး", "menu:main")],
+    ]}
+
+
+PERSISTENT_BUTTON_RECAP = "🎬 Recap စတင်မယ်"
+PERSISTENT_BUTTON_SETTINGS = "⚙️ ဆက်တင်များ"
+PERSISTENT_BUTTON_STATUS = "📊 အလုပ်အခြေအနေ"
+PERSISTENT_BUTTON_CANCEL = "🛑 လုပ်နေတာ ရပ်မယ်"
+PERSISTENT_BUTTON_SUMMARY = "📋 ဆက်တင် အကျဉ်း"
+PERSISTENT_BUTTON_HELP = "❓ အသုံးပြုနည်း"
+
+
+def persistent_menu_keyboard() -> dict:
+    """Telegram reply keyboard shown persistently under the chat input."""
+    return {
+        "keyboard": [
+            [
+                {"text": PERSISTENT_BUTTON_RECAP},
+                {"text": PERSISTENT_BUTTON_SETTINGS},
+            ],
+            [
+                {"text": PERSISTENT_BUTTON_STATUS},
+                {"text": PERSISTENT_BUTTON_CANCEL},
+            ],
+            [
+                {"text": PERSISTENT_BUTTON_SUMMARY},
+                {"text": PERSISTENT_BUTTON_HELP},
+            ],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+        "input_field_placeholder": "ဗီဒီယို link ပို့ပါ…",
+    }
+
+
 MAIN_MENU_TEXT = (
     "🎬 <b>RedNote Recap Bot</b>\n"
     "━━━━━━━━━━━━━━━\n"
@@ -410,7 +453,7 @@ HELP_TEXT = (
     "❓ <b>အသုံးပြုနည်း</b>\n"
     "━━━━━━━━━━━━━━━\n"
     "1️⃣ ဗီဒီယို link (http...) ကို ဒီအတိုင်း ပို့လိုက်ပါ\n"
-    "2️⃣ Bot က download → script (input ၏ ဆက်တင်%) → အသံ → ဗီဒီယို လုပ်ပေးပါမယ်\n"
+    "2️⃣ Bot က download → ပထမလူ script အပြည့်အစုံ → အသံကြာချိန် တိုင်းတာညှိခြင်း → Final ဗီဒီယို (မူရင်း၏ ဆက်တင်%) လုပ်ပေးပါမယ်\n"
     "3️⃣ ပြီးရင် Recap ဗီဒီယို ပြန်ပို့ပေးပါမယ်\n\n"
     "⌨️ <b>Commands:</b>\n"
     "/start သို့မဟုတ် /menu — ပင်မ မီနူး\n"
@@ -482,6 +525,7 @@ class ProgressTracker:
                 "chat_id": self.chat_id,
                 "message_id": self.message_id,
                 "text": animated_text,
+                "reply_markup": job_progress_keyboard(),
             })
         except Exception:
             pass
@@ -547,9 +591,32 @@ async def answer_callback(callback_id: str, text: str = ""):
         pass
 
 
-async def send_main_menu(chat_id: int, reply_to: int = None):
-    return await send_text(chat_id, MAIN_MENU_TEXT, reply_to=reply_to,
-                           reply_markup=main_menu_keyboard(chat_id))
+async def send_main_menu(
+    chat_id: int,
+    reply_to: int = None,
+    with_persistent_keyboard: bool = False,
+):
+    if with_persistent_keyboard:
+        await send_text(
+            chat_id,
+            "⌨️ အောက်ခြေခလုတ်တွေ အဆင်သင့်ဖြစ်ပါပြီ။ Link ကို ဒီအတိုင်းပို့လိုက်ရုံပါပဲ။",
+            reply_to=reply_to,
+            reply_markup=persistent_menu_keyboard(),
+        )
+    version = globals().get("BUILD_VERSION", "")
+    text = MAIN_MENU_TEXT
+    if version:
+        coverage = get_user_settings(chat_id).get("coverage", 90)
+        text += (
+            f"\n\n🆕 Version: <code>{version}</code> · "
+            f"🎯 Final = မူရင်း၏ {coverage}%"
+        )
+    return await send_text(
+        chat_id,
+        text,
+        reply_to=reply_to,
+        reply_markup=main_menu_keyboard(chat_id),
+    )
 
 
 async def tg_upload_media(method: str, data: dict, field_name: str, file_name: str, file_path: str, mime_type: str) -> dict:
@@ -863,21 +930,123 @@ async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> 
     return all_clips
 
 
-def _detect_pronoun(text: str) -> str:
-    """Script စာသားထဲမှ ပြောနေသူ အသုံးအများဆုံး ပထမလူ နာမ်စား (ကျွန်တော်/ကျွန်မ)
-    ကို ရှာသည် — chunk အကူးတွင် နာမ်စား မလွဲအောင် ထိန်းရန်။ မတွေ့ရင် "" ပြန်သည်။"""
-    def _norm(s: str) -> str:
-        s = unicodedata.normalize("NFC", s or "")
-        return s.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+FIRST_PERSON_MALE = "ကျွန်တော်"
+FIRST_PERSON_FEMALE = "ကျွန်မ"
+FIRST_PERSON_PRONOUNS = (FIRST_PERSON_MALE, FIRST_PERSON_FEMALE)
 
-    t = _norm(text)
-    male = t.count(_norm("ကျွန်တော်"))
-    female = t.count(_norm("ကျွန်မ"))
+
+def _normalize_burmese_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFC", str(text or ""))
+    return (
+        normalized
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        # Possessive ကျွန်တော့် must count as the same first-person pronoun.
+        .replace("ကျွန်တော့်", FIRST_PERSON_MALE)
+    )
+
+
+def _first_person_counts(text: str) -> dict:
+    normalized = _normalize_burmese_text(text)
+    return {
+        FIRST_PERSON_MALE: normalized.count(FIRST_PERSON_MALE),
+        FIRST_PERSON_FEMALE: normalized.count(FIRST_PERSON_FEMALE),
+    }
+
+
+def _other_first_person_pronoun(pronoun: str) -> str:
+    return FIRST_PERSON_FEMALE if pronoun == FIRST_PERSON_MALE else FIRST_PERSON_MALE
+
+
+def _detect_pronoun(text: str) -> str:
+    """Return the dominant first-person pronoun in text, or "" if absent."""
+    counts = _first_person_counts(text)
+    male = counts[FIRST_PERSON_MALE]
+    female = counts[FIRST_PERSON_FEMALE]
     if male > female:
-        return "ကျွန်တော်"
+        return FIRST_PERSON_MALE
     if female > male:
-        return "ကျွန်မ"
+        return FIRST_PERSON_FEMALE
     return ""
+
+
+def _voice_first_person_pronoun(settings: dict = None) -> str:
+    voice = str((settings or {}).get("voice") or "")
+    return FIRST_PERSON_FEMALE if voice in ("Kore", "Aoede") else FIRST_PERSON_MALE
+
+
+def _choose_first_person_pronoun(
+    texts=None,
+    preferred: str = "",
+    response_pronoun: str = "",
+    settings: dict = None,
+) -> str:
+    if preferred in FIRST_PERSON_PRONOUNS:
+        return preferred
+    joined = " ".join(str(t or "") for t in (texts or []))
+    detected = _detect_pronoun(joined)
+    if detected:
+        return detected
+    if response_pronoun in FIRST_PERSON_PRONOUNS:
+        return response_pronoun
+    return _voice_first_person_pronoun(settings)
+
+
+def _scene_is_first_person(text: str, pronoun: str = "") -> bool:
+    """A scene passes only if the narrator visibly speaks as ``I``.
+
+    The JSON ``pronoun`` field is not enough: the actual Burmese narration
+    must contain the selected pronoun and must not also use the opposite
+    pronoun for the narrator.  This is intentionally strict because the
+    previous prompt-only approach silently delivered third-person scripts.
+    """
+    value = str(text or "").strip()
+    if not value:
+        return False
+    counts = _first_person_counts(value)
+    if pronoun in FIRST_PERSON_PRONOUNS:
+        other = _other_first_person_pronoun(pronoun)
+        return counts.get(pronoun, 0) > 0 and counts.get(other, 0) == 0
+    detected = _detect_pronoun(value)
+    if not detected:
+        return False
+    other = _other_first_person_pronoun(detected)
+    return counts.get(other, 0) == 0
+
+
+def _first_person_bad_scene_indexes(scenes: list, pronoun: str = "") -> list:
+    bad = []
+    for index, scene in enumerate(scenes or []):
+        text = ""
+        if isinstance(scene, dict):
+            text = str(scene.get("burmese") or scene.get("text") or "")
+        elif isinstance(scene, str):
+            text = scene
+        if not _scene_is_first_person(text, pronoun):
+            bad.append(index)
+    return bad
+
+
+def _first_person_metrics(texts: list, pronoun: str = "") -> dict:
+    counts = {FIRST_PERSON_MALE: 0, FIRST_PERSON_FEMALE: 0}
+    bad_indexes = []
+    for index, text in enumerate(texts or []):
+        value = str(text or "")
+        item_counts = _first_person_counts(value)
+        for key in counts:
+            counts[key] += int(item_counts.get(key) or 0)
+        if not _scene_is_first_person(value, pronoun):
+            bad_indexes.append(index)
+    return {
+        "pronoun": pronoun or _detect_pronoun(" ".join(str(t or "") for t in (texts or []))),
+        "male_pronoun_count": int(counts[FIRST_PERSON_MALE]),
+        "female_pronoun_count": int(counts[FIRST_PERSON_FEMALE]),
+        "scene_count": len(texts or []),
+        "first_person_scene_count": len(texts or []) - len(bad_indexes),
+        "bad_scene_indexes": bad_indexes,
+        "all_scenes_first_person": bool(texts) and not bad_indexes,
+    }
 
 
 async def extract_story_summary(scenes: list, client) -> dict:
@@ -963,11 +1132,116 @@ def _settings_speed(settings: dict = None) -> float:
     return speed if speed > 0 else 1.0
 
 
+def _target_final_seconds(source_duration: float, settings: dict = None) -> float:
+    """Actual final-video seconds requested for a source duration."""
+    return max(0.0, float(source_duration or 0)) * _settings_coverage_ratio(settings)
+
+
+def _final_duration_tolerance_seconds(source_duration: float) -> float:
+    source = max(0.0, float(source_duration or 0))
+    return max(
+        FINAL_DURATION_TOLERANCE_MIN_SECONDS,
+        source * FINAL_DURATION_TOLERANCE_RATIO,
+    )
+
+
+def _final_duration_window(source_duration: float, settings: dict = None) -> tuple:
+    target = _target_final_seconds(source_duration, settings)
+    tolerance = _final_duration_tolerance_seconds(source_duration)
+    return target, max(0.0, target - tolerance), target + tolerance
+
+
+def _duration_is_on_target(
+    actual_seconds: float,
+    source_duration: float,
+    settings: dict = None,
+) -> bool:
+    if float(source_duration or 0) <= 0:
+        return False
+    _, low, high = _final_duration_window(source_duration, settings)
+    return low <= float(actual_seconds or 0) <= high
+
+
+def _duration_status(actual_seconds: float, source_duration: float, settings: dict = None) -> str:
+    if float(source_duration or 0) <= 0:
+        return "unknown"
+    _, low, high = _final_duration_window(source_duration, settings)
+    actual = float(actual_seconds or 0)
+    if actual < low:
+        return "short"
+    if actual > high:
+        return "long"
+    return "on_target"
+
+
+def _settings_pause_seconds(settings: dict = None) -> float:
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    try:
+        return max(0.0, float(s.get("pause") or 0))
+    except (TypeError, ValueError):
+        return PAUSE_AFTER_SCENE
+
+
+def _clip_array(clip) -> np.ndarray:
+    try:
+        return np.asarray(clip if clip is not None else [], dtype=np.float32).reshape(-1)
+    except Exception:
+        return np.zeros(0, dtype=np.float32)
+
+
+def _clip_is_silent(clip) -> bool:
+    arr = _clip_array(clip)
+    return bool(arr.size == 0 or float(np.max(np.abs(arr))) < 0.001)
+
+
+def _narration_measurements(scenes: list, clips: list, settings: dict = None) -> dict:
+    """Measure actual post-TTS duration and this job's real chars/second."""
+    scene_list = list(scenes or [])
+    clip_list = list(clips or [])
+    pause_seconds = _settings_pause_seconds(settings)
+    speech_seconds = 0.0
+    spoken_chars = 0
+    spoken_seconds = 0.0
+    silent_count = 0
+    for index, clip in enumerate(clip_list):
+        arr = _clip_array(clip)
+        seconds = float(arr.size) / SAMPLE_RATE if SAMPLE_RATE else 0.0
+        speech_seconds += seconds
+        if _clip_is_silent(arr):
+            silent_count += 1
+            continue
+        text = ""
+        if index < len(scene_list) and isinstance(scene_list[index], dict):
+            text = str(scene_list[index].get("burmese") or "").strip()
+        if text and seconds > 0:
+            spoken_chars += len(text)
+            spoken_seconds += seconds
+    pause_total = pause_seconds * max(0, len(scene_list) - 1)
+    measured_rate = (spoken_chars / spoken_seconds) if spoken_seconds > 0 else 0.0
+    if measured_rate <= 0:
+        measured_rate = _settings_script_rate(settings) * _settings_speed(settings)
+    return {
+        "speech_seconds": round(float(speech_seconds), 6),
+        "pause_seconds": round(float(pause_seconds), 6),
+        "pause_total_seconds": round(float(pause_total), 6),
+        "narration_seconds": round(float(speech_seconds + pause_total), 6),
+        "silent_count": int(silent_count),
+        "measured_chars_per_second": round(float(measured_rate), 6),
+        "spoken_chars_measured": int(spoken_chars),
+    }
+
+
 def script_target_chars(chunk_dur: float, settings: dict = None) -> int:
-    """Characters needed so spoken narration = coverage% of input (default 90%)."""
+    """Initial character estimate for the requested final duration.
+
+    Voice speed is included so a faster voice needs more text to reach the
+    same actual final duration.  The estimate is later corrected using the
+    measured TTS rate for this exact job/voice.
+    """
     ratio = _settings_coverage_ratio(settings)
     rate = _settings_script_rate(settings)
-    return int(max(0.0, float(chunk_dur or 0)) * ratio * rate)
+    speed = _settings_speed(settings)
+    return int(max(0.0, float(chunk_dur or 0)) * ratio * rate * speed)
 
 
 def script_total_chars(scenes: list) -> int:
@@ -984,30 +1258,135 @@ def sort_scenes(scenes: list) -> list:
     return sorted(valid, key=_start)
 
 
+def _trim_text_to_char_budget(text: str, budget: int) -> str:
+    value = str(text or "").strip()
+    budget = max(0, int(budget or 0))
+    if len(value) <= budget:
+        return value
+    if budget <= 0:
+        return ""
+    cut = value.rfind("။", 0, budget)
+    # Keep a complete sentence when it does not remove too much of the
+    # scene; otherwise use the exact character budget as a last resort.
+    if cut >= max(25, int(budget * 0.55)):
+        return value[:cut + 1].strip()
+    return value[:budget].strip()
+
+
+def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
+    """Shorten every scene proportionally instead of deleting the ending.
+
+    This is used after actual TTS measurement shows the narration is too
+    long.  Keeping the beginning of every chronological scene preserves the
+    first-person framing and avoids the old behaviour of dropping all late
+    scenes simply because the total estimate was over target.
+    """
+    valid = [dict(s) for s in (scenes or []) if isinstance(s, dict)]
+    desired = max(0, int(desired_total_chars or 0))
+    total = script_total_chars(valid)
+    if not valid or desired <= 0 or total <= desired:
+        return valid
+
+    ratio = desired / float(total)
+    trimmed = []
+    for scene in valid:
+        text = str(scene.get("burmese") or "").strip()
+        budget = max(1, int(math.floor(len(text) * ratio))) if text else 0
+        new_scene = dict(scene)
+        new_scene["burmese"] = _trim_text_to_char_budget(text, budget)
+        trimmed.append(new_scene)
+
+    # Sentence-boundary choices can leave a small remainder either way.
+    # Remove any remaining excess from the longest scenes first, while
+    # preserving at least a short first-person opening where possible.
+    excess = script_total_chars(trimmed) - desired
+    while excess > 0:
+        candidates = [
+            i for i, scene in enumerate(trimmed)
+            if len(str(scene.get("burmese") or "")) > 30
+        ]
+        if not candidates:
+            break
+        index = max(
+            candidates,
+            key=lambda i: len(str(trimmed[i].get("burmese") or "")),
+        )
+        current = str(trimmed[index].get("burmese") or "")
+        reduction = min(excess, max(1, len(current) - 25))
+        trimmed[index]["burmese"] = _trim_text_to_char_budget(
+            current, len(current) - reduction
+        )
+        new_excess = script_total_chars(trimmed) - desired
+        if new_excess >= excess:
+            break
+        excess = new_excess
+    return [s for s in trimmed if str(s.get("burmese") or "").strip()]
+
+
 def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
-    """Trim scenes (from the end) so total <= SCRIPT_MAX_RATIO * target,
-    without ever dropping below the 90% target itself."""
-    limit = int(target_chars * SCRIPT_MAX_RATIO)
+    """Cap an initially over-long script without deleting its ending."""
+    limit = int(max(0, int(target_chars or 0)) * SCRIPT_MAX_RATIO)
     if script_total_chars(scenes) <= limit:
         return scenes
-    kept, total = [], 0
-    for scene in scenes:
-        text = (scene.get("burmese") or "").strip()
-        if total + len(text) <= limit:
-            kept.append(scene)
-            total += len(text)
+    return trim_scenes_proportionally(scenes, int(target_chars or 0))
+
+
+def _direct_first_person_repair_prompt(
+    scenes: list,
+    bad_indexes: list,
+    pronoun: str,
+    protagonist: str = "",
+) -> str:
+    payload = []
+    for index in bad_indexes or []:
+        if index < 0 or index >= len(scenes or []):
             continue
-        # Partially keep this scene: cut at the last sentence end (။)
-        # that still keeps us >= target_chars and <= limit.
-        room = limit - total
-        if room >= 40 and total < target_chars:
-            cut = text.rfind("။", 0, room)
-            piece = text[:cut + 1].strip() if cut >= 40 else text[:room].strip()
-            if piece:
-                scene = dict(scene, burmese=piece)
-                kept.append(scene)
-        break
-    return kept if script_total_chars(kept) >= target_chars else scenes[:len(kept)] or scenes
+        scene = scenes[index] if isinstance(scenes[index], dict) else {}
+        payload.append({
+            "scene_index": int(index),
+            "start": scene.get("start"),
+            "end": scene.get("end"),
+            "current_burmese_chars": len(str(scene.get("burmese") or "").strip()),
+            "burmese": str(scene.get("burmese") or ""),
+        })
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    other = _other_first_person_pronoun(pronoun)
+    return f"""
+FIRST-PERSON REPAIR ONLY — အောက်ပါ scenes များသည် ပထမလူပုံစံ မဖြစ်သေးပါ။
+အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောနေသလို ပြန်ရေးပါ။
+ပြောနေသူ၏ နာမ်စားမှာ «{pronoun}» တစ်မျိုးတည်းသာ ဖြစ်ရမည်။ «{other}» ကို ပြောနေသူအဖြစ် လုံးဝမသုံးပါနှင့်။
+Scene တိုင်းတွင် «{pronoun}» ကို ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် အနည်းဆုံးတစ်ကြိမ် ထည့်ပါ။
+ကိုယ်တိုင်မရှိသော မြင်ကွင်းဆိုလျှင် «အဲဒီတုန်းက {pronoun} မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှ {pronoun} သိလိုက်ရတာက…» ဟုစပါ။
+အဓိကဇာတ်ကောင်အမည်: {protagonist or "မသိရသေး"}
+ပြန်ရေးပြီးစာသားအရှည်သည် current_burmese_chars ထက် မနည်းရပါ။
+
+Scenes:
+{payload_json}
+
+JSON ကိုသာ ပြန်ပေးပါ:
+{{"pronoun": "{pronoun}", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "ပြန်ရေးပြီး ပထမလူစာသား"}}]}}
+""".strip()
+
+
+def _parse_direct_scene_replacements(data, allowed_indexes) -> dict:
+    allowed = {int(i) for i in (allowed_indexes or [])}
+    raw_scenes = []
+    if isinstance(data, dict) and isinstance(data.get("scenes"), list):
+        raw_scenes = data["scenes"]
+    elif isinstance(data, list):
+        raw_scenes = data
+    replacements = {}
+    for item in raw_scenes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("scene_index"))
+        except (TypeError, ValueError):
+            continue
+        text = str(item.get("burmese") or item.get("text") or "").strip()
+        if index in allowed and text:
+            replacements[index] = text
+    return replacements
 
 
 async def build_chunk_recap(
@@ -1094,7 +1473,7 @@ async def build_chunk_recap(
 - လေသံ: {tone_line}
 
 ## ပထမလူ အမြင်ဖြင့် ပြောပုံ (ခန်းတိုင်း အမြဲလိုက်နာရန်)
-- ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်သာ ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို ညွှန်းတိုင်း «ကျွန်တော်» (အမျိုးသားဆိုလျှင်) သို့မဟုတ် «ကျွန်မ» (အမျိုးသမီးဆိုလျှင်) ဟုသာ သုံးပါ။ ဥပမာ — «အဲဒီအချိန်မှာ ကျွန်တော် ...»၊ «ကျွန်မတော့ ... လို့ ပြန်ဖြေလိုက်တယ်»။ (ဝါကျများ ဆက်နေသရွေ့ နာမ်စားချန်ပြီး ရေးနိုင်သော်လည်း ကိုယ့်အကြောင်း အသစ်စတိုင်း «ကျွန်တော်/ကျွန်မ» ဖြင့်ပင် စပါ။)
+- ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်သာ ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို ညွှန်းတိုင်း «ကျွန်တော်» (အမျိုးသားဆိုလျှင်) သို့မဟုတ် «ကျွန်မ» (အမျိုးသမီးဆိုလျှင်) ဟုသာ သုံးပါ။ ဥပမာ — «အဲဒီအချိန်မှာ ကျွန်တော် ...»၊ «ကျွန်မတော့ ... လို့ ပြန်ဖြေလိုက်တယ်»။ **Scene တိုင်း၏ ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် ရွေးထားသော နာမ်စား အနည်းဆုံး တစ်ကြိမ် မဖြစ်မနေပါရမည်။** JSON ၏ pronoun field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
 - ကိုယ့်အကြောင်းကို ကိုယ့်အမည် သို့မဟုတ် «သူ/သူမ» သုံး၍ တတိယလူကဲ့သို့ လုံးဝ မရေးပါနှင့်။ အခြားဇာတ်ကောင်များကိုမူ ၎င်းတို့၏ အမည် သို့မဟုတ် «သူ/သူမ» ဖြင့် သုံးနိုင်သည်။
 - အဓိကဇာတ်ကောင်၏ အမည်ကို ဗီဒီယိုမှ မသိနိုင်ပါက မတီထွင်ပါနှင့်။ (ကျား/မ မသေချာလျှင် အထက်ပါ «နာမ်စား» စည်းကမ်းအတိုင်း ရွေးပြီး မပြောင်းပါနှင့်။)
 - ကိုယ် မရှိခဲ့၊ ကိုယ်တိုင် မမြင်ရသေးသည့် မြင်ကွင်းများကိုလည်း လုံးဝ မကျော်ပါနှင့် — «အဲဒီတုန်းက ကျွန်တော် မသိသေးပေမယ့် ...»၊ «နောက်မှသာ သိလိုက်ရတာက ...» ဟု ဆက်စပ်ပြောပြပါ။ သို့သော် ကိုယ်တိုင် မြင်ခဲ့သယောင် မပြောပါနှင့်။
@@ -1111,7 +1490,7 @@ async def build_chunk_recap(
 - ဤအပိုင်းအဆုံးတွင် ဇာတ်လမ်းဆက်နေပါက နောက်တွင် ဘာဖြစ်မည်ကို ခန့်မှန်း မရေးဘဲ ဤအပိုင်း၌ မြင်ရသည့် နေရာတွင်ပင် ရပ်ပါ။
 
 ## ကြာချိန်နှင့် ဗီဒီယိုတည်းဖြတ်ရန် အချိန်မှတ်ချက်များ
-- မူရင်းအပိုင်း၏ {st['coverage']}% ခန့်ကို ထိန်းသိမ်းပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
+- နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်းအပိုင်း၏ {st['coverage']}% ဖြစ်ရမည်။ စာလုံးပမာဏသည် အဲဒီကြာချိန်ကို ရအောင်တွက်ထားသော ပမာဏဖြစ်ပြီး အကျဉ်းချုပ်၍ မရပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
 - အနည်းဆုံး ခန်း {scene_count} ခန်း ရေးပါ။ ခန်းတစ်ခန်းလျှင် အနည်းဆုံး {chars_per_scene} လုံး ပါဝင်ပါ။
 - အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။
@@ -1187,6 +1566,12 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         logger.error(f"AI script error: {e}")
 
     scenes = sort_scenes(scenes)
+    new_pronoun = _choose_first_person_pronoun(
+        [str(s.get("burmese") or "") for s in scenes],
+        preferred=pronoun,
+        response_pronoun=new_pronoun,
+        settings=st,
+    )
     total_chars = script_total_chars(scenes)
     logger.info(
         f"Chunk {chunk_index}: {len(scenes)} scenes, {total_chars}/{target_chars} chars "
@@ -1242,30 +1627,89 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         total_chars = script_total_chars(scenes)
         logger.info(f"Chunk {chunk_index} top-up {attempt + 1}: {total_chars}/{target_chars} chars")
 
-    # Cap over-long scripts at 105% of the 90% target so narration
-    # does not overrun the video.
+    # Cap an initially over-long script proportionally so the ending is not
+    # simply deleted.  Actual duration is corrected again after TTS below.
     scenes = trim_scenes_to_target(scenes, target_chars)
-    total_chars = script_total_chars(scenes)
-    spoken_est = total_chars / chars_rate
-    coverage_pct = (spoken_est / chunk_dur * 100) if chunk_dur else 0
-    logger.info(
-        f"Chunk {chunk_index} final script: {len(scenes)} scenes, {total_chars} chars, "
-        f"~{spoken_est:.0f}s spoken = {coverage_pct:.0f}% of {chunk_dur:.0f}s input (target {st['coverage']}%)"
+    new_pronoun = _choose_first_person_pronoun(
+        [str(s.get("burmese") or "") for s in scenes],
+        preferred=new_pronoun or pronoun,
+        settings=st,
     )
 
-    try:
-        await asyncio.to_thread(client.files.delete, name=video_file.name)
-    except Exception as e:
-        logger.warning(f"Gemini delete error: {e}")
+    # Prompt-only first-person instructions are not sufficient.  Validate
+    # every scene's actual Burmese text and ask Gemini to rewrite only the
+    # scenes that still sound like a third-person summary.
+    for repair_round in range(FIRST_PERSON_REPAIR_ROUNDS):
+        bad_indexes = _first_person_bad_scene_indexes(scenes, new_pronoun)
+        if not bad_indexes:
+            break
+        await tracker.update(
+            "👤 ပထမလူအပြောပုံစံ မဖြစ်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
+            f"({repair_round + 1}/{FIRST_PERSON_REPAIR_ROUNDS})",
+            force=True,
+        )
+        accepted = 0
+        for start_index in range(0, len(bad_indexes), 5):
+            batch_indexes = bad_indexes[start_index:start_index + 5]
+            repair_prompt = _direct_first_person_repair_prompt(
+                scenes, batch_indexes, new_pronoun, new_protagonist
+            )
+            try:
+                repair_resp = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=PREFERRED_MODELS[0],
+                    contents=[video_file, repair_prompt],
+                    config=types.GenerateContentConfig(response_mime_type="application/json"),
+                )
+                repair_data = json.loads(repair_resp.text.strip())
+            except Exception as e:
+                logger.warning(f"Direct first-person repair failed: {e}")
+                continue
+            replacements = _parse_direct_scene_replacements(
+                repair_data, batch_indexes
+            )
+            for scene_index, new_text in replacements.items():
+                old_text = str(scenes[scene_index].get("burmese") or "")
+                if (
+                    _scene_is_first_person(new_text, new_pronoun)
+                    and len(new_text.strip()) >= max(1, int(len(old_text.strip()) * 0.9))
+                ):
+                    scenes[scene_index] = {
+                        **scenes[scene_index],
+                        "burmese": new_text.strip(),
+                    }
+                    accepted += 1
+        if accepted <= 0:
+            break
+
+    scenes = sort_scenes(scenes)
+    total_chars = script_total_chars(scenes)
+    spoken_est = total_chars / chars_rate if chars_rate else 0.0
+    coverage_pct = (spoken_est / chunk_dur * 100) if chunk_dur else 0
+    first_person_metrics = _first_person_metrics(
+        [str(s.get("burmese") or "") for s in scenes], new_pronoun
+    )
+    logger.info(
+        f"Chunk {chunk_index} final script: {len(scenes)} scenes, {total_chars} chars, "
+        f"~{spoken_est:.0f}s spoken = {coverage_pct:.0f}% of {chunk_dur:.0f}s input "
+        f"(target {st['coverage']}%), first-person="
+        f"{first_person_metrics.get('first_person_scene_count')}/{len(scenes)}"
+    )
 
     minimum_chars = _minimum_script_chars(target_chars)
-    if not scenes or total_chars < minimum_chars:
+    bad_first_person = first_person_metrics.get("bad_scene_indexes") or []
+    if not scenes or total_chars < minimum_chars or bad_first_person:
+        try:
+            await asyncio.to_thread(client.files.delete, name=video_file.name)
+        except Exception as e:
+            logger.warning(f"Gemini delete error: {e}")
         raise RuntimeError(
-            "Script length below target after top-ups: "
+            "Script failed duration/first-person validation after repairs: "
             f"{total_chars}/{target_chars} chars "
             f"(~{spoken_est:.1f}s of {chunk_dur:.1f}s input, "
-            f"target {float(st.get('coverage') or 90):.0f}%); "
-            "refusing to render a shortened recap"
+            f"target {float(st.get('coverage') or 90):.0f}%), "
+            f"third-person scene indexes={bad_first_person}; "
+            "refusing to render a shortened or third-person recap"
         )
 
     await tracker.update(
@@ -1273,77 +1717,207 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         force=True,
     )
 
-    keep_ranges = make_keep_ranges(chunk_dur, cuts, max_remove_ratio=float(st.get('cut') or 0) / 100.0)
-    kept_duration = sum(end - start for start, end in keep_ranges)
-
-    if kept_duration < chunk_dur * coverage_ratio:
-        logger.warning(f"Kept {kept_duration:.1f}s < {st['coverage']}%, forcing keep-all")
-        keep_ranges = [(0.0, chunk_dur)]
-        kept_duration = chunk_dur
-
-    await tracker.update(f"🎙️ {st.get('voice', 'Charon')} AI မှ အသံသွင်းနေပါသည်...", force=True)
-    clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
-
-    # Verify the actual spoken audio against the 90% target.  A script can
-    # satisfy the character estimate while TTS still truncates or reads far
-    # too little; never pad that failure into a seemingly complete video.
-    audio_seconds = sum(len(c) for c in clips) / SAMPLE_RATE + float(st.get('pause') or 0) * max(0, len(clips) - 1)
-    audio_pct = (audio_seconds / kept_duration * 100) if kept_duration else 0
-    speed = _settings_speed(st)
-    expected_audio_seconds = chunk_dur * coverage_ratio / speed
-    minimum_audio_seconds = expected_audio_seconds * SCRIPT_MIN_NARRATION_RATIO
-    logger.info(
-        f"Chunk {chunk_index} TTS audio: {audio_seconds:.0f}s = {audio_pct:.0f}% "
-        f"of kept video {kept_duration:.0f}s (target ~{st['coverage']}% of input)"
+    target_final_seconds, duration_low, duration_high = _final_duration_window(
+        chunk_dur, st
     )
-    if expected_audio_seconds > 0 and audio_seconds < minimum_audio_seconds:
+    await tracker.update(f"🎙️ {st.get('voice', 'Charon')} AI မှ အသံသွင်းနေပါသည်...", force=True)
+
+    # Character counts are only an estimate.  Measure the real TTS audio;
+    # if it is not already at the requested final duration, use this job's
+    # measured chars/second to ask Gemini for precisely the missing amount
+    # (or proportionally trim every scene if it is too long), then TTS again.
+    clips = []
+    audio_seconds = 0.0
+    duration_status = "unknown"
+    calibration_history = []
+    try:
+        clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
+        for calibration_round in range(DURATION_CALIBRATION_ROUNDS + 1):
+            if clips is None or len(clips) < len(scenes):
+                raise RuntimeError("Gemini TTS returned too few clips")
+            clips = list(clips)[:len(scenes)]
+            measurements = _narration_measurements(scenes, clips, st)
+            audio_seconds = float(measurements.get("narration_seconds") or 0)
+            silent_count = int(measurements.get("silent_count") or 0)
+            if silent_count == len(clips) or silent_count > max(1, int(len(clips) * 0.25)):
+                raise RuntimeError(
+                    f"Gemini TTS produced too many silent scenes: {silent_count}/{len(clips)}"
+                )
+            duration_status = _duration_status(audio_seconds, chunk_dur, st)
+            calibration_history.append({
+                "round": calibration_round,
+                **measurements,
+                "status": duration_status,
+            })
+            logger.info(
+                f"Chunk {chunk_index} measured TTS round {calibration_round}: "
+                f"{audio_seconds:.1f}s actual, target {target_final_seconds:.1f}s "
+                f"from {chunk_dur:.1f}s input, status={duration_status}, "
+                f"measured_rate={measurements.get('measured_chars_per_second')} chars/s"
+            )
+            if duration_status == "on_target":
+                break
+            if calibration_round >= DURATION_CALIBRATION_ROUNDS:
+                break
+
+            measured_rate = float(
+                measurements.get("measured_chars_per_second")
+                or (chars_rate * _settings_speed(st))
+            )
+            desired_speech_seconds = max(
+                0.1,
+                target_final_seconds - float(measurements.get("pause_total_seconds") or 0),
+            )
+            current_chars = script_total_chars(scenes)
+
+            if duration_status == "short":
+                desired_total_chars = int(math.ceil(
+                    desired_speech_seconds * measured_rate * 1.01
+                ))
+                missing_chars = max(1, desired_total_chars - current_chars)
+                await tracker.update(
+                    f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ပဲရှိသေးလို့ "
+                    f"ပစ်မှတ် {fmt_time(target_final_seconds)} ပြည့်အောင် "
+                    f"script ထပ်ဖြည့်နေပါသည်... ({calibration_round + 1}/{DURATION_CALIBRATION_ROUNDS})",
+                    force=True,
+                )
+                extra_prompt = f"""
+မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ အတိုချုပ်လွန်းသော/ကျန်ခဲ့သော အပိုင်းများကို scene အသစ်များအဖြစ် ထပ်ဖြည့်ပါ။
+ယခင် scenes များကို ပြန်မပေးပါနှင့် — အသစ်ထပ်ထည့်ရမည့် scenes များကိုသာ ပေးပါ။
+အသစ်စာသား စုစုပေါင်း အနည်းဆုံး {missing_chars} လုံး ရှိရမည်ဖြစ်ပြီး ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ပြည့်ရမည်။
+ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{new_pronoun}» တစ်မျိုးတည်းကိုသာ သုံးရမည်။
+Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမည်။
+ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။
+
+ရှိပြီးသား script:
+{json.dumps(scenes, ensure_ascii=False)}
+
+JSON ကိုသာပြန်ပေးပါ:
+{{"pronoun": "{new_pronoun}", "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော ပထမလူစာသား"}}], "cuts": []}}
+""".strip()
+                try:
+                    resp2 = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=PREFERRED_MODELS[0],
+                        contents=[video_file, extra_prompt],
+                        config=types.GenerateContentConfig(response_mime_type="application/json"),
+                    )
+                    extra = json.loads(resp2.text.strip())
+                except Exception as e:
+                    logger.warning(f"Direct duration calibration top-up failed: {e}")
+                    break
+                raw_extra_scenes = []
+                if isinstance(extra, dict):
+                    raw_extra_scenes = extra.get("scenes", [])
+                    cuts.extend(extra.get("cuts", []))
+                elif isinstance(extra, list):
+                    raw_extra_scenes = extra
+                accepted_scenes = [
+                    scene for scene in raw_extra_scenes
+                    if isinstance(scene, dict)
+                    and _scene_is_first_person(
+                        str(scene.get("burmese") or ""), new_pronoun
+                    )
+                ]
+                if not accepted_scenes:
+                    logger.warning("Direct duration calibration returned no first-person scenes")
+                    break
+                scenes.extend(accepted_scenes)
+                scenes = sort_scenes(scenes)
+                if script_total_chars(scenes) <= current_chars:
+                    break
+            elif duration_status == "long":
+                desired_total_chars = int(math.floor(
+                    desired_speech_seconds * measured_rate * 0.99
+                ))
+                await tracker.update(
+                    f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ရှည်နေလို့ "
+                    f"ပစ်မှတ် {fmt_time(target_final_seconds)} ဖြစ်အောင် ချိန်နေပါသည်...",
+                    force=True,
+                )
+                trimmed = trim_scenes_proportionally(scenes, desired_total_chars)
+                if script_total_chars(trimmed) >= current_chars:
+                    break
+                scenes = sort_scenes(trimmed)
+            else:
+                break
+
+            clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
+    finally:
+        try:
+            await asyncio.to_thread(client.files.delete, name=video_file.name)
+        except Exception as e:
+            logger.warning(f"Gemini delete error: {e}")
+
+    if duration_status != "on_target":
         raise RuntimeError(
-            "TTS narration below target: "
-            f"{audio_seconds:.1f}s actual, expected at least "
-            f"{minimum_audio_seconds:.1f}s (target {expected_audio_seconds:.1f}s "
-            f"from {chunk_dur:.1f}s input); refusing to render a shortened recap"
+            "Measured TTS duration is outside the final-duration target after "
+            f"calibration: {audio_seconds:.1f}s actual, target "
+            f"{target_final_seconds:.1f}s (acceptable {duration_low:.1f}-"
+            f"{duration_high:.1f}s from {chunk_dur:.1f}s input); "
+            "refusing to render a video with the wrong duration"
         )
 
-    out_w, out_h = compute_output_dims(*probe_video_info(chunk_path)[1:], int(st.get('resolution') or 1280))
-    shield_v = "crop=iw*0.96:ih*0.96,hflip," if st.get("shield") else ""
-    color = "eq=contrast=1.08:saturation=1.12:gamma=1.02," if st.get("color") else ""
+    out_w, out_h = compute_output_dims(
+        *probe_video_info(chunk_path)[1:], int(st.get("resolution") or 1280)
+    )
+    pause_seconds = _settings_pause_seconds(st)
+    audio_durations = [
+        float(_clip_array(clip).size) / SAMPLE_RATE for clip in clips
+    ]
+    # Align each source scene to its measured narration clip.  The old
+    # direct renderer kept almost the whole source chunk and padded audio
+    # with silence, so neither the spoken content nor final duration was
+    # actually controlled by the 90% setting.
+    plan = _build_alignment_plan(
+        scenes, audio_durations, chunk_dur, pause_seconds=pause_seconds
+    )
+    expected_final_seconds = sum(
+        float(item.get("desired_output_seconds") or 0) for item in plan
+    )
+    if not _duration_is_on_target(expected_final_seconds, chunk_dur, st):
+        raise RuntimeError(
+            "Direct render plan is outside the final-duration target: "
+            f"{expected_final_seconds:.1f}s planned, target "
+            f"{target_final_seconds:.1f}s from {chunk_dur:.1f}s input"
+        )
 
     master_pcm_path = os.path.join(os.path.dirname(chunk_path), "master_audio.pcm")
+    pause_samples = int(round(pause_seconds * SAMPLE_RATE))
     with open(master_pcm_path, "wb") as pcm_f:
-        for clip in clips:
-            np.clip(clip * 32767.0, -32768, 32767).astype(np.int16).tofile(pcm_f)
-            pause_samples = int(float(st.get('pause') or 0) * SAMPLE_RATE)
-            if pause_samples > 0:
+        for clip_index, clip in enumerate(clips):
+            arr = _clip_array(clip)
+            np.clip(arr * 32767.0, -32768, 32767).astype(np.int16).tofile(pcm_f)
+            if pause_samples > 0 and clip_index < len(clips) - 1:
                 np.zeros(pause_samples, dtype=np.int16).tofile(pcm_f)
 
     master_wav = os.path.join(os.path.dirname(chunk_path), "master_audio.wav")
-    run_cmd([
+    result = run_cmd([
         FFMPEG_BIN, "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1",
         "-i", master_pcm_path, master_wav,
     ], 120)
     if os.path.exists(master_pcm_path):
         os.remove(master_pcm_path)
+    if result.returncode != 0 or not os.path.exists(master_wav):
+        raise RuntimeError("master narration WAV creation failed")
 
     seg_files = []
     await tracker.update("🎬 ဗီဒီယို ပြင်ဆင်နေပါသည်...", force=True)
 
-    for index, (start, end) in enumerate(keep_ranges):
-        segment_duration = end - start
-        segment_path = os.path.join(os.path.dirname(chunk_path), f"seg_{index:03d}.mp4")
-        fc = (
-            f"{shield_v}"
-            f"fps=25,"
-            f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase:flags=bicubic,"
-            f"crop={out_w}:{out_h},"
-            f"{color}format=yuv420p"
+    for index, item in enumerate(plan):
+        segment_path = os.path.join(
+            os.path.dirname(chunk_path), f"seg_{index:03d}.mp4"
+        )
+        ffmpeg_filter = _worker_video_filter(
+            out_w, out_h, st, float(item.get("freeze_seconds") or 0)
         )
         result = await asyncio.to_thread(run_cmd, [
             FFMPEG_BIN, "-y",
-            "-ss", f"{start:.3f}",
+            "-ss", f"{float(item.get('source_start') or 0):.3f}",
             "-i", chunk_path,
-            "-t", f"{segment_duration:.3f}",
+            "-t", f"{max(0.04, float(item.get('input_seconds') or 0.04)):.3f}",
             "-an",
-            "-vf", fc,
+            "-vf", ffmpeg_filter,
             "-c:v", "libx264",
             "-preset", "superfast" if st.get("fast_mode") else "ultrafast",
             "-crf", str(int(st.get("quality") or 23)),
@@ -1355,18 +1929,21 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         seg_files.append(segment_path)
 
     concat_txt = os.path.join(os.path.dirname(chunk_path), "concat.txt")
-    with open(concat_txt, "w") as f:
+    with open(concat_txt, "w", encoding="utf-8") as f:
         for tp in seg_files:
-            f.write(f"file '{tp}'\n")
+            escaped = tp.replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
 
     video_only = os.path.join(os.path.dirname(chunk_path), "video_only.mp4")
-    await asyncio.to_thread(run_cmd, [
+    result = await asyncio.to_thread(run_cmd, [
         FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
         "-i", concat_txt, "-c", "copy", video_only,
     ], 300)
+    if result.returncode != 0 or not os.path.exists(video_only):
+        raise RuntimeError("direct video concat failed")
 
     out_chunk = chunk_path.replace(".mp4", "_recap.mp4")
-    await asyncio.to_thread(run_cmd, [
+    result = await asyncio.to_thread(run_cmd, [
         FFMPEG_BIN, "-y",
         "-i", video_only,
         "-i", master_wav,
@@ -1375,11 +1952,26 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "128k",
-        "-af", "apad",
-        "-t", f"{kept_duration:.3f}",
+        "-t", f"{expected_final_seconds:.3f}",
         "-movflags", "+faststart",
         out_chunk,
     ], 300)
+    if result.returncode != 0 or not os.path.exists(out_chunk):
+        raise RuntimeError("direct final mux failed")
+
+    final_chunk_duration, _, _ = probe_video_info(out_chunk)
+    if not _duration_is_on_target(final_chunk_duration, chunk_dur, st):
+        raise RuntimeError(
+            "Direct rendered chunk duration is outside target: "
+            f"{final_chunk_duration:.1f}s actual, target "
+            f"{target_final_seconds:.1f}s (acceptable {duration_low:.1f}-"
+            f"{duration_high:.1f}s from {chunk_dur:.1f}s input)"
+        )
+    logger.info(
+        f"Chunk {chunk_index} direct final duration verified: "
+        f"{final_chunk_duration:.2f}s / {chunk_dur:.2f}s = "
+        f"{final_chunk_duration / chunk_dur * 100 if chunk_dur else 0:.1f}%"
+    )
 
     for f in [chunk_path, video_only, master_wav, concat_txt] + seg_files:
         if os.path.exists(f):
@@ -1537,6 +2129,21 @@ def _save_worker_job(state: dict) -> dict:
     job_dir = _worker_job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
     state["job_dir"] = job_dir
+    # A Telegram Cancel tap may persist ``cancel_requested=True`` while a
+    # running stage still holds an older in-memory copy.  Never let that
+    # older copy overwrite the user's cancel request on its next progress
+    # save; otherwise the visible button appears to do nothing.
+    if job_id and not state.get("cancel_requested"):
+        try:
+            existing_path = _worker_state_file(job_id)
+            if os.path.exists(existing_path):
+                with open(existing_path, encoding="utf-8") as existing_f:
+                    existing = json.load(existing_f)
+                if existing.get("cancel_requested"):
+                    state["cancel_requested"] = True
+                    CANCELLED_JOBS.add(job_id)
+        except Exception:
+            pass
     state["updated_at"] = _worker_now()
     tmp_path = _worker_state_file(job_id) + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -1672,7 +2279,8 @@ def _create_worker_job(
             if settings != state.get("settings"):
                 state["settings"] = settings
                 changed = True
-        ACTIVE_JOBS[chat_id] = job_id
+        if state.get("status") not in ("delivered", "cancelled", "failed"):
+            ACTIVE_JOBS[chat_id] = job_id
         return _save_worker_job(state) if changed else state
 
     settings = get_user_settings(chat_id)
@@ -1734,6 +2342,73 @@ def _clear_worker_active(state: dict):
         return
     if ACTIVE_JOBS.get(chat_id) == state.get("job_id"):
         ACTIVE_JOBS.pop(chat_id, None)
+
+
+def request_cancel_active_job(chat_id) -> str:
+    """Cancel the chat's direct or worker job and persist worker intent."""
+    try:
+        chat_key = int(chat_id)
+    except (TypeError, ValueError):
+        return ""
+    job_id = str(ACTIVE_JOBS.get(chat_key) or "")
+    if not job_id:
+        return ""
+    CANCELLED_JOBS.add(job_id)
+    try:
+        state = _load_worker_job(job_id)
+        if int(state.get("chat_id") or 0) == chat_key:
+            state["cancel_requested"] = True
+            if state.get("status") in ("queued", "running", "stage_done"):
+                state["status"] = "cancelling"
+            _save_worker_job(state)
+            task = WORKER_TASKS.get(job_id)
+            if task and not task.done():
+                task.cancel()
+    except Exception:
+        # Direct-pipeline jobs have no worker state file; the in-memory
+        # CANCELLED_JOBS marker above is their cancellation signal.
+        pass
+    return job_id
+
+
+async def request_cancel_active_job_async(chat_id) -> str:
+    """Telegram-cancel a job and finalize an idle worker job immediately.
+
+    If a worker stage task is running, cancelling that task lets
+    ``_run_worker_stage`` perform terminal cleanup.  Between stages there
+    is no task, however, so finalize here; otherwise the chat would remain
+    blocked in ACTIVE_JOBS until n8n happened to call another endpoint.
+    """
+    job_id = request_cancel_active_job(chat_id)
+    if not job_id:
+        return ""
+
+    needs_terminal = False
+    state = None
+    async with WORKER_JOB_LOCK:
+        try:
+            state = _load_worker_job(job_id)
+        except Exception:
+            return job_id
+        task = WORKER_TASKS.get(job_id)
+        if task and not task.done():
+            return job_id
+        if state.get("status") in ("delivered", "cancelled"):
+            return job_id
+        current_stage = state.get("current_stage") or _next_worker_stage(state)
+        if current_stage:
+            info = (state.get("stages") or {}).get(current_stage) or {}
+            if info.get("status") not in ("done", "cancelled"):
+                _set_worker_stage(
+                    state, current_stage, "cancelled", error="cancelled"
+                )
+        state["cancel_requested"] = True
+        _save_worker_job(state)
+        needs_terminal = True
+
+    if needs_terminal and state is not None:
+        await _worker_terminal(state, "cancelled", "cancelled")
+    return job_id
 
 
 def _worker_tracker(state: dict):
@@ -2193,7 +2868,11 @@ async def _worker_stage_transcribe(state: dict, tracker=None):
 def _rewrite_target_chars_for_duration(duration_seconds: float, settings: dict = None) -> int:
     coverage_ratio = _settings_coverage_ratio(settings)
     rate = _settings_script_rate(settings)
-    return max(0, int(float(duration_seconds or 0) * coverage_ratio * rate))
+    speed = _settings_speed(settings)
+    return max(
+        0,
+        int(float(duration_seconds or 0) * coverage_ratio * rate * speed),
+    )
 
 
 def _rewrite_target_chars_for_speech(speech_seconds: float, settings: dict = None) -> int:
@@ -2311,14 +2990,16 @@ def _rewrite_prompt(
     settings: dict,
     existing_by_group: dict = None,
     expand: bool = False,
+    repair_first_person: bool = False,
+    adjust_mode: str = "",
 ) -> str:
     st = _with_required_coverage(settings)
     context = story_context or {}
     pronoun = str(context.get("pronoun") or "").strip()
     protagonist = str(context.get("protagonist") or "").strip()
-    voice_pronoun = "ကျွန်မ" if st.get("voice") in ("Kore", "Aoede") else "ကျွန်တော်"
-    if pronoun in ("ကျွန်တော်", "ကျွန်မ"):
-        other = "ကျွန်မ" if pronoun == "ကျွန်တော်" else "ကျွန်တော်"
+    voice_pronoun = _voice_first_person_pronoun(st)
+    if pronoun in FIRST_PERSON_PRONOUNS:
+        other = _other_first_person_pronoun(pronoun)
         pronoun_line = (
             f"ပြောနေသူသည် «{pronoun}» ကိုသာ ဆက်တိုက်သုံးပါ။ "
             f"ကိုယ့်ကို «{other}» ဟု လုံးဝမပြောင်းပါနှင့်။"
@@ -2350,19 +3031,44 @@ def _rewrite_prompt(
             "target_burmese_chars": target_chars,
             "source_text": str(group.get("source_text") or ""),
         }
-        if expand:
+        if expand or repair_first_person or adjust_mode:
             item["current_burmese_chars"] = len(current_text)
             item["minimum_additional_chars"] = max(0, target_chars - len(current_text))
+            item["desired_burmese_chars"] = target_chars
             if current_text:
                 item["existing_burmese"] = current_text
         payload_groups.append(item)
 
-    task_line = (
-        "existing_burmese ကို အပိုင်းအစလေးမျှသာ ပြန်မပေးဘဲ scene အပြည့်အစုံကို ပြန်ရေးပြီး "
-        "source_text ထဲက ကျန်နေသေးသော အချက်အလက်အားလုံးဖြင့် target ပြည့်အောင် ချဲ့ရေးပါ။"
-        if expand
-        else "source_text ကို Burmese ပထမလူ ဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပါ။"
-    )
+    if repair_first_person:
+        task_line = (
+            "FIRST-PERSON REPAIR — existing_burmese ၏ အကြောင်းအရာအားလုံးကို မလျော့ဘဲ "
+            "အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောနေသလို scene အပြည့်အစုံ ပြန်ရေးပါ။"
+        )
+    elif adjust_mode == "shorten":
+        task_line = (
+            "existing_burmese ကို အဓိကအချက်အားလုံးထိန်းပြီး desired_burmese_chars "
+            "ပမာဏအထိ တိုအောင် scene အပြည့်အစုံ ပြန်ရေးပါ။"
+        )
+    elif expand or adjust_mode == "expand":
+        task_line = (
+            "existing_burmese ကို အပိုင်းအစလေးမျှသာ ပြန်မပေးဘဲ scene အပြည့်အစုံကို ပြန်ရေးပြီး "
+            "source_text ထဲက ကျန်နေသေးသော အချက်အလက်အားလုံးဖြင့် target ပြည့်အောင် ချဲ့ရေးပါ။"
+        )
+    else:
+        task_line = "source_text ကို Burmese ပထမလူ ဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပါ။"
+
+    if adjust_mode == "shorten":
+        length_line = (
+            "Scene တစ်ခုစီ၏ နောက်ဆုံးအရှည်သည် `desired_burmese_chars` ၏ 95%–105% "
+            "အတွင်း ဖြစ်ရမည်။ အဆုံးခန်းတွေကို မဖျက်ဘဲ scene တိုင်းကို အချိုးကျ ချုံ့ပါ။"
+        )
+    else:
+        length_line = (
+            "Scene တစ်ခုစီအတွက် Burmese စာသား အရှည်သည် `target_burmese_chars` ထက် မနည်းရပါ။ "
+            "\"ခန့်\" မဟုတ်ပါ — ၎င်းသည် အနိမ့်ဆုံးလိုအပ်သော ပမာဏဖြစ်သည်။ Expand mode တွင်မူ "
+            "နောက်ဆုံး scene တစ်ခုစီသည် `current_burmese_chars + minimum_additional_chars` "
+            "ပြည့်ရမည်ဖြစ်ပြီး အပိုင်းအစလေးမဟုတ်ဘဲ scene အပြည့်အစုံကို ပြန်ပေးရမည်။"
+        )
     context_json = json.dumps({
         "protagonist": protagonist,
         "pronoun": pronoun,
@@ -2381,12 +3087,13 @@ def _rewrite_prompt(
 
 လိုက်နာရမည်များ:
 - Output သည် Burmese သာ ဖြစ်ရမည်။ မူရင်းဘာသာစကားကို ဘာသာပြန်ပါ။
-- အကျဉ်းချုပ် မဟုတ်ပါ။ Group တစ်ခုစီရှိ အကြောင်းအရာအားလုံးနီးပါးကို အပြည့်အဝ ပြန်ပြောပါ။ Target coverage = {st.get('coverage')}% ဖြစ်သည်။
+- အကျဉ်းချုပ် မဟုတ်ပါ။ Group တစ်ခုစီရှိ အကြောင်းအရာအားလုံးနီးပါးကို အပြည့်အဝ ပြန်ပြောပါ။ နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်း video ၏ {st.get('coverage')}% ဖြစ်ရမည်။
 - Input group တစ်ခုအတွက် output scene တစ်ခုတည်းသာ ထုတ်ပါ။ group_id ကို အတိအကျ ကူးထည့်ပါ။ Group များကို မပေါင်းပါနှင့်၊ မခွဲပါနှင့်၊ အစဉ်မပြောင်းပါနှင့်။
 - start/end သို့မဟုတ် source_segment_ids ကို ကိုယ်တိုင် မဖန်တီးပါနှင့်။ ၎င်းတို့ကို worker က ထည့်ပေးမည်။
-- Scene တစ်ခုစီအတွက် Burmese စာသား အရှည်သည် `target_burmese_chars` ထက် မနည်းရပါ။ "ခန့်" မဟုတ်ပါ — ၎င်းသည် အနိမ့်ဆုံးလိုအပ်သော ပမာဏဖြစ်သည်။ Expand mode တွင်မူ နောက်ဆုံး scene တစ်ခုစီသည် `current_burmese_chars + minimum_additional_chars` ပြည့်ရမည်ဖြစ်ပြီး အပိုင်းအစလေးမဟုတ်ဘဲ scene အပြည့်အစုံကို ပြန်ပေးရမည်။
+- {length_line}
 - JSON မထုတ်ခင် scene တစ်ခုချင်းစီ၏ စာလုံးအရေအတွက်ကို ကိုယ့်ဘာသာစစ်ပါ။ Target မပြည့်သေးပါက source_text ထဲရှိ အရာ၊ နေရာ၊ အကြောင်းရင်း၊ စကားပြောချက်၊ တုံ့ပြန်မှုနှင့် အကျိုးဆက်များကို မထပ်ဘဲ ပိုမိုအသေးစိတ်ထည့်ပြီးမှ ထုတ်ပါ။ စကားလုံးထပ်ခြင်း၊ filler ထပ်ခြင်းဖြင့် အရှည်မဖြည့်ပါနှင့်။
 - ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို နာမည် သို့မဟုတ် «သူ/သူမ» ဟု မညွှန်းပါနှင့်။
+- **Scene တိုင်း၏ ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် ရွေးထားသော နာမ်စား အနည်းဆုံးတစ်ကြိမ် မဖြစ်မနေပါရမည်။** pronoun field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
 - အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «အဲဒီတုန်းက ကျွန်တော်/ကျွန်မ မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှသိလိုက်ရတာက…» ပုံစံဖြင့် retrospective ရေးပါ။
 - Transcript တွင် မပါသော အဖြစ်အပျက်၊ အမည်၊ အကြောင်းရင်းများကို မတီထွင်ပါနှင့်။
 - Dialogue ၏ အဓိပ္ပာယ်နှင့် ပြောသူ/ကြားသူကို ထိန်းသိမ်းပါ။ တိုက်ရိုက်စာလုံးချင်း ကူးနိုင်သလောက် တိကျကျ Burmese အဖြစ် ပြန်ရေးပါ။
@@ -2408,6 +3115,94 @@ JSON ကိုသာ အောက်ပါပုံစံဖြင့် ပြ�
   ]
 }}
 """.strip()
+
+
+async def _repair_worker_first_person_scenes(
+    groups: list,
+    scenes_by_group: dict,
+    target_by_group: dict,
+    story_context: dict,
+    settings: dict,
+    client,
+    state: dict = None,
+    tracker=None,
+    rounds: int = FIRST_PERSON_REPAIR_ROUNDS,
+) -> tuple:
+    """Rewrite worker scenes whose actual text is not first-person.
+
+    Returns ``(selected_pronoun, remaining_bad_group_ids)`` and mutates
+    ``scenes_by_group``/``story_context`` only with validated replacements.
+    """
+    texts = [str(v or "") for v in (scenes_by_group or {}).values()]
+    selected = _choose_first_person_pronoun(
+        texts,
+        preferred=str((story_context or {}).get("pronoun") or ""),
+        settings=settings,
+    )
+    story_context["pronoun"] = selected
+    group_by_id = {}
+    for group in groups or []:
+        try:
+            group_by_id[int(group.get("group_id") or 0)] = group
+        except (TypeError, ValueError, AttributeError):
+            continue
+
+    def bad_group_ids():
+        bad = []
+        for gid, group in group_by_id.items():
+            text = str(scenes_by_group.get(gid) or "").strip()
+            if text and not _scene_is_first_person(text, selected):
+                bad.append(gid)
+        return sorted(bad)
+
+    for repair_round in range(max(0, int(rounds or 0))):
+        bad_ids = bad_group_ids()
+        if not bad_ids:
+            break
+        if state is not None:
+            await _worker_progress(
+                state,
+                "👤 ပထမလူအပြောပုံစံ မဖြစ်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
+                f"({repair_round + 1}/{rounds})",
+                tracker,
+            )
+        accepted = 0
+        bad_groups = [group_by_id[gid] for gid in bad_ids if gid in group_by_id]
+        for batch in _batch_transcript_groups(
+            bad_groups, max_groups=5, max_chars=3000
+        ):
+            allowed = [int(g["group_id"]) for g in batch]
+            prompt = _rewrite_prompt(
+                batch,
+                target_by_group,
+                story_context,
+                settings,
+                existing_by_group=scenes_by_group,
+                repair_first_person=True,
+            )
+            try:
+                data = await _worker_gemini_json(prompt, client)
+            except Exception as e:
+                logger.warning(f"Worker first-person repair failed: {e}")
+                continue
+            parsed, response_protagonist, _ = _parse_rewrite_response(
+                data, allowed
+            )
+            if response_protagonist and not story_context.get("protagonist"):
+                story_context["protagonist"] = response_protagonist
+            for gid, new_text in parsed.items():
+                old_text = str(scenes_by_group.get(int(gid)) or "")
+                if (
+                    _scene_is_first_person(new_text, selected)
+                    and len(new_text.strip()) >= max(
+                        1, int(len(old_text.strip()) * 0.9)
+                    )
+                ):
+                    scenes_by_group[int(gid)] = new_text.strip()
+                    accepted += 1
+        if accepted <= 0:
+            break
+    return selected, bad_group_ids()
 
 
 async def _worker_stage_rewrite(state: dict, tracker=None):
@@ -2578,6 +3373,21 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                     _detect_pronoun(" ".join(parsed.values())) or response_pronoun
                 )
 
+    # Validate/repair the actual narration text before length top-ups.  A
+    # correct JSON pronoun field does not prove the Burmese text itself is
+    # first-person; the previous system accepted third-person summaries.
+    selected_pronoun, _ = await _repair_worker_first_person_scenes(
+        groups,
+        scenes_by_group,
+        target_by_group,
+        story_context,
+        settings,
+        client,
+        state=state,
+        tracker=tracker,
+    )
+    story_context["pronoun"] = selected_pronoun
+
     # Expand underfilled groups using only omitted facts from their own
     # source.  Small batches are deliberate: asking Gemini to expand dozens
     # of scenes at once reliably produces another summary.  Stop early only
@@ -2637,15 +3447,32 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             parsed, _, _ = _parse_rewrite_response(data, allowed)
             for gid, new_text in parsed.items():
                 old_text = str(scenes_by_group.get(int(gid)) or "")
-                if len(new_text.strip()) > len(old_text.strip()):
+                if (
+                    len(new_text.strip()) > len(old_text.strip())
+                    and _scene_is_first_person(new_text, selected_pronoun)
+                ):
                     scenes_by_group[int(gid)] = new_text.strip()
 
+    selected_pronoun, bad_first_person_groups = (
+        await _repair_worker_first_person_scenes(
+            groups,
+            scenes_by_group,
+            target_by_group,
+            story_context,
+            settings,
+            client,
+            state=state,
+            tracker=tracker,
+            rounds=2,
+        )
+    )
+    story_context["pronoun"] = selected_pronoun
     coverage_metrics = _calculate_transcript_coverage(
         groups, scenes_by_group, target_by_group=target_by_group
     )
     total_chars = sum(len(v.strip()) for v in scenes_by_group.values())
     required_ratio = _settings_coverage_ratio(settings)
-    script_rate = _settings_script_rate(settings)
+    script_rate = _settings_script_rate(settings) * _settings_speed(settings)
     estimated_spoken_seconds = total_chars / script_rate if script_rate else 0.0
     target_narration_seconds = target_basis_seconds * required_ratio
     coverage_metrics.update({
@@ -2671,8 +3498,25 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         "scene_count": len(scenes_by_group),
         "language": str(transcript.get("language") or ""),
     })
+    ordered_scene_texts = [
+        str(scenes_by_group.get(int(g.get("group_id") or 0)) or "")
+        for g in groups
+        if str(scenes_by_group.get(int(g.get("group_id") or 0)) or "").strip()
+    ]
+    first_person_metrics = _first_person_metrics(
+        ordered_scene_texts, selected_pronoun
+    )
+    coverage_metrics["first_person"] = first_person_metrics
+    coverage_metrics["first_person_pronoun"] = selected_pronoun
+    coverage_metrics["bad_first_person_group_ids"] = bad_first_person_groups
     if not scenes_by_group:
         raise WorkerJobError("Gemini returned no usable rewritten scenes")
+    if bad_first_person_groups:
+        raise WorkerJobError(
+            "Script is not first-person in every scene after repairs: "
+            f"pronoun={selected_pronoun}, bad_group_ids={bad_first_person_groups}; "
+            "refusing to deliver a third-person recap"
+        )
     if float(coverage_metrics.get("speech_coverage_ratio") or 0) < required_ratio:
         raise WorkerJobError(
             "Transcript coverage is below target: "
@@ -2756,6 +3600,281 @@ def _write_worker_json(state: dict, relative_path: str, data: dict):
     return path
 
 
+def _worker_script_groups(script: dict, scenes: list) -> list:
+    groups = []
+    seen = set()
+    for group in (script or {}).get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        try:
+            gid = int(group.get("group_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if gid <= 0 or gid in seen:
+            continue
+        seen.add(gid)
+        clean = dict(group)
+        clean["group_id"] = gid
+        groups.append(clean)
+    if groups:
+        return sorted(groups, key=lambda g: int(g.get("group_id") or 0))
+
+    # Legacy script artifacts may not retain transcript groups.  Build a
+    # minimal group from each scene so duration repair can still operate;
+    # Gemini is instructed to preserve the existing scene's facts.
+    for index, scene in enumerate(scenes or [], start=1):
+        if not isinstance(scene, dict):
+            continue
+        try:
+            gid = int(scene.get("group_id") or index)
+            start = float(scene.get("start") or 0)
+            end = float(scene.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        groups.append({
+            "group_id": gid,
+            "source_segment_ids": scene.get("source_segment_ids") or [],
+            "start": start,
+            "end": end,
+            "speech_seconds": max(0.0, end - start),
+            "timeline_seconds": float(scene.get("timeline_seconds") or max(0.0, end - start)),
+            "source_text": str(scene.get("burmese") or ""),
+        })
+    return groups
+
+
+def _allocate_worker_duration_targets(
+    scenes: list,
+    groups: list,
+    desired_total_chars: int,
+    mode: str,
+) -> dict:
+    group_by_id = {}
+    for group in groups or []:
+        try:
+            group_by_id[int(group.get("group_id") or 0)] = group
+        except (TypeError, ValueError, AttributeError):
+            continue
+    weights = {}
+    currents = {}
+    for scene in scenes or []:
+        if not isinstance(scene, dict):
+            continue
+        try:
+            gid = int(scene.get("group_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if gid <= 0:
+            continue
+        current = len(str(scene.get("burmese") or "").strip())
+        currents[gid] = current
+        group = group_by_id.get(gid) or {}
+        weight = float(
+            group.get("timeline_seconds")
+            or scene.get("timeline_seconds")
+            or group.get("speech_seconds")
+            or scene.get("speech_seconds")
+            or 0
+        )
+        if weight <= 0:
+            try:
+                weight = max(
+                    0.0,
+                    float(scene.get("end") or 0) - float(scene.get("start") or 0),
+                )
+            except (TypeError, ValueError):
+                weight = 0.0
+        weights[gid] = weight if weight > 0 else float(max(1, current))
+    total_weight = sum(weights.values())
+    desired_total = max(0, int(desired_total_chars or 0))
+    targets = {}
+    for gid, current in currents.items():
+        allocated = (
+            int(round(desired_total * weights[gid] / total_weight))
+            if total_weight > 0 else current
+        )
+        if mode == "expand":
+            targets[gid] = max(current, allocated)
+        elif mode == "shorten":
+            targets[gid] = min(current, allocated)
+        else:
+            targets[gid] = allocated
+    return targets
+
+
+async def _worker_adjust_scenes_for_duration(
+    state: dict,
+    script: dict,
+    scenes: list,
+    desired_by_group: dict,
+    mode: str,
+    settings: dict,
+    tracker=None,
+) -> tuple:
+    """Use Gemini to expand scenes toward measured-duration targets."""
+    groups = _worker_script_groups(script, scenes)
+    if not groups:
+        return scenes, [], _voice_first_person_pronoun(settings)
+    scenes_by_group = {}
+    scene_by_group = {}
+    for scene in scenes or []:
+        if not isinstance(scene, dict):
+            continue
+        try:
+            gid = int(scene.get("group_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if gid > 0:
+            scenes_by_group[gid] = str(scene.get("burmese") or "").strip()
+            scene_by_group[gid] = scene
+
+    story_context = dict((script or {}).get("story_context") or state.get("story_context") or {})
+    selected = _choose_first_person_pronoun(
+        [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
+        preferred=str(story_context.get("pronoun") or ""),
+        settings=settings,
+    )
+    story_context["pronoun"] = selected
+
+    candidates = []
+    for group in groups:
+        gid = int(group.get("group_id") or 0)
+        current = len(str(scenes_by_group.get(gid) or ""))
+        desired = int(desired_by_group.get(gid) or current)
+        text = str(scenes_by_group.get(gid) or "")
+        needs_duration = (
+            (mode == "expand" and desired > int(current * 1.02))
+            or (mode == "shorten" and desired < int(current * 0.98))
+        )
+        if needs_duration or not _scene_is_first_person(text, selected):
+            candidates.append(group)
+    if not candidates:
+        return scenes, [], selected
+
+    if not GEMINI_API_KEY:
+        raise WorkerJobError("GEMINI_API_KEY is not configured for duration calibration")
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    changed = []
+    for batch in _batch_transcript_groups(candidates, max_groups=5, max_chars=3000):
+        _worker_check_cancelled(state)
+        allowed = [int(g["group_id"]) for g in batch]
+        prompt = _rewrite_prompt(
+            batch,
+            desired_by_group,
+            story_context,
+            settings,
+            existing_by_group=scenes_by_group,
+            expand=(mode == "expand"),
+            adjust_mode=mode,
+        )
+        data = await _worker_gemini_json(prompt, client)
+        parsed, response_protagonist, _ = _parse_rewrite_response(data, allowed)
+        if response_protagonist and not story_context.get("protagonist"):
+            story_context["protagonist"] = response_protagonist
+        for gid, new_text in parsed.items():
+            gid = int(gid)
+            old_text = str(scenes_by_group.get(gid) or "")
+            desired = int(desired_by_group.get(gid) or len(old_text))
+            new_len = len(new_text.strip())
+            if not _scene_is_first_person(new_text, selected):
+                continue
+            if not _scene_is_first_person(old_text, selected):
+                progress = new_len >= max(1, int(len(old_text) * 0.9))
+            elif mode == "expand":
+                progress = new_len > len(old_text) and abs(new_len - desired) < abs(len(old_text) - desired)
+            elif mode == "shorten":
+                progress = new_len < len(old_text) and abs(new_len - desired) < abs(len(old_text) - desired)
+            else:
+                progress = new_len != len(old_text)
+            if progress:
+                scenes_by_group[gid] = new_text.strip()
+                changed.append(gid)
+
+    updated = []
+    for scene in scenes or []:
+        if not isinstance(scene, dict):
+            continue
+        new_scene = dict(scene)
+        try:
+            gid = int(scene.get("group_id") or 0)
+        except (TypeError, ValueError):
+            gid = 0
+        if gid in scenes_by_group:
+            new_scene["burmese"] = scenes_by_group[gid]
+        updated.append(new_scene)
+    script["story_context"] = story_context
+    return updated, sorted(set(changed)), selected
+
+
+async def _resynthesize_changed_worker_clips(
+    scenes: list,
+    clips: list,
+    changed_group_ids: list,
+    work_dir: str,
+    settings: dict,
+) -> list:
+    if not changed_group_ids:
+        return list(clips or [])
+    changed = {int(gid) for gid in changed_group_ids}
+    indexes = []
+    changed_scenes = []
+    for index, scene in enumerate(scenes or []):
+        try:
+            gid = int(scene.get("group_id") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if gid in changed:
+            indexes.append(index)
+            changed_scenes.append(scene)
+    if not changed_scenes:
+        return list(clips or [])
+    new_clips = await synthesize_tts(changed_scenes, work_dir, settings)
+    if new_clips is None or len(new_clips) < len(changed_scenes):
+        raise WorkerJobError("Gemini TTS returned too few recalibration clips")
+    updated = list(clips or [])
+    if len(updated) < len(scenes or []):
+        updated.extend([None] * (len(scenes or []) - len(updated)))
+    for index, clip in zip(indexes, list(new_clips)[:len(changed_scenes)]):
+        updated[index] = clip
+    return updated
+
+
+def _persist_worker_calibrated_script(
+    state: dict,
+    script: dict,
+    scenes: list,
+    measurements: dict,
+    calibration_history: list,
+    selected_pronoun: str,
+    source_seconds: float,
+    settings: dict,
+):
+    script["scenes"] = scenes
+    coverage = dict(script.get("coverage") or {})
+    total_chars = script_total_chars(scenes)
+    target_final, low, high = _final_duration_window(source_seconds, settings)
+    coverage.update({
+        "actual_burmese_chars": int(total_chars),
+        "estimated_spoken_seconds": round(float(measurements.get("speech_seconds") or 0), 3),
+        "measured_narration_seconds": round(float(measurements.get("narration_seconds") or 0), 3),
+        "measured_chars_per_second": measurements.get("measured_chars_per_second"),
+        "target_final_seconds": round(float(target_final), 3),
+        "acceptable_final_min_seconds": round(float(low), 3),
+        "acceptable_final_max_seconds": round(float(high), 3),
+        "duration_calibration_rounds": max(0, len(calibration_history or []) - 1),
+        "duration_calibration_history": calibration_history or [],
+        "first_person": _first_person_metrics(
+            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
+            selected_pronoun,
+        ),
+        "first_person_pronoun": selected_pronoun,
+    })
+    script["coverage"] = coverage
+    _write_worker_json(state, "script.json", script)
+    state.setdefault("metrics", {})["script"] = coverage
+    return coverage
+
+
 async def _worker_stage_tts(state: dict, tracker=None):
     _worker_check_cancelled(state)
     settings = _worker_settings(state)
@@ -2784,6 +3903,215 @@ async def _worker_stage_tts(state: dict, tracker=None):
         pause_seconds = PAUSE_AFTER_SCENE
     pause_samples = max(0, int(round(pause_seconds * SAMPLE_RATE)))
     pause_bytes = (np.zeros(pause_samples, dtype="<i2").tobytes() if pause_samples else b"")
+
+    # Calibrate against measured TTS seconds, not only the initial
+    # character estimate.  This is the direct fix for scripts that looked
+    # long on paper but produced only a fraction of the source duration.
+    script_coverage_initial = script.get("coverage") or {}
+    source_seconds_initial = float(
+        script_coverage_initial.get("source_duration_seconds")
+        or ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds")
+        or 0
+    )
+    selected_pronoun = _choose_first_person_pronoun(
+        [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
+        preferred=str(
+            (script.get("story_context") or state.get("story_context") or {}).get("pronoun")
+            or ""
+        ),
+        settings=settings,
+    )
+    calibration_history = []
+    if source_seconds_initial > 0:
+        target_final_seconds, final_low, final_high = _final_duration_window(
+            source_seconds_initial, settings
+        )
+        # A script artifact from an older rewrite can be third-person even
+        # when its duration happens to be right.  Repair it before measuring
+        # the final calibration so TTS never voices that version.
+        initial_bad_fp = _first_person_bad_scene_indexes(
+            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
+            selected_pronoun,
+        )
+        if initial_bad_fp:
+            desired_current = {}
+            for scene in scenes:
+                try:
+                    gid = int(scene.get("group_id") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if gid > 0:
+                    desired_current[gid] = len(str(scene.get("burmese") or "").strip())
+            await _worker_progress(
+                state,
+                "👤 Script ကို အဓိကဇာတ်ကောင် ကိုယ်တိုင်ပြောပုံစံဖြင့် ပြန်ပြင်နေပါသည်...",
+                tracker,
+            )
+            scenes, changed_fp, selected_pronoun = (
+                await _worker_adjust_scenes_for_duration(
+                    state,
+                    script,
+                    scenes,
+                    desired_current,
+                    "expand",
+                    settings,
+                    tracker,
+                )
+            )
+            if changed_fp:
+                clips = await _resynthesize_changed_worker_clips(
+                    scenes,
+                    clips,
+                    changed_fp,
+                    str(state.get("job_dir") or ""),
+                    settings,
+                )
+
+        for calibration_round in range(DURATION_CALIBRATION_ROUNDS + 1):
+            _worker_check_cancelled(state)
+            measurements = _narration_measurements(scenes, clips, settings)
+            round_silent = int(measurements.get("silent_count") or 0)
+            if not scenes or round_silent == len(scenes):
+                raise WorkerJobError("Gemini TTS produced only silent audio")
+            if round_silent > max(1, int(len(scenes) * 0.25)):
+                raise WorkerJobError(
+                    f"Gemini TTS produced too many silent scenes: {round_silent}/{len(scenes)}"
+                )
+            narration_now = float(measurements.get("narration_seconds") or 0)
+            calibration_history.append({
+                "round": calibration_round,
+                "total_chars": int(
+                    measurements.get("spoken_chars_measured")
+                    or script_total_chars(scenes)
+                ),
+                "spoken_seconds": round(float(measurements.get("speech_seconds") or 0), 3),
+                "narration_seconds": round(narration_now, 3),
+                "measured_chars_per_second": measurements.get("measured_chars_per_second"),
+                "target_final_seconds": round(target_final_seconds, 3),
+                "ratio_of_source": round(
+                    narration_now / source_seconds_initial, 4
+                ) if source_seconds_initial > 0 else 0.0,
+            })
+            if final_low <= narration_now <= final_high:
+                break
+            if calibration_round >= DURATION_CALIBRATION_ROUNDS:
+                break
+
+            total_pauses = float(measurements.get("pause_total_seconds") or 0)
+            desired_speech_seconds = max(0.1, target_final_seconds - total_pauses)
+            measured_cps = measurements.get("measured_chars_per_second")
+            if not measured_cps or float(measured_cps) <= 0:
+                measured_cps = _settings_script_rate(settings) * _settings_speed(settings)
+            current_chars = int(
+                measurements.get("spoken_chars_measured")
+                or script_total_chars(scenes)
+            )
+            desired_total_chars = int(round(desired_speech_seconds * float(measured_cps)))
+            if narration_now < final_low:
+                ratio_target = int(round(
+                    current_chars
+                    * (desired_speech_seconds / max(0.01, float(measurements.get("speech_seconds") or 0)))
+                    * 1.03
+                ))
+                desired_total_chars = max(desired_total_chars, ratio_target)
+                groups_for_targets = _worker_script_groups(script, scenes)
+                desired_by_group = _allocate_worker_duration_targets(
+                    scenes,
+                    groups_for_targets,
+                    desired_total_chars,
+                    "expand",
+                )
+                await _worker_progress(
+                    state,
+                    "⏱️ အသံကြာချိန် နည်းနေပါသဖြင့် script ကို ပြန်ချဲ့ပြီး "
+                    f"ပြန်အသံသွင်းနေပါသည်... ({calibration_round + 1}/{DURATION_CALIBRATION_ROUNDS})",
+                    tracker,
+                )
+                old_total = script_total_chars(scenes)
+                scenes, changed_groups, selected_pronoun = (
+                    await _worker_adjust_scenes_for_duration(
+                        state,
+                        script,
+                        scenes,
+                        desired_by_group,
+                        "expand",
+                        settings,
+                        tracker,
+                    )
+                )
+                if not changed_groups or script_total_chars(scenes) <= old_total:
+                    calibration_history[-1]["calibration_stalled"] = True
+                    break
+                clips = await _resynthesize_changed_worker_clips(
+                    scenes,
+                    clips,
+                    changed_groups,
+                    str(state.get("job_dir") or ""),
+                    settings,
+                )
+            else:
+                await _worker_progress(
+                    state,
+                    "⏱️ အသံကြာချိန် များနေပါသဖြင့် script ကို အစမှ အဆုံးအထိ "
+                    f"အချိုးကျ ခ်ဳံ့နေပါသည်... ({calibration_round + 1}/{DURATION_CALIBRATION_ROUNDS})",
+                    tracker,
+                )
+                before_text = {
+                    int(s.get("group_id") or 0): str(s.get("burmese") or "")
+                    for s in scenes if isinstance(s, dict)
+                }
+                scenes = trim_scenes_proportionally(scenes, desired_total_chars)
+                changed_groups = []
+                for scene in scenes:
+                    try:
+                        gid = int(scene.get("group_id") or 0)
+                    except (TypeError, ValueError, AttributeError):
+                        continue
+                    if gid > 0 and before_text.get(gid) != str(scene.get("burmese") or ""):
+                        changed_groups.append(gid)
+                if not changed_groups:
+                    calibration_history[-1]["calibration_stalled"] = True
+                    break
+                clips = await _resynthesize_changed_worker_clips(
+                    scenes,
+                    clips,
+                    changed_groups,
+                    str(state.get("job_dir") or ""),
+                    settings,
+                )
+
+        final_measurements = _narration_measurements(scenes, clips, settings)
+        final_narration = float(final_measurements.get("narration_seconds") or 0)
+        bad_fp_groups = []
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            text = str(scene.get("burmese") or "")
+            if text.strip() and not _scene_is_first_person(text, selected_pronoun):
+                bad_fp_groups.append(scene.get("group_id"))
+        if bad_fp_groups:
+            raise WorkerJobError(
+                "Narration script is not first-person in every scene after "
+                f"calibration: pronoun={selected_pronoun}, bad_group_ids={bad_fp_groups}; "
+                "refusing to render a third-person recap"
+            )
+        if not (final_low <= final_narration <= final_high):
+            raise WorkerJobError(
+                "TTS narration could not be calibrated to the required final "
+                f"duration: {_duration_status(final_narration, source_seconds_initial, settings)}; "
+                f"calibration_history={calibration_history}; refusing to render "
+                "a video that is not 90% of the source duration"
+            )
+        _persist_worker_calibrated_script(
+            state,
+            script,
+            scenes,
+            final_measurements,
+            calibration_history,
+            selected_pronoun,
+            source_seconds_initial,
+            settings,
+        )
 
     entries = []
     total_speech_samples = 0
@@ -2834,26 +4162,20 @@ async def _worker_stage_tts(state: dict, tracker=None):
     )
     coverage_ratio = _settings_coverage_ratio(settings)
     speed = _settings_speed(settings)
-    expected_narration_seconds = float(
-        script_coverage.get("target_narration_seconds") or 0
-    )
-    if expected_narration_seconds <= 0 and source_seconds > 0:
-        expected_narration_seconds = source_seconds * coverage_ratio
-    expected_narration_seconds = expected_narration_seconds / speed
-    minimum_narration_seconds = (
-        expected_narration_seconds * SCRIPT_MIN_NARRATION_RATIO
+    expected_narration_seconds, minimum_narration_seconds, maximum_narration_seconds = (
+        _final_duration_window(source_seconds, settings)
+        if source_seconds > 0
+        else (0.0, 0.0, 0.0)
     )
     if (
         expected_narration_seconds > 0
-        and narration_seconds < minimum_narration_seconds
+        and not (minimum_narration_seconds <= narration_seconds <= maximum_narration_seconds)
     ):
         raise WorkerJobError(
-            "TTS narration below duration target: "
-            f"{narration_seconds:.1f}s actual, expected at least "
-            f"{minimum_narration_seconds:.1f}s (target "
-            f"{expected_narration_seconds:.1f}s from {source_seconds:.1f}s source, "
-            f"coverage {coverage_ratio * 100:.0f}%); "
-            "refusing to render a shortened recap"
+            "TTS narration outside required final-duration window: "
+            f"{_duration_status(narration_seconds, source_seconds, settings)}; "
+            f"coverage {coverage_ratio * 100:.0f}%, speed {speed}; "
+            "refusing to render a recap that is not 90% of the source duration"
         )
 
     audio_data = {
@@ -2865,6 +4187,20 @@ async def _worker_stage_tts(state: dict, tracker=None):
         "total_narration_seconds": round(narration_seconds, 6),
         "expected_narration_seconds": round(expected_narration_seconds, 6),
         "minimum_acceptable_narration_seconds": round(minimum_narration_seconds, 6),
+        "maximum_acceptable_narration_seconds": round(maximum_narration_seconds, 6),
+        "target_final_seconds": round(expected_narration_seconds, 6),
+        "acceptable_final_min_seconds": round(minimum_narration_seconds, 6),
+        "acceptable_final_max_seconds": round(maximum_narration_seconds, 6),
+        "duration_calibration_history": calibration_history,
+        "measured_chars_per_second": (
+            calibration_history[-1].get("measured_chars_per_second")
+            if calibration_history else None
+        ),
+        "first_person_pronoun": selected_pronoun,
+        "first_person": _first_person_metrics(
+            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
+            selected_pronoun,
+        ),
         "silent_scene_count": silent_count,
         "voice": settings.get("voice"),
     }
@@ -2879,6 +4215,9 @@ async def _worker_stage_tts(state: dict, tracker=None):
         ) if source_seconds > 0 else 0.0,
         "expected_narration_seconds": round(expected_narration_seconds, 3),
         "minimum_acceptable_narration_seconds": round(minimum_narration_seconds, 3),
+        "maximum_acceptable_narration_seconds": round(maximum_narration_seconds, 3),
+        "target_final_seconds": round(expected_narration_seconds, 3),
+        "duration_calibration_rounds": max(0, len(calibration_history) - 1),
         "narration_ratio_of_expected": round(
             narration_seconds / expected_narration_seconds, 4
         ) if expected_narration_seconds > 0 else 0.0,
@@ -3023,6 +4362,45 @@ async def _worker_stage_render(state: dict, tracker=None):
     except (TypeError, ValueError):
         pause_seconds = 0.0
     plan = _build_alignment_plan(scenes, audio_durations, source_duration, pause_seconds)
+
+    # Fail before expensive rendering if an older/manual artifact would
+    # violate either contract: literal 90%-of-source final duration or
+    # protagonist first-person narration in every scene.
+    planned_duration = sum(
+        float(item.get("desired_output_seconds") or 0) for item in plan
+    )
+    target_final_pre, final_low_pre, final_high_pre = _final_duration_window(
+        source_duration, settings
+    )
+    if not (final_low_pre <= planned_duration <= final_high_pre):
+        raise WorkerJobError(
+            "Planned final duration is outside the required 90% window before "
+            f"render: {_duration_status(planned_duration, source_duration, settings)}; "
+            "run TTS calibration again instead of rendering a shortened recap"
+        )
+    script_coverage_render = script.get("coverage") or {}
+    render_pronoun = _choose_first_person_pronoun(
+        [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
+        preferred=str(
+            script_coverage_render.get("first_person_pronoun")
+            or (script.get("story_context") or {}).get("pronoun")
+            or ""
+        ),
+        settings=settings,
+    )
+    bad_render_groups = [
+        s.get("group_id")
+        for s in scenes
+        if isinstance(s, dict)
+        and str(s.get("burmese") or "").strip()
+        and not _scene_is_first_person(str(s.get("burmese") or ""), render_pronoun)
+    ]
+    if bad_render_groups:
+        raise WorkerJobError(
+            "Script is not first-person in every scene before render: "
+            f"pronoun={render_pronoun}, bad_group_ids={bad_render_groups}; "
+            "run rewrite again"
+        )
     _write_worker_json(state, "render_plan.json", {"items": plan})
     state.setdefault("artifacts", {})["render_plan"] = "render_plan.json"
     _save_worker_job(state)
@@ -3104,21 +4482,17 @@ async def _worker_stage_render(state: dict, tracker=None):
     expected_duration = sum(float(item.get("desired_output_seconds") or 0) for item in plan)
     coverage_ratio = _settings_coverage_ratio(settings)
     speed = _settings_speed(settings)
-    target_final_seconds = source_duration * coverage_ratio / speed
-    minimum_final_seconds = target_final_seconds * SCRIPT_MIN_NARRATION_RATIO
-    if expected_duration > 0 and final_duration < expected_duration * 0.90:
+    target_final_seconds, minimum_final_seconds, maximum_final_seconds = (
+        _final_duration_window(source_duration, settings)
+    )
+    # Small mux/container differences are tolerated by the window itself.
+    # Anything outside it is not "90% of source" in the user's literal sense.
+    if not (minimum_final_seconds <= final_duration <= maximum_final_seconds):
         raise WorkerJobError(
-            "Rendered video is shorter than its alignment plan: "
-            f"{final_duration:.1f}s actual vs {expected_duration:.1f}s expected; "
-            "refusing to deliver a shortened recap"
-        )
-    if target_final_seconds > 0 and final_duration < minimum_final_seconds:
-        raise WorkerJobError(
-            "Rendered video below duration target: "
-            f"{final_duration:.1f}s actual, expected at least "
-            f"{minimum_final_seconds:.1f}s (target {target_final_seconds:.1f}s "
-            f"from {source_duration:.1f}s source, coverage "
-            f"{coverage_ratio * 100:.0f}%); refusing to deliver a shortened recap"
+            "Rendered final duration is outside the required 90% window: "
+            f"{_duration_status(final_duration, source_duration, settings)}; "
+            f"alignment plan {expected_duration:.1f}s, coverage "
+            f"{coverage_ratio * 100:.0f}%, speed {speed}; refusing to deliver"
         )
     metrics = {
         "source_duration_seconds": round(float(source_duration), 3),
@@ -3126,6 +4500,8 @@ async def _worker_stage_render(state: dict, tracker=None):
         "final_duration_seconds": round(float(final_duration), 3),
         "target_final_seconds": round(float(target_final_seconds), 3),
         "minimum_acceptable_final_seconds": round(float(minimum_final_seconds), 3),
+        "maximum_acceptable_final_seconds": round(float(maximum_final_seconds), 3),
+        "first_person_pronoun": render_pronoun,
         "final_ratio_of_source": round(final_duration / source_duration, 4) if source_duration else 0.0,
         "final_ratio_of_target": round(
             final_duration / target_final_seconds, 4
@@ -3165,8 +4541,66 @@ async def _worker_stage_deliver(state: dict, tracker=None):
     if not os.path.exists(final_path) or os.path.getsize(final_path) <= 0:
         raise WorkerJobError("final.mp4 is missing; run render first")
 
-    await _worker_progress(state, WORKER_STAGE_LABELS["deliver"], tracker)
+    # Last gate immediately before Telegram upload.  Even if a stale final
+    # file was produced by an older build, do not send it when its actual
+    # duration is not 90% of the submitted source.
     final_duration, _, _ = probe_video_info(final_path)
+    metrics_all = state.get("metrics") or {}
+    delivery_script = {}
+    try:
+        delivery_script = _load_worker_json(state, "script", "script.json")
+    except WorkerJobError:
+        delivery_script = {}
+    delivery_coverage = delivery_script.get("coverage") or {}
+    delivery_source_seconds = float(
+        (metrics_all.get("render") or {}).get("source_duration_seconds")
+        or (metrics_all.get("source") or {}).get("duration_seconds")
+        or delivery_coverage.get("source_duration_seconds")
+        or 0
+    )
+    if delivery_source_seconds > 0:
+        if final_duration <= 0:
+            raise WorkerJobError(
+                "Could not verify final video duration before delivery; "
+                "refusing to send an unverified recap"
+            )
+        if not _duration_is_on_target(
+            final_duration, delivery_source_seconds, settings
+        ):
+            raise WorkerJobError(
+                "Final video duration is outside the required 90% window "
+                "before delivery: "
+                f"{_duration_status(final_duration, delivery_source_seconds, settings)}; "
+                "refusing to upload a shortened recap"
+            )
+    delivery_scenes = delivery_script.get("scenes") or []
+    if delivery_scenes:
+        delivery_pronoun = _choose_first_person_pronoun(
+            [str(s.get("burmese") or "") for s in delivery_scenes if isinstance(s, dict)],
+            preferred=str(
+                delivery_coverage.get("first_person_pronoun")
+                or (delivery_script.get("story_context") or {}).get("pronoun")
+                or ""
+            ),
+            settings=settings,
+        )
+        bad_delivery_groups = [
+            s.get("group_id")
+            for s in delivery_scenes
+            if isinstance(s, dict)
+            and str(s.get("burmese") or "").strip()
+            and not _scene_is_first_person(
+                str(s.get("burmese") or ""), delivery_pronoun
+            )
+        ]
+        if bad_delivery_groups:
+            raise WorkerJobError(
+                "Script is not first-person in every scene before delivery: "
+                f"pronoun={delivery_pronoun}, bad_group_ids={bad_delivery_groups}; "
+                "refusing to upload"
+            )
+
+    await _worker_progress(state, WORKER_STAGE_LABELS["deliver"], tracker)
     if settings.get("split_tg", True):
         parts = await split_for_telegram(final_path, str(state.get("job_dir") or ""))
     else:
@@ -3209,6 +4643,13 @@ async def _worker_stage_deliver(state: dict, tracker=None):
         "part_count": len(parts),
         "part_sizes_bytes": [os.path.getsize(part) for part in parts],
         "final_duration_seconds": round(float(final_duration), 3),
+        "source_duration_seconds": round(float(delivery_source_seconds), 3),
+        "final_ratio_of_source": round(
+            final_duration / delivery_source_seconds, 4
+        ) if delivery_source_seconds > 0 else 0.0,
+        "target_final_seconds": round(
+            _target_final_seconds(delivery_source_seconds, settings), 3
+        ) if delivery_source_seconds > 0 else 0.0,
     }
     state.setdefault("artifacts", {})["delivery_parts"] = [
         os.path.relpath(part, str(state.get("job_dir") or "")) for part in parts
@@ -3227,7 +4668,12 @@ async def _worker_stage_deliver(state: dict, tracker=None):
         await send_text(
             chat_id,
             f"✅ <b>Recap ပြီးပါပြီ!</b> ({fmt_time(final_duration)})\n"
-            f"🎯 Script {settings.get('coverage')}% · 🎙️ {settings.get('voice')}",
+            f"🎯 Final duration {settings.get('coverage')}%"
+            + (
+                f" (အမှန် {final_duration / delivery_source_seconds * 100:.1f}%)"
+                if delivery_source_seconds > 0 else ""
+            )
+            + f" · 🎙️ {settings.get('voice')}",
             reply_markup=main_menu_keyboard(chat_id),
         )
 
@@ -3346,6 +4792,24 @@ async def _run_worker_stage(job_id: str, stage: str):
                 _set_worker_stage(state, stage, "failed", error=message)
                 await _worker_terminal(state, "failed", message)
                 return _public_worker_job(state)
+    except asyncio.CancelledError:
+        # Covers cancellation while waiting for the stage semaphore or
+        # before the inner stage try-block is entered.  If the inner
+        # handler already finalized the job, this is a no-op.
+        try:
+            state = _load_worker_job(job_id)
+            if state.get("status") not in ("delivered", "cancelled", "failed"):
+                info = (state.get("stages") or {}).get(stage) or {}
+                if info.get("status") not in ("done", "cancelled"):
+                    _set_worker_stage(
+                        state, stage, "cancelled", error="cancelled"
+                    )
+                await _worker_terminal(state, "cancelled", "cancelled")
+        except Exception as cleanup_error:
+            logger.warning(
+                f"worker cancellation cleanup failed for {job_id}: {cleanup_error}"
+            )
+        raise
     finally:
         if WORKER_TASKS.get(job_id) is current_task:
             WORKER_TASKS.pop(job_id, None)
@@ -3392,9 +4856,9 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     ACTIVE_JOBS[chat_id] = job_id
     status_id = await send_text(
         chat_id,
-        f"⚡ Recap စတင်နေပါပြီ...\n🎯 Script: {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p",
+        f"⚡ Recap စတင်နေပါပြီ...\n🎯 Final duration: မူရင်း၏ {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p",
         reply_to=reply_msg_id,
-        reply_markup={"inline_keyboard": [[btn("🛑 ဒီအလုပ်ကို ရပ်မယ်", "menu:cancel")]]},
+        reply_markup=job_progress_keyboard(),
     )
 
     # Optional n8n orchestration.  The Telegram webhook/menu/status remain
@@ -3566,6 +5030,16 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
         ], 300)
 
         final_dur, _, _ = probe_video_info(final_out)
+        target_final_dur, final_low, final_high = _final_duration_window(
+            total_dur, job_settings
+        )
+        if not _duration_is_on_target(final_dur, total_dur, job_settings):
+            raise RuntimeError(
+                "Final video duration is outside target: "
+                f"{final_dur:.1f}s actual, target {target_final_dur:.1f}s "
+                f"(acceptable {final_low:.1f}-{final_high:.1f}s from "
+                f"{total_dur:.1f}s source)"
+            )
         await tracker.update(
             f"📤 ဗီဒီယို ပို့ပေးနေပါသည်... ({fmt_time(final_dur)})\n"
             f"📊 {fmt_progress_bar(99)}",
@@ -3595,8 +5069,14 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
         except Exception:
             pass
         if job_settings.get("notify"):
-            await send_text(chat_id, f"✅ <b>Recap ပြီးပါပြီ!</b> ({fmt_time(final_dur)})\n🎯 Script {job_settings['coverage']}% · 🎙️ {job_settings['voice']}",
-                            reply_markup=main_menu_keyboard(chat_id))
+            await send_text(
+                chat_id,
+                f"✅ <b>Recap ပြီးပါပြီ!</b> ({fmt_time(final_dur)})\n"
+                f"🎯 Final duration {job_settings['coverage']}% "
+                f"(အမှန် {final_dur / total_dur * 100:.1f}%) · "
+                f"🎙️ {job_settings['voice']}",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
 
     except Exception as e:
         logger.exception("Job Error")
@@ -3617,7 +5097,7 @@ def job_status_text(chat_id) -> str:
     s = get_user_settings(chat_id)
     if job:
         return (f"📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n🟢 လုပ်နေဆဲ (Job: <code>{job}</code>)\n"
-                f"🎯 Script {s['coverage']}% · 🎙️ {s['voice']}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
+                f"🎯 Final duration: မူရင်း၏ {s['coverage']}% · 🎙️ {s['voice']}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
     return ("📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n⚪ လက်ရှိ လုပ်နေတာ မရှိပါ။\n\n"
             "🎬 Recap စဖို့ link ပို့လိုက်ပါ (သို့) ခလုတ်နှိပ်ပါ။")
 
@@ -3635,6 +5115,19 @@ async def handle_callback(cb: dict):
     await answer_callback(cb.get("id"))
 
     async def show(text, markup):
+        # While a job is running, the callback may come from the live
+        # progress message.  Editing that message into Settings/Status
+        # makes the next progress update immediately overwrite it, so the
+        # button looks broken.  Send a separate menu message and preserve
+        # the progress message.  Cancel is the exception: update the
+        # progress message itself to show that the job is stopping.
+        if (
+            ACTIVE_JOBS.get(chat_id)
+            and data.startswith("menu:")
+            and data != "menu:cancel"
+        ):
+            await send_text(chat_id, text, reply_markup=markup)
+            return
         await edit_text(chat_id, message_id, text, reply_markup=markup)
 
     if data == "menu:main":
@@ -3653,9 +5146,8 @@ async def handle_callback(cb: dict):
         st = JOB_STATS.get(int(chat_id), {"done": 0, "failed": 0, "cancelled": 0})
         await show(f"📈 <b>စာရင်းချုပ်</b>\n━━━━━━━━━━━━━━━\n✅ ပြီးဆုံး: {st.get('done', 0)}\n❌ ပျက်: {st.get('failed', 0)}\n🛑 ရပ်ခဲ့: {st.get('cancelled', 0)}", main_menu_keyboard(chat_id))
     elif data == "menu:cancel":
-        job = ACTIVE_JOBS.get(chat_id)
+        job = await request_cancel_active_job_async(chat_id)
         if job:
-            CANCELLED_JOBS.add(job)
             await show("🛑 ရပ်ဖို့ တောင်းဆိုလိုက်ပါပြီ... လက်ရှိအပိုင်း ပြီးရင် ရပ်ပါမယ်။", main_menu_keyboard(chat_id))
         else:
             await show("⚪ လုပ်နေတဲ့ အလုပ် မရှိပါ။", main_menu_keyboard(chat_id))
@@ -3710,17 +5202,40 @@ async def process_admin_update(update: dict):
         await send_text(chat_id, "⛔ ဒီ bot ကို သုံးခွင့် မရှိပါ။", reply_to=msg_id)
         return
 
-    cmd = text.split()[0].split("@")[0].lower() if text else ""
+    # Persistent reply-keyboard buttons arrive as ordinary text messages,
+    # not callback_query updates.  Route their exact labels explicitly;
+    # without this mapping the bottom buttons visibly exist but only fall
+    # through to the generic menu response.
+    if text == PERSISTENT_BUTTON_RECAP:
+        await send_text(
+            chat_id,
+            "🎬 <b>Recap စတင်ရန်</b>\n\nဗီဒီယို link (http...) ကို ဒီအတိုင်း စာပို့လိုက်ပါ။\n"
+            "⏱️ Final ဗီဒီယိုကြာချိန်ကို မူရင်းဗီဒီယို၏ 90% အတိအကျနီးပါး ချိန်ညှိပေးပါမယ်။",
+            reply_to=msg_id,
+            reply_markup=main_menu_keyboard(chat_id),
+        )
+        return
+    persistent_commands = {
+        PERSISTENT_BUTTON_SETTINGS: "/settings",
+        PERSISTENT_BUTTON_STATUS: "/status",
+        PERSISTENT_BUTTON_CANCEL: "/cancel",
+        PERSISTENT_BUTTON_SUMMARY: "/summary",
+        PERSISTENT_BUTTON_HELP: "/help",
+    }
+    cmd = persistent_commands.get(text) or (
+        text.split()[0].split("@")[0].lower() if text else ""
+    )
     if cmd in ("/start", "/menu"):
-        await send_main_menu(chat_id, reply_to=msg_id)
+        await send_main_menu(
+            chat_id, reply_to=msg_id, with_persistent_keyboard=True
+        )
     elif cmd == "/settings":
         await send_text(chat_id, "⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။", reply_to=msg_id, reply_markup=settings_keyboard(chat_id))
     elif cmd == "/status":
         await send_text(chat_id, job_status_text(chat_id), reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
     elif cmd == "/cancel":
-        job = ACTIVE_JOBS.get(chat_id)
+        job = await request_cancel_active_job_async(chat_id)
         if job:
-            CANCELLED_JOBS.add(job)
             await send_text(chat_id, "🛑 ရပ်ဖို့ တောင်းဆိုလိုက်ပါပြီ...", reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
         else:
             await send_text(chat_id, "⚪ လုပ်နေတဲ့ အလုပ် မရှိပါ။", reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
@@ -3736,13 +5251,15 @@ async def process_admin_update(update: dict):
             PENDING_LINKS[chat_id] = text
             await send_text(chat_id, "🎬 <b>ဒီ link ကို Recap လုပ်မလား?</b>\n" + text[:200], reply_to=msg_id, reply_markup=confirm_keyboard())
     elif text:
-        await send_main_menu(chat_id, reply_to=msg_id)
+        await send_main_menu(
+            chat_id, reply_to=msg_id, with_persistent_keyboard=True
+        )
 
 
 app = FastAPI()
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.2-coverage-guard"
+BUILD_VERSION = "v3.3-final-90-first-person-buttons"
 BUILD_FEATURES = 20
 
 
@@ -3754,7 +5271,13 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
+        # Backward-compatible field name from v3.2.  Semantically this is
+        # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
+        "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
+        "final_duration_enforcement": "measured_tts_and_rendered_file",
+        "first_person_enforcement": "per_scene_validated",
+        "telegram_buttons": "inline_and_persistent",
         "worker_api_configured": bool(WORKER_API_KEY),
         "whisper_configured": bool(WHISPER_API_KEY),
         "whisper_model": WHISPER_MODEL,
@@ -3770,6 +5293,10 @@ async def health():
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
+        "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
+        "final_duration_enforcement": "measured_tts_and_rendered_file",
+        "first_person_enforcement": "per_scene_validated",
+        "telegram_buttons": "inline_and_persistent",
         "worker_api_configured": bool(WORKER_API_KEY),
     })
 
@@ -3869,10 +5396,10 @@ async def worker_create_job(request: Request):
         status_id = await send_text(
             int(state["chat_id"]),
             "⚡ Recap စတင်နေပါပြီ...\n"
-            f"🎯 Script: {settings.get('coverage', 90)}% · "
+            f"🎯 Final duration: မူရင်း၏ {settings.get('coverage', 90)}% · "
             f"🎙️ {settings.get('voice', 'Charon')} · 📐 {settings.get('resolution', 1280)}p",
             reply_to=state.get("reply_msg_id"),
-            reply_markup={"inline_keyboard": [[btn("🛑 ဒီအလုပ်ကို ရပ်မယ်", "menu:cancel")]]},
+            reply_markup=job_progress_keyboard(),
         )
         if status_id:
             async with WORKER_JOB_LOCK:
