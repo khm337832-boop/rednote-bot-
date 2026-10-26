@@ -456,6 +456,10 @@ async def send_text(chat_id: int, text: str, reply_to: int = None, reply_markup:
     if reply_markup:
         payload["reply_markup"] = reply_markup
     res = await tg_api("sendMessage", payload)
+    if not res.get("ok"):
+        # HTML အမှားကြောင့် ပျက်ရင် plain text နဲ့ ပြန်ပို့ (မီနူး မပျောက်အောင်)
+        payload.pop("parse_mode", None)
+        res = await tg_api("sendMessage", payload)
     return res.get("result", {}).get("message_id")
 
 
@@ -471,7 +475,10 @@ async def edit_text(chat_id: int, message_id: int, text: str, reply_markup: dict
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        await tg_api("editMessageText", payload)
+        res = await tg_api("editMessageText", payload)
+        if not (res or {}).get("ok"):
+            payload.pop("parse_mode", None)
+            await tg_api("editMessageText", payload)
     except Exception:
         pass
 
@@ -1553,7 +1560,7 @@ async def process_admin_update(update: dict):
 app = FastAPI()
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v2.5-button-menu-20features"
+BUILD_VERSION = "v3.0-new-code-button-menu"
 BUILD_FEATURES = 20
 
 
@@ -1572,15 +1579,36 @@ async def health():
     return JSONResponse({"ok": True, "app": "rednote-bot", "version": BUILD_VERSION})
 
 
-async def _register_webhook():
-    """စတင်တာနဲ့ Telegram webhook ကို ဒီ service ဆီ ပြန်ချိတ်တယ် (လွဲနေရင် ကိုယ်တိုင် ပြင်သွားအောင်)."""
-    if not BOT_TOKEN or not RENDER_EXTERNAL_URL:
+BOT_COMMANDS = [
+    {"command": "start", "description": "🎬 ပင်မ မီနူး (ခလုတ်များ)"},
+    {"command": "settings", "description": "⚙️ ဆက်တင်များ (Feature 20)"},
+    {"command": "status", "description": "📊 အလုပ်အခြေအနေ"},
+    {"command": "cancel", "description": "🛑 လုပ်နေတာ ရပ်ရန်"},
+    {"command": "summary", "description": "📋 ဆက်တင် အကျဉ်း"},
+    {"command": "help", "description": "❓ အသုံးပြုနည်း"},
+]
+
+
+async def _setup_bot():
+    """စတင်တာနဲ့ (၁) Telegram command မီနူး မှတ်ပုံတင်ပြီး (၂) webhook ကို
+    ဒီ service ဆီ ပြန်ချိတ်တယ် — အဟောင်း လွဲနေရင် ကိုယ်တိုင် ပြင်သွားအောင်။"""
+    if not BOT_TOKEN:
+        logger.warning("BOT_TOKEN မရှိပါ")
         return
-    await asyncio.sleep(3)
+    await asyncio.sleep(2)
+    try:
+        res = await tg_api("setMyCommands", {"commands": BOT_COMMANDS})
+        logger.info(f"setMyCommands: {res.get('ok')}")
+    except Exception as e:
+        logger.warning(f"setMyCommands failed: {e}")
+    if not RENDER_EXTERNAL_URL:
+        return
     url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/webhook"
     try:
         res = await tg_api("setWebhook", {"url": url, "drop_pending_updates": False})
         logger.info(f"setWebhook -> {url}: {res.get('ok')} / version {BUILD_VERSION}")
+        info = await tg_api("getWebhookInfo", {})
+        logger.info(f"getWebhookInfo: {info.get('result', {})}")
     except Exception as e:
         logger.warning(f"setWebhook failed: {e}")
 
@@ -1588,7 +1616,7 @@ async def _register_webhook():
 @app.on_event("startup")
 async def _on_startup():
     logger.info(f"🚀 rednote-bot {BUILD_VERSION} စတင်ပါပြီ (features={BUILD_FEATURES})")
-    asyncio.create_task(_register_webhook())
+    asyncio.create_task(_setup_bot())
 
 
 @app.post("/webhook")
