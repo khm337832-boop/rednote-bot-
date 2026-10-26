@@ -33,7 +33,7 @@ Commands still work too: `/start` `/menu` `/settings` `/status`
 11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
 12. 📦 အပိုင်းခွဲ အချိန် — chunk size 3 / 5 / 10 min
 13. 🗣️ Script အလျင် ချိန်ညှိ — TTS chars/sec calibration 5.5 / 6.5 / 7.5
-14. 👤 ပြောပြသူ ရှုထောင့် — first-person / narrator POV
+14. 👤 ပြောပြသူ ရှုထောင့် — protagonist first-person (ကျွန်တော်/ကျွန်မ) always; the script retells the whole video in order, scene by scene, no summarizing
 15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 16. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
 17. 💬 Video Caption on/off
