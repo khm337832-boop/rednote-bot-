@@ -131,9 +131,14 @@ PAUSE_AFTER_SCENE = 0.20
 # ~270s (0.90 * 300). Burmese TTS (Charon) speaks at roughly
 # 6.5 characters/second, so the character target is derived from that.
 SCRIPT_TARGET_RATIO = 0.90      # output script = 90% of input duration
+MINIMUM_SCRIPT_COVERAGE_PERCENT = 90  # every job/link must target at least 90%
 SCRIPT_CHARS_PER_SEC = 6.5      # estimated Burmese TTS speaking rate
 SCRIPT_MAX_RATIO = 1.05         # never exceed 105% of the 90% target
-SCRIPT_TOPUP_ATTEMPTS = 3       # retry top-ups until 90% is reached
+SCRIPT_TOPUP_ATTEMPTS = 6       # retry top-ups until 90% is reached
+SCRIPT_MIN_CHAR_RATIO = 0.98    # script must reach 98% of its char target
+SCRIPT_MIN_GROUP_CHAR_RATIO = 0.75  # one-liners do not count as covered
+SCRIPT_MIN_NARRATION_RATIO = 0.90  # actual TTS/render vs expected target time
+TRANSCRIPT_MIN_SPAN_RATIO = 0.75  # transcript must span most of the source
 
 PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
 os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
@@ -197,8 +202,8 @@ DEFAULT_SETTINGS = {
 
 FEATURES = [
     {"key": "coverage", "icon": "🎯", "label": "Script ပမာဏ", "kind": "cycle",
-     "desc": "Input ကြာချိန်ရဲ့ ဘယ်နှုန်း% script ထွက်မလဲ",
-     "options": [(50, "50%"), (70, "70%"), (80, "80%"), (90, "90% ⭐"), (95, "95%"), (100, "100%")]},
+     "desc": "Input ကြာချိန်ရဲ့ ဘယ်နှုန်း% script ထွက်မလဲ (အနည်းဆုံး 90%)",
+     "options": [(90, "90% ⭐"), (95, "95%"), (100, "100%")]},
     {"key": "voice", "icon": "🎙️", "label": "အသံ (Voice)", "kind": "cycle",
      "desc": "TTS အသံသရုပ်ဆောင် ရွေးပါ",
      "options": [("Charon", "Charon (ယောက်ျား·နက်)"), ("Fenrir", "Fenrir (ယောက်ျား)"),
@@ -289,7 +294,9 @@ def get_user_settings(chat_id) -> dict:
     # 👤 ရေးဟန် = ပထမလူ အမြဲတမ်း — အရင် သိမ်းထားသော ဆက်တင်ဟောင်း ရှိလျှင် ပြန်ညှိသည်။
     if s.get("pov") != "first":
         s["pov"] = "first"
-    return s
+    # Every job/link targets at least 90%, even if a stale user setting
+    # saved by an older version contains a lower coverage value.
+    return _with_required_coverage(s)
 
 
 def set_user_setting(chat_id, key: str, value):
@@ -913,12 +920,54 @@ Return JSON:
         }
 
 
+def _with_required_coverage(settings: dict = None) -> dict:
+    """Return job settings with the product-wide 90% floor applied.
+
+    A saved/stale value below 90 must never make an individual link produce
+    a short recap.  Values above 90 (95/100) remain available.
+    """
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    try:
+        coverage = float(s.get("coverage") or MINIMUM_SCRIPT_COVERAGE_PERCENT)
+    except (TypeError, ValueError):
+        coverage = float(MINIMUM_SCRIPT_COVERAGE_PERCENT)
+    coverage = max(float(MINIMUM_SCRIPT_COVERAGE_PERCENT), min(100.0, coverage))
+    s["coverage"] = int(coverage) if coverage.is_integer() else coverage
+    return s
+
+
+def _settings_coverage_ratio(settings: dict = None) -> float:
+    s = _with_required_coverage(settings)
+    return float(s["coverage"]) / 100.0
+
+
+def _settings_script_rate(settings: dict = None) -> float:
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    try:
+        rate = float(s.get("rate") or SCRIPT_CHARS_PER_SEC)
+    except (TypeError, ValueError):
+        rate = SCRIPT_CHARS_PER_SEC
+    return rate if rate > 0 else SCRIPT_CHARS_PER_SEC
+
+
+def _minimum_script_chars(target_chars: int) -> int:
+    return int(math.ceil(max(0, int(target_chars or 0)) * SCRIPT_MIN_CHAR_RATIO))
+
+
+def _settings_speed(settings: dict = None) -> float:
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    try:
+        speed = float(s.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        speed = 1.0
+    return speed if speed > 0 else 1.0
+
+
 def script_target_chars(chunk_dur: float, settings: dict = None) -> int:
     """Characters needed so spoken narration = coverage% of input (default 90%)."""
-    s = {**DEFAULT_SETTINGS, **(settings or {})}
-    ratio = float(s.get("coverage") or 90) / 100.0
-    rate = float(s.get("rate") or SCRIPT_CHARS_PER_SEC)
-    return int(chunk_dur * ratio * rate)
+    ratio = _settings_coverage_ratio(settings)
+    rate = _settings_script_rate(settings)
+    return int(max(0.0, float(chunk_dur or 0)) * ratio * rate)
 
 
 def script_total_chars(scenes: list) -> int:
@@ -971,9 +1020,9 @@ async def build_chunk_recap(
     tracker: ProgressTracker,
     settings: dict = None,
 ):
-    st = {**DEFAULT_SETTINGS, **(settings or {})}
-    coverage_ratio = float(st.get("coverage") or 90) / 100.0
-    chars_rate = float(st.get("rate") or SCRIPT_CHARS_PER_SEC)
+    st = _with_required_coverage(settings)
+    coverage_ratio = _settings_coverage_ratio(st)
+    chars_rate = _settings_script_rate(st)
     client = genai.Client(api_key=GEMINI_API_KEY)
     start_fmt = fmt_time(global_start)
     end_fmt = fmt_time(global_end)
@@ -1193,12 +1242,6 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         total_chars = script_total_chars(scenes)
         logger.info(f"Chunk {chunk_index} top-up {attempt + 1}: {total_chars}/{target_chars} chars")
 
-    if total_chars < target_chars:
-        logger.warning(
-            f"Chunk {chunk_index}: script only {total_chars}/{target_chars} chars "
-            f"after {SCRIPT_TOPUP_ATTEMPTS} top-ups — continuing with best effort"
-        )
-
     # Cap over-long scripts at 105% of the 90% target so narration
     # does not overrun the video.
     scenes = trim_scenes_to_target(scenes, target_chars)
@@ -1209,18 +1252,26 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         f"Chunk {chunk_index} final script: {len(scenes)} scenes, {total_chars} chars, "
         f"~{spoken_est:.0f}s spoken = {coverage_pct:.0f}% of {chunk_dur:.0f}s input (target {st['coverage']}%)"
     )
-    await tracker.update(
-        f"📝 Script ပြီးပါပြီ — input ၏ {coverage_pct:.0f}% (ပစ်မှတ် {st['coverage']}%)၊ {total_chars} လုံး",
-        force=True,
-    )
 
     try:
         await asyncio.to_thread(client.files.delete, name=video_file.name)
     except Exception as e:
         logger.warning(f"Gemini delete error: {e}")
 
-    if not scenes:
-        scenes = [{"start": 0, "end": 5, "burmese": "စာသားရယူရာတွင် အမှားအယွင်းရှိပါသည်။"}]
+    minimum_chars = _minimum_script_chars(target_chars)
+    if not scenes or total_chars < minimum_chars:
+        raise RuntimeError(
+            "Script length below target after top-ups: "
+            f"{total_chars}/{target_chars} chars "
+            f"(~{spoken_est:.1f}s of {chunk_dur:.1f}s input, "
+            f"target {float(st.get('coverage') or 90):.0f}%); "
+            "refusing to render a shortened recap"
+        )
+
+    await tracker.update(
+        f"📝 Script ပြီးပါပြီ — input ၏ {coverage_pct:.0f}% (ပစ်မှတ် {st['coverage']}%)၊ {total_chars} လုံး",
+        force=True,
+    )
 
     keep_ranges = make_keep_ranges(chunk_dur, cuts, max_remove_ratio=float(st.get('cut') or 0) / 100.0)
     kept_duration = sum(end - start for start, end in keep_ranges)
@@ -1233,15 +1284,25 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     await tracker.update(f"🎙️ {st.get('voice', 'Charon')} AI မှ အသံသွင်းနေပါသည်...", force=True)
     clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
 
-    # Verify the actual spoken audio against the 90% target.
+    # Verify the actual spoken audio against the 90% target.  A script can
+    # satisfy the character estimate while TTS still truncates or reads far
+    # too little; never pad that failure into a seemingly complete video.
     audio_seconds = sum(len(c) for c in clips) / SAMPLE_RATE + float(st.get('pause') or 0) * max(0, len(clips) - 1)
     audio_pct = (audio_seconds / kept_duration * 100) if kept_duration else 0
+    speed = _settings_speed(st)
+    expected_audio_seconds = chunk_dur * coverage_ratio / speed
+    minimum_audio_seconds = expected_audio_seconds * SCRIPT_MIN_NARRATION_RATIO
     logger.info(
         f"Chunk {chunk_index} TTS audio: {audio_seconds:.0f}s = {audio_pct:.0f}% "
         f"of kept video {kept_duration:.0f}s (target ~{st['coverage']}% of input)"
     )
-    if audio_seconds < kept_duration * coverage_ratio:
-        logger.warning(f"Chunk {chunk_index}: TTS audio below {st['coverage']}% of kept video ({audio_pct:.0f}%)")
+    if expected_audio_seconds > 0 and audio_seconds < minimum_audio_seconds:
+        raise RuntimeError(
+            "TTS narration below target: "
+            f"{audio_seconds:.1f}s actual, expected at least "
+            f"{minimum_audio_seconds:.1f}s (target {expected_audio_seconds:.1f}s "
+            f"from {chunk_dur:.1f}s input); refusing to render a shortened recap"
+        )
 
     out_w, out_h = compute_output_dims(*probe_video_info(chunk_path)[1:], int(st.get('resolution') or 1280))
     shield_v = "crop=iw*0.96:ih*0.96,hflip," if st.get("shield") else ""
@@ -1509,6 +1570,8 @@ def _load_worker_job(job_id: str) -> dict:
         state["metrics"] = {}
     if not isinstance(state.get("settings"), dict):
         state["settings"] = get_user_settings(state.get("chat_id"))
+    state["settings"] = _with_required_coverage(state.get("settings") or {})
+    state["settings"]["pov"] = "first"
     if not isinstance(state.get("story_context"), dict):
         state["story_context"] = {
             "characters": [], "summary": "", "last_scene": "",
@@ -1604,6 +1667,7 @@ def _create_worker_job(
             settings.update({
                 k: v for k, v in settings_override.items() if k in DEFAULT_SETTINGS
             })
+            settings = _with_required_coverage(settings)
             settings["pov"] = "first"
             if settings != state.get("settings"):
                 state["settings"] = settings
@@ -1616,6 +1680,7 @@ def _create_worker_job(
         settings.update({
             k: v for k, v in settings_override.items() if k in DEFAULT_SETTINGS
         })
+    settings = _with_required_coverage(settings)
     settings["pov"] = "first"
     os.makedirs(_worker_job_dir(job_id), exist_ok=True)
     state = {
@@ -1844,12 +1909,32 @@ def _batch_transcript_groups(groups: list, max_groups: int = 20, max_chars: int 
     return batches
 
 
-def _calculate_transcript_coverage(groups: list, scenes_by_group: dict) -> dict:
+def _calculate_transcript_coverage(
+    groups: list,
+    scenes_by_group: dict,
+    target_by_group: dict = None,
+    min_group_char_ratio: float = SCRIPT_MIN_GROUP_CHAR_RATIO,
+) -> dict:
+    """Measure transcript coverage without treating one-liners as covered.
+
+    Presence alone is not coverage: if per-group character targets are
+    supplied, a scene must reach at least ``min_group_char_ratio`` of its
+    own target before its source speech counts as covered.  The no-target
+    form remains available for simple presence checks/tests.
+    """
+    targets = {}
+    for key, value in (target_by_group or {}).items():
+        try:
+            targets[int(key)] = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            continue
+
     total_speech = 0.0
     covered_speech = 0.0
     total_segments = 0
     covered_segments = 0
     missing_groups = []
+    underfilled_groups = []
     for group in groups or []:
         gid = int(group.get("group_id") or 0)
         speech = max(0.0, float(group.get("speech_seconds") or 0))
@@ -1857,11 +1942,22 @@ def _calculate_transcript_coverage(groups: list, scenes_by_group: dict) -> dict:
         total_speech += speech
         total_segments += len(ids)
         text = str((scenes_by_group or {}).get(gid) or "").strip()
-        if text:
+        if not text:
+            missing_groups.append(gid)
+            underfilled_groups.append(gid)
+            continue
+
+        target = targets.get(gid, 0)
+        required_chars = (
+            int(math.ceil(target * float(min_group_char_ratio or 0)))
+            if target > 0
+            else 1
+        )
+        if len(text) >= required_chars:
             covered_speech += speech
             covered_segments += len(ids)
         else:
-            missing_groups.append(gid)
+            underfilled_groups.append(gid)
     speech_ratio = (covered_speech / total_speech) if total_speech > 0 else 0.0
     segment_ratio = (covered_segments / total_segments) if total_segments > 0 else 0.0
     return {
@@ -1874,6 +1970,7 @@ def _calculate_transcript_coverage(groups: list, scenes_by_group: dict) -> dict:
         "segment_coverage_ratio": round(segment_ratio, 4),
         "segment_coverage_percent": round(segment_ratio * 100.0, 2),
         "missing_group_ids": missing_groups,
+        "underfilled_group_ids": underfilled_groups,
     }
 
 
@@ -2093,17 +2190,47 @@ async def _worker_stage_transcribe(state: dict, tracker=None):
     )
 
 
+def _rewrite_target_chars_for_duration(duration_seconds: float, settings: dict = None) -> int:
+    coverage_ratio = _settings_coverage_ratio(settings)
+    rate = _settings_script_rate(settings)
+    return max(0, int(float(duration_seconds or 0) * coverage_ratio * rate))
+
+
 def _rewrite_target_chars_for_speech(speech_seconds: float, settings: dict = None) -> int:
-    st = {**DEFAULT_SETTINGS, **(settings or {})}
-    try:
-        coverage_ratio = float(st.get("coverage") or 90) / 100.0
-    except (TypeError, ValueError):
-        coverage_ratio = 0.90
-    try:
-        rate = float(st.get("rate") or SCRIPT_CHARS_PER_SEC)
-    except (TypeError, ValueError):
-        rate = SCRIPT_CHARS_PER_SEC
-    return max(0, int(float(speech_seconds or 0) * coverage_ratio * rate))
+    return _rewrite_target_chars_for_duration(speech_seconds, settings)
+
+
+def _group_timeline_seconds(groups: list, source_duration: float = 0.0) -> dict:
+    """Seconds of source timeline represented by each transcript group.
+
+    A group owns the timeline from its start until the next group starts;
+    the last group owns the remainder of the source.  This prevents long
+    pauses/visual beats between lines of dialogue from disappearing from
+    the duration target merely because Whisper marked them as non-speech.
+    """
+    ordered = sorted(
+        [g for g in (groups or []) if isinstance(g, dict)],
+        key=lambda g: (float(g.get("start") or 0), float(g.get("end") or 0)),
+    )
+    result = {}
+    for index, group in enumerate(ordered):
+        try:
+            gid = int(group.get("group_id") or 0)
+            start = max(0.0, float(group.get("start") or 0))
+            own_end = max(start, float(group.get("end") or start))
+            if index + 1 < len(ordered):
+                limit = float(ordered[index + 1].get("start") or own_end)
+            elif float(source_duration or 0) > 0:
+                limit = float(source_duration)
+            else:
+                limit = own_end
+        except (TypeError, ValueError):
+            continue
+        timeline = max(0.0, float(limit) - start)
+        if timeline <= 0:
+            timeline = max(0.0, float(group.get("speech_seconds") or 0))
+        result[gid] = round(float(timeline), 3)
+    return result
 
 
 def _worker_tone_line(settings: dict = None) -> str:
@@ -2185,7 +2312,7 @@ def _rewrite_prompt(
     existing_by_group: dict = None,
     expand: bool = False,
 ) -> str:
-    st = {**DEFAULT_SETTINGS, **(settings or {})}
+    st = _with_required_coverage(settings)
     context = story_context or {}
     pronoun = str(context.get("pronoun") or "").strip()
     protagonist = str(context.get("protagonist") or "").strip()
@@ -2212,20 +2339,27 @@ def _rewrite_prompt(
     payload_groups = []
     for group in groups or []:
         gid = int(group.get("group_id") or 0)
+        target_chars = int(target_by_group.get(gid) or 0)
+        current_text = existing.get(gid) or ""
         item = {
             "group_id": gid,
             "start": group.get("start"),
             "end": group.get("end"),
+            "source_timeline_seconds": group.get("timeline_seconds"),
             "source_segment_ids": group.get("source_segment_ids") or [],
-            "target_burmese_chars": int(target_by_group.get(gid) or 0),
+            "target_burmese_chars": target_chars,
             "source_text": str(group.get("source_text") or ""),
         }
-        if expand and existing.get(gid):
-            item["existing_burmese"] = existing[gid]
+        if expand:
+            item["current_burmese_chars"] = len(current_text)
+            item["minimum_additional_chars"] = max(0, target_chars - len(current_text))
+            if current_text:
+                item["existing_burmese"] = current_text
         payload_groups.append(item)
 
     task_line = (
-        "existing_burmese ကို အခြေခံပြီး source_text ထဲက ကျန်နေသေးသော အချက်များဖြင့် ချဲ့ရေးပါ။"
+        "existing_burmese ကို အပိုင်းအစလေးမျှသာ ပြန်မပေးဘဲ scene အပြည့်အစုံကို ပြန်ရေးပြီး "
+        "source_text ထဲက ကျန်နေသေးသော အချက်အလက်အားလုံးဖြင့် target ပြည့်အောင် ချဲ့ရေးပါ။"
         if expand
         else "source_text ကို Burmese ပထမလူ ဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပါ။"
     )
@@ -2250,7 +2384,8 @@ def _rewrite_prompt(
 - အကျဉ်းချုပ် မဟုတ်ပါ။ Group တစ်ခုစီရှိ အကြောင်းအရာအားလုံးနီးပါးကို အပြည့်အဝ ပြန်ပြောပါ။ Target coverage = {st.get('coverage')}% ဖြစ်သည်။
 - Input group တစ်ခုအတွက် output scene တစ်ခုတည်းသာ ထုတ်ပါ။ group_id ကို အတိအကျ ကူးထည့်ပါ။ Group များကို မပေါင်းပါနှင့်၊ မခွဲပါနှင့်၊ အစဉ်မပြောင်းပါနှင့်။
 - start/end သို့မဟုတ် source_segment_ids ကို ကိုယ်တိုင် မဖန်တီးပါနှင့်။ ၎င်းတို့ကို worker က ထည့်ပေးမည်။
-- Scene တစ်ခုစီအတွက် target_burmese_chars ပမာဏခန့် ရေးပါ။ မလုံလောက်ပါက source_text ထဲရှိ အရာ၊ နေရာ၊ အကြောင်းရင်း၊ စကားပြောချက်နှင့် အကျိုးဆက်များကို ပိုမိုပြည့်စုံအောင်ရေးပါ။
+- Scene တစ်ခုစီအတွက် Burmese စာသား အရှည်သည် `target_burmese_chars` ထက် မနည်းရပါ။ "ခန့်" မဟုတ်ပါ — ၎င်းသည် အနိမ့်ဆုံးလိုအပ်သော ပမာဏဖြစ်သည်။ Expand mode တွင်မူ နောက်ဆုံး scene တစ်ခုစီသည် `current_burmese_chars + minimum_additional_chars` ပြည့်ရမည်ဖြစ်ပြီး အပိုင်းအစလေးမဟုတ်ဘဲ scene အပြည့်အစုံကို ပြန်ပေးရမည်။
+- JSON မထုတ်ခင် scene တစ်ခုချင်းစီ၏ စာလုံးအရေအတွက်ကို ကိုယ့်ဘာသာစစ်ပါ။ Target မပြည့်သေးပါက source_text ထဲရှိ အရာ၊ နေရာ၊ အကြောင်းရင်း၊ စကားပြောချက်၊ တုံ့ပြန်မှုနှင့် အကျိုးဆက်များကို မထပ်ဘဲ ပိုမိုအသေးစိတ်ထည့်ပြီးမှ ထုတ်ပါ။ စကားလုံးထပ်ခြင်း၊ filler ထပ်ခြင်းဖြင့် အရှည်မဖြည့်ပါနှင့်။
 - ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို နာမည် သို့မဟုတ် «သူ/သူမ» ဟု မညွှန်းပါနှင့်။
 - အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «အဲဒီတုန်းက ကျွန်တော်/ကျွန်မ မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှသိလိုက်ရတာက…» ပုံစံဖြင့် retrospective ရေးပါ။
 - Transcript တွင် မပါသော အဖြစ်အပျက်၊ အမည်၊ အကြောင်းရင်းများကို မတီထွင်ပါနှင့်။
@@ -2279,7 +2414,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
     _worker_check_cancelled(state)
     if not GEMINI_API_KEY:
         raise WorkerJobError("GEMINI_API_KEY is not configured")
-    settings = {**DEFAULT_SETTINGS, **(state.get("settings") or {})}
+    settings = _with_required_coverage(state.get("settings") or {})
     settings["pov"] = "first"
 
     transcript_rel = (state.get("artifacts") or {}).get("transcript") or "transcript.json"
@@ -2297,19 +2432,63 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
     speech_seconds = sum(float(g.get("speech_seconds") or 0) for g in groups)
     if speech_seconds <= 0:
         speech_seconds = float(transcript.get("speech_duration_seconds") or 0)
-    target_chars = _rewrite_target_chars_for_speech(speech_seconds, settings)
 
-    if speech_seconds > 0:
+    source_duration = float(transcript.get("source_duration_seconds") or 0)
+    if source_duration <= 0:
+        source_duration = float(
+            ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds") or 0
+        )
+    transcript_first_start = min(float(g.get("start") or 0) for g in groups)
+    transcript_last_end = max(float(g.get("end") or 0) for g in groups)
+    transcript_span_seconds = max(0.0, transcript_last_end - transcript_first_start)
+
+    # A transcript that stops after, say, 35 seconds of a 9-minute source
+    # cannot support a 90% recap.  Reject that upstream truncation here
+    # instead of producing a 35-second "complete" video.
+    if (
+        source_duration >= 60
+        and transcript_last_end < source_duration * TRANSCRIPT_MIN_SPAN_RATIO
+    ):
+        raise WorkerJobError(
+            "Whisper transcript does not span the source video: "
+            f"last segment ends at {transcript_last_end:.1f}s of "
+            f"{source_duration:.1f}s ({transcript_last_end / source_duration * 100:.1f}%); "
+            "refusing to build a shortened recap"
+        )
+
+    # The user's coverage setting means narration duration as a percentage
+    # of the *source video*, not merely of Whisper's active-speech seconds.
+    # Fall back to speech only for legacy test transcripts without a source
+    # duration.
+    target_basis_seconds = source_duration if source_duration > 0 else speech_seconds
+    target_chars = _rewrite_target_chars_for_duration(target_basis_seconds, settings)
+    timeline_by_group = _group_timeline_seconds(groups, source_duration)
+    for group in groups:
+        gid = int(group["group_id"])
+        group["timeline_seconds"] = float(timeline_by_group.get(gid) or 0)
+
+    allocation_weights = {}
+    for group in groups:
+        gid = int(group["group_id"])
+        if source_duration > 0:
+            weight = float(timeline_by_group.get(gid) or 0)
+        else:
+            weight = float(group.get("speech_seconds") or 0)
+        allocation_weights[gid] = max(0.0, weight)
+    total_weight = sum(allocation_weights.values())
+
+    if target_chars > 0 and total_weight > 0:
         minimum = 35 if target_chars >= 35 * len(groups) else max(1, target_chars // len(groups))
         target_by_group = {
             int(g["group_id"]): max(
                 minimum,
-                int(round(target_chars * float(g.get("speech_seconds") or 0) / speech_seconds)),
+                int(round(target_chars * allocation_weights[int(g["group_id"])] / total_weight)),
             )
             for g in groups
         }
     else:
         target_by_group = {int(g["group_id"]): 80 for g in groups}
+        target_chars = sum(target_by_group.values())
 
     await _worker_progress(state, WORKER_STAGE_LABELS["rewrite"], tracker)
     client = genai.Client(api_key=GEMINI_API_KEY)
@@ -2318,7 +2497,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         "protagonist": "", "pronoun": "",
     }
     scenes_by_group: dict[int, str] = {}
-    batches = _batch_transcript_groups(groups)
+    batches = _batch_transcript_groups(groups, max_groups=10, max_chars=6000)
 
     for batch_index, batch in enumerate(batches, start=1):
         _worker_check_cancelled(state)
@@ -2380,7 +2559,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         ]
         if not missing:
             break
-        for batch in _batch_transcript_groups(missing):
+        for batch in _batch_transcript_groups(missing, max_groups=6, max_chars=3500):
             _worker_check_cancelled(state)
             allowed = [int(g["group_id"]) for g in batch]
             prompt = _rewrite_prompt(
@@ -2399,24 +2578,56 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                     _detect_pronoun(" ".join(parsed.values())) or response_pronoun
                 )
 
-    # Expand underfilled groups using only omitted facts from their own source.
-    for _topup_round in range(SCRIPT_TOPUP_ATTEMPTS):
+    # Expand underfilled groups using only omitted facts from their own
+    # source.  Small batches are deliberate: asking Gemini to expand dozens
+    # of scenes at once reliably produces another summary.  Stop early only
+    # when the hard length gate below will reject the job anyway.
+    minimum_chars = _minimum_script_chars(target_chars)
+    previous_total_chars = -1
+    stagnant_rounds = 0
+    for topup_round in range(SCRIPT_TOPUP_ATTEMPTS):
         _worker_check_cancelled(state)
         total_chars = sum(len(v.strip()) for v in scenes_by_group.values())
-        if total_chars >= target_chars:
+        if total_chars >= minimum_chars:
             break
+        if total_chars <= previous_total_chars:
+            stagnant_rounds += 1
+            if stagnant_rounds >= 2:
+                break
+        else:
+            stagnant_rounds = 0
+        previous_total_chars = total_chars
+
         candidates = []
         for group in groups:
             gid = int(group["group_id"])
             current_text = str(scenes_by_group.get(gid) or "").strip()
             wanted = int(target_by_group.get(gid) or 0)
-            if current_text and wanted > 0 and len(current_text) < wanted * 0.98:
-                candidates.append((len(current_text) / wanted, -float(group.get("speech_seconds") or 0), group))
+            if wanted > 0 and len(current_text) < wanted * SCRIPT_MIN_CHAR_RATIO:
+                ratio = len(current_text) / wanted if wanted else 0.0
+                weight = float(
+                    group.get("timeline_seconds")
+                    or group.get("speech_seconds")
+                    or 0
+                )
+                candidates.append((ratio, -weight, group))
         if not candidates:
             break
+
         candidates.sort(key=lambda item: (item[0], item[1]))
         topup_groups = [item[2] for item in candidates[:40]]
-        for batch in _batch_transcript_groups(topup_groups):
+        await _worker_progress(
+            state,
+            "⚠️ Script ပမာဏ "
+            f"{total_chars / max(1, target_chars) * 100:.0f}% ပဲရှိသေးလို့ "
+            f"ကျန်အသေးစိတ်များ ထပ်ဖြည့်နေပါသည်... "
+            f"({topup_round + 1}/{SCRIPT_TOPUP_ATTEMPTS})",
+            tracker,
+        )
+        for batch in _batch_transcript_groups(
+            topup_groups, max_groups=5, max_chars=3000
+        ):
+            _worker_check_cancelled(state)
             allowed = [int(g["group_id"]) for g in batch]
             prompt = _rewrite_prompt(
                 batch, target_by_group, story_context, settings,
@@ -2429,23 +2640,33 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                 if len(new_text.strip()) > len(old_text.strip()):
                     scenes_by_group[int(gid)] = new_text.strip()
 
-    coverage_metrics = _calculate_transcript_coverage(groups, scenes_by_group)
+    coverage_metrics = _calculate_transcript_coverage(
+        groups, scenes_by_group, target_by_group=target_by_group
+    )
     total_chars = sum(len(v.strip()) for v in scenes_by_group.values())
-    try:
-        required_ratio = float(settings.get("coverage") or 90) / 100.0
-    except (TypeError, ValueError):
-        required_ratio = 0.90
-    required_ratio = max(0.0, min(1.0, required_ratio))
+    required_ratio = _settings_coverage_ratio(settings)
+    script_rate = _settings_script_rate(settings)
+    estimated_spoken_seconds = total_chars / script_rate if script_rate else 0.0
+    target_narration_seconds = target_basis_seconds * required_ratio
     coverage_metrics.update({
         "required_speech_coverage_ratio": round(required_ratio, 4),
         "required_speech_coverage_percent": round(required_ratio * 100.0, 2),
+        "source_duration_seconds": round(float(source_duration), 3),
+        "speech_duration_seconds": round(float(speech_seconds), 3),
+        "transcript_span_seconds": round(float(transcript_span_seconds), 3),
+        "transcript_last_end_seconds": round(float(transcript_last_end), 3),
+        "target_basis_seconds": round(float(target_basis_seconds), 3),
+        "target_basis": "source_duration" if source_duration > 0 else "speech_duration",
+        "target_narration_seconds": round(float(target_narration_seconds), 3),
         "target_burmese_chars": int(target_chars),
+        "minimum_acceptable_burmese_chars": int(minimum_chars),
         "actual_burmese_chars": int(total_chars),
         "char_target_ratio": round(total_chars / target_chars, 4) if target_chars else 0.0,
         "char_target_percent": round(total_chars / target_chars * 100.0, 2) if target_chars else 0.0,
-        "estimated_spoken_seconds": round(
-            total_chars / float(settings.get("rate") or SCRIPT_CHARS_PER_SEC), 3
-        ),
+        "estimated_spoken_seconds": round(float(estimated_spoken_seconds), 3),
+        "estimated_narration_ratio_of_source": round(
+            estimated_spoken_seconds / source_duration, 4
+        ) if source_duration > 0 else 0.0,
         "group_count": len(groups),
         "scene_count": len(scenes_by_group),
         "language": str(transcript.get("language") or ""),
@@ -2455,12 +2676,18 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
     if float(coverage_metrics.get("speech_coverage_ratio") or 0) < required_ratio:
         raise WorkerJobError(
             "Transcript coverage is below target: "
-            f"{coverage_metrics.get('speech_coverage_percent')}% < {required_ratio * 100:.1f}%"
+            f"{coverage_metrics.get('speech_coverage_percent')}% < {required_ratio * 100:.1f}% "
+            f"(missing={coverage_metrics.get('missing_group_ids')}, "
+            f"underfilled={coverage_metrics.get('underfilled_group_ids')})"
         )
-    if total_chars < target_chars:
-        logger.warning(
-            "Worker rewrite char target not fully reached: %s/%s chars; segment coverage %s%%",
-            total_chars, target_chars, coverage_metrics.get("speech_coverage_percent"),
+    if total_chars < minimum_chars:
+        raise WorkerJobError(
+            "Script length below duration target after top-ups: "
+            f"{total_chars}/{target_chars} chars "
+            f"(~{estimated_spoken_seconds:.1f}s narration; target "
+            f"~{target_narration_seconds:.1f}s from {target_basis_seconds:.1f}s basis, "
+            f"coverage {required_ratio * 100:.0f}%); "
+            "refusing to render a shortened recap"
         )
 
     scenes = []
@@ -2475,6 +2702,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             "start": float(group.get("start") or 0),
             "end": float(group.get("end") or group.get("start") or 0),
             "speech_seconds": float(group.get("speech_seconds") or 0),
+            "timeline_seconds": float(group.get("timeline_seconds") or 0),
             "burmese": text,
         })
 
@@ -2503,7 +2731,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
 
 
 def _worker_settings(state: dict) -> dict:
-    settings = {**DEFAULT_SETTINGS, **(state.get("settings") or {})}
+    settings = _with_required_coverage(state.get("settings") or {})
     settings["pov"] = "first"
     return settings
 
@@ -2598,9 +2826,36 @@ async def _worker_stage_tts(state: dict, tracker=None):
         total_speech_samples / SAMPLE_RATE
         + pause_seconds * max(0, len(entries) - 1)
     )
+    script_coverage = script.get("coverage") or {}
     source_seconds = float(
-        ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds") or 0
+        script_coverage.get("source_duration_seconds")
+        or ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds")
+        or 0
     )
+    coverage_ratio = _settings_coverage_ratio(settings)
+    speed = _settings_speed(settings)
+    expected_narration_seconds = float(
+        script_coverage.get("target_narration_seconds") or 0
+    )
+    if expected_narration_seconds <= 0 and source_seconds > 0:
+        expected_narration_seconds = source_seconds * coverage_ratio
+    expected_narration_seconds = expected_narration_seconds / speed
+    minimum_narration_seconds = (
+        expected_narration_seconds * SCRIPT_MIN_NARRATION_RATIO
+    )
+    if (
+        expected_narration_seconds > 0
+        and narration_seconds < minimum_narration_seconds
+    ):
+        raise WorkerJobError(
+            "TTS narration below duration target: "
+            f"{narration_seconds:.1f}s actual, expected at least "
+            f"{minimum_narration_seconds:.1f}s (target "
+            f"{expected_narration_seconds:.1f}s from {source_seconds:.1f}s source, "
+            f"coverage {coverage_ratio * 100:.0f}%); "
+            "refusing to render a shortened recap"
+        )
+
     audio_data = {
         "sample_rate": SAMPLE_RATE,
         "pause_seconds": pause_seconds,
@@ -2608,6 +2863,8 @@ async def _worker_stage_tts(state: dict, tracker=None):
         "clips": entries,
         "total_speech_seconds": round(total_speech_samples / SAMPLE_RATE, 6),
         "total_narration_seconds": round(narration_seconds, 6),
+        "expected_narration_seconds": round(expected_narration_seconds, 6),
+        "minimum_acceptable_narration_seconds": round(minimum_narration_seconds, 6),
         "silent_scene_count": silent_count,
         "voice": settings.get("voice"),
     }
@@ -2620,6 +2877,11 @@ async def _worker_stage_tts(state: dict, tracker=None):
         "narration_ratio_of_source": round(
             narration_seconds / source_seconds, 4
         ) if source_seconds > 0 else 0.0,
+        "expected_narration_seconds": round(expected_narration_seconds, 3),
+        "minimum_acceptable_narration_seconds": round(minimum_narration_seconds, 3),
+        "narration_ratio_of_expected": round(
+            narration_seconds / expected_narration_seconds, 4
+        ) if expected_narration_seconds > 0 else 0.0,
         "voice": settings.get("voice"),
     }
     state.setdefault("artifacts", {})["audio"] = "audio.json"
@@ -2840,11 +3102,34 @@ async def _worker_stage_render(state: dict, tracker=None):
 
     final_duration, final_w, final_h = probe_video_info(final_path)
     expected_duration = sum(float(item.get("desired_output_seconds") or 0) for item in plan)
+    coverage_ratio = _settings_coverage_ratio(settings)
+    speed = _settings_speed(settings)
+    target_final_seconds = source_duration * coverage_ratio / speed
+    minimum_final_seconds = target_final_seconds * SCRIPT_MIN_NARRATION_RATIO
+    if expected_duration > 0 and final_duration < expected_duration * 0.90:
+        raise WorkerJobError(
+            "Rendered video is shorter than its alignment plan: "
+            f"{final_duration:.1f}s actual vs {expected_duration:.1f}s expected; "
+            "refusing to deliver a shortened recap"
+        )
+    if target_final_seconds > 0 and final_duration < minimum_final_seconds:
+        raise WorkerJobError(
+            "Rendered video below duration target: "
+            f"{final_duration:.1f}s actual, expected at least "
+            f"{minimum_final_seconds:.1f}s (target {target_final_seconds:.1f}s "
+            f"from {source_duration:.1f}s source, coverage "
+            f"{coverage_ratio * 100:.0f}%); refusing to deliver a shortened recap"
+        )
     metrics = {
         "source_duration_seconds": round(float(source_duration), 3),
         "expected_duration_seconds": round(float(expected_duration), 3),
         "final_duration_seconds": round(float(final_duration), 3),
+        "target_final_seconds": round(float(target_final_seconds), 3),
+        "minimum_acceptable_final_seconds": round(float(minimum_final_seconds), 3),
         "final_ratio_of_source": round(final_duration / source_duration, 4) if source_duration else 0.0,
+        "final_ratio_of_target": round(
+            final_duration / target_final_seconds, 4
+        ) if target_final_seconds else 0.0,
         "size_bytes": os.path.getsize(final_path),
         "size_mb": round(os.path.getsize(final_path) / (1024 * 1024), 2),
         "width": int(final_w or out_w),
@@ -3097,7 +3382,7 @@ async def _forward_job_to_n8n(state: dict) -> bool:
 
 
 async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
-    job_settings = get_user_settings(chat_id)
+    job_settings = _with_required_coverage(get_user_settings(chat_id))
     chunk_duration = int(job_settings.get("chunk") or CHUNK_DURATION)
     job_id = f"j{secrets.token_hex(5)}"
     if chat_id in ACTIVE_JOBS:
@@ -3457,7 +3742,7 @@ async def process_admin_update(update: dict):
 app = FastAPI()
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.1-n8n-worker"
+BUILD_VERSION = "v3.2-coverage-guard"
 BUILD_FEATURES = 20
 
 
@@ -3469,6 +3754,7 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
+        "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "worker_api_configured": bool(WORKER_API_KEY),
         "whisper_configured": bool(WHISPER_API_KEY),
         "whisper_model": WHISPER_MODEL,
@@ -3483,6 +3769,7 @@ async def health():
         "app": "rednote-bot",
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
+        "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "worker_api_configured": bool(WORKER_API_KEY),
     })
 
