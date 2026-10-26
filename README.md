@@ -1,11 +1,14 @@
 # rednote-bot-
 
 Telegram bot that turns a video link into a Burmese recap video
-(Gemini script → Gemini TTS → ffmpeg render), controlled with both
-**inline buttons and a persistent bottom keyboard** — no commands to memorize.
+(Gemini script → Gemini TTS → ffmpeg render), controlled with
+**inline buttons, a persistent bottom keyboard, and Telegram's command
+menu button** — no commands to memorize.
 
-Send `/start` once in Telegram. The bot installs the persistent bottom
-buttons and opens the inline main menu:
+Version `v3.4-button-webhook-fix` installs the persistent bottom buttons
+from `/start`, `/menu`, **or the first ordinary message/video link sent to
+each newly deployed process**. `/start` and `/menu` always force-install
+them again and open the inline main menu:
 
 | Button | What it does |
 |---|---|
@@ -94,12 +97,39 @@ anywhere in the pipeline with `get_user_settings(chat_id)["my_feature"]`
 (job code already receives the full settings snapshot as `job_settings` /
 `st` in `build_chunk_recap`).
 
-## Run
+## Run / verify the live Render deployment
 
 ```bash
 BOT_TOKEN=... GEMINI_API_KEY=... ADMIN_ID=... python bot.py
-# FastAPI webhook on :10000  (POST /webhook)
+# FastAPI webhook on $PORT (Render default 10000)
 ```
+
+On every startup the bot registers its commands, sets Telegram's chat menu
+button to **commands**, and re-registers its webhook with
+`allowed_updates=["message", "edited_message", "callback_query"]` so inline
+button callbacks cannot remain disabled by an older webhook setting. The
+webhook base is resolved in this order: explicit `WEBHOOK_BASE_URL` /
+`PUBLIC_BASE_URL`, Render's actual `RENDER_EXTERNAL_HOSTNAME`, then
+`RENDER_EXTERNAL_URL`. Setup is verified with `getMe` and
+`getWebhookInfo` and retried with backoff.
+
+A deployment is **not** verified until the live service reports the new
+build itself. Open both URLs for the actual Render service:
+
+```text
+https://<service>.onrender.com/
+https://<service>.onrender.com/health
+```
+
+For this release both must show `"version":"v3.4-button-webhook-fix"`,
+`"telegram_buttons":"inline_persistent_and_menu"`, the service's real
+`public_host`, and the deployed `render_git_repo_slug`,
+`render_git_commit`, and `render_git_branch`.
+If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
+URL belongs to a different/older service or that service is not deploying
+this repository's `main`; fixing that Render service's repository, branch,
+root directory, or deploy status is required before Telegram can receive
+the new buttons.
 
 Network-free regression tests:
 
