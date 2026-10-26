@@ -61,6 +61,16 @@ MAX_TG_BYTES = 45 * 1024 * 1024
 CHUNK_DURATION = 300
 PAUSE_AFTER_SCENE = 0.20
 
+# --- Script coverage (input -> script output) ---
+# Script (narration) must cover 90% of the input chunk duration.
+# e.g. a 300s chunk must produce narration that, when spoken, lasts
+# ~270s (0.90 * 300). Burmese TTS (Charon) speaks at roughly
+# 6.5 characters/second, so the character target is derived from that.
+SCRIPT_TARGET_RATIO = 0.90      # output script = 90% of input duration
+SCRIPT_CHARS_PER_SEC = 6.5      # estimated Burmese TTS speaking rate
+SCRIPT_MAX_RATIO = 1.05         # never exceed 105% of the 90% target
+SCRIPT_TOPUP_ATTEMPTS = 3       # retry top-ups until 90% is reached
+
 PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
 os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
 
@@ -83,6 +93,260 @@ DEEP_VOICE_FILTER = (
 
 def get_anim_emoji(frame: int) -> str:
     return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
+
+
+# =====================================================================
+# 🎛️ BUTTON MENU SYSTEM + FEATURE REGISTRY  (features အသစ် ထည့်နည်း)
+# ---------------------------------------------------------------------
+# Feature အသစ်ထည့်ချင်ရင် FEATURES list ထဲမှာ dict တစ်ခု ထည့်ရုံပါပဲ —
+# menu ခလုတ်တွေ အလိုအလျောက် ပေါ်လာပါလိမ့်မယ်။
+#   {"key": "coverage", "icon": "🎯", "label": "Script ပမာဏ",
+#    "desc": "...", "kind": "cycle", "options": [(90, "90%"), ...]}
+# kind အမျိုးအစားများ:
+#   "cycle"  = ရွေးစရာများထဲမှ တစ်ခု (နှိပ်ရင် ရွေးချယ်မီနူး ပွင့်တယ်)
+#   "toggle" = On/Off ခလုတ် (နှိပ်လိုက်တာနဲ့ တန်း ပြောင်းတယ်)
+# ပြီးရင် DEFAULT_SETTINGS ထဲမှာ default တန်ဖိုး ထည့်ပေးပါ။
+# =====================================================================
+
+DEFAULT_SETTINGS = {
+    "coverage": 90,        # 1  🎯 Script output = input ၏ %
+    "voice": "Charon",     # 2  🎙 အသံ
+    "deep": True,          # 3  🔊 Deep အသံ
+    "speed": 1.0,          # 4  ⏩ အသံအမြန်နှုန်း
+    "volume": 100,         # 5  🔉 အသံအတိုးအကျယ် %
+    "resolution": 1280,    # 6  📐 ဗီဒီယို အရွယ်အစား (long edge px)
+    "quality": 23,         # 7  💎 အရည်အသွေး (CRF, နည်းလေ ကောင်းလေ)
+    "shield": True,        # 8  🛡️ Crop+Flip shield
+    "color": True,         # 9  🎨 အရောင် မြှင့်တင်မှု
+    "pause": 0.20,         # 10 ⏸ ခန်းကြား နားချိန် (စက္ကန့်)
+    "cut": 8,              # 11 ✂️ ဖြတ်ထုတ်ခွင့် %
+    "chunk": 300,          # 12 📦 အပိုင်းခွဲချိန် (စက္ကန့်)
+    "rate": 6.5,           # 13 🗣 Script အလျင် (စာလုံး/စက္ကန့်)
+    "pov": "first",        # 14 👤 ပြောပြသူ ရှုထောင့်
+    "tone": "natural",     # 15 🎭 ဇာတ်ကြောင်း လေသံ
+    "split_tg": True,      # 16 📤 Telegram အတွက် ခွဲပို့ခြင်း
+    "caption": True,       # 17 💬 Video caption ထည့်ခြင်း
+    "notify": True,        # 18 🔔 ပြီးဆုံး အကြောင်းကြားခြင်း
+    "fast_mode": False,    # 19 ⚡ မြန်ဆန်မုဒ် (preset အမြန်)
+    "auto_start": True,    # 20 🚀 Link ပို့လိုက်တာနဲ့ တန်း စခြင်း
+}
+
+FEATURES = [
+    {"key": "coverage", "icon": "🎯", "label": "Script ပမာဏ", "kind": "cycle",
+     "desc": "Input ကြာချိန်ရဲ့ ဘယ်နှုန်း% script ထွက်မလဲ",
+     "options": [(50, "50%"), (70, "70%"), (80, "80%"), (90, "90% ⭐"), (95, "95%"), (100, "100%")]},
+    {"key": "voice", "icon": "🎙️", "label": "အသံ (Voice)", "kind": "cycle",
+     "desc": "TTS အသံသရုပ်ဆောင် ရွေးပါ",
+     "options": [("Charon", "Charon (ယောက်ျား·နက်)"), ("Fenrir", "Fenrir (ယောက်ျား)"),
+                 ("Puck", "Puck (ယောက်ျား·သေးသေး)"), ("Kore", "Kore (မိန်းမ)"), ("Aoede", "Aoede (မိန်းမ·နူး)")]},
+    {"key": "deep", "icon": "🔊", "label": "Deep အသံ", "kind": "toggle",
+     "desc": "အသံကို နက်ရှိုင်း/ရင်အုပ်သံ ဖြစ်အောင် လုပ်ခြင်း"},
+    {"key": "speed", "icon": "⏩", "label": "အမြန်နှုန်း", "kind": "cycle",
+     "desc": "အသံဖတ် အမြန်နှုန်း",
+     "options": [(0.9, "0.9x နှေး"), (1.0, "1.0x ပုံမှန်"), (1.1, "1.1x"), (1.2, "1.2x မြန်")]},
+    {"key": "volume", "icon": "🔉", "label": "အသံအတိုးအကျယ်", "kind": "cycle",
+     "desc": "အသံ volume %",
+     "options": [(80, "80%"), (100, "100% ပုံမှန်"), (120, "120%"), (150, "150% ကျယ်")]},
+    {"key": "resolution", "icon": "📐", "label": "ဗီဒီယို အရွယ်", "kind": "cycle",
+     "desc": "Output ဗီဒီယို အရွယ်အစား",
+     "options": [(720, "720p ပေါ့"), (1280, "1280p ပုံမှန်"), (1920, "1920p ကြီး")]},
+    {"key": "quality", "icon": "💎", "label": "အရည်အသွေး", "kind": "cycle",
+     "desc": "CRF — နည်းလေ အရည်အသွေးကောင်းလေ ဖိုင်ကြီးလေ",
+     "options": [(18, "အကောင်းဆုံး"), (23, "ပုံမှန် ⭐"), (28, "ဖိုင်သေး")]},
+    {"key": "shield", "icon": "🛡️", "label": "Shield (Crop+Flip)", "kind": "toggle",
+     "desc": "ဗီဒီယိုကို crop + ဘေးပြောင်း လုပ်ခြင်း"},
+    {"key": "color", "icon": "🎨", "label": "အရောင် မြှင့်", "kind": "toggle",
+     "desc": "Contrast/Saturation မြှင့်တင်ခြင်း"},
+    {"key": "pause", "icon": "⏸️", "label": "ခန်းကြား နားချိန်", "kind": "cycle",
+     "desc": "ခန်းတစ်ခုနဲ့ တစ်ခုကြား တိတ်ဆိတ်ချိန်",
+     "options": [(0.0, "မနား"), (0.2, "0.2s ⭐"), (0.5, "0.5s"), (1.0, "1.0s")]},
+    {"key": "cut", "icon": "✂️", "label": "ဖြတ်ထုတ်ခွင့်", "kind": "cycle",
+     "desc": "မလိုတဲ့ အပိုင်း ဖြတ်ထုတ်ခွင့် အများဆုံး %",
+     "options": [(0, "လုံးဝ မဖြတ်"), (5, "5%"), (8, "8% ⭐"), (15, "15%")]},
+    {"key": "chunk", "icon": "📦", "label": "အပိုင်းခွဲ အချိန်", "kind": "cycle",
+     "desc": "ရှည်တဲ့ ဗီဒီယိုကို ခွဲလုပ်မည့် အပိုင်းအရှည်",
+     "options": [(180, "3 မိနစ်"), (300, "5 မိနစ် ⭐"), (600, "10 မိနစ်")]},
+    {"key": "rate", "icon": "🗣️", "label": "Script အလျင် ချိန်ညှိ", "kind": "cycle",
+     "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — စာသား ပမာဏ တွက်ရန်",
+     "options": [(5.5, "5.5 နှေး"), (6.5, "6.5 ⭐"), (7.5, "7.5 မြန်")]},
+    {"key": "pov", "icon": "👤", "label": "ပြောပြသူ ရှုထောင့်", "kind": "cycle",
+     "desc": "Script ရေးဟန်",
+     "options": [("first", "ပထမလူ (ကျွန်တော်...)"), ("narrator", "ဇာတ်ကြောင်းပြောသူ")]},
+    {"key": "tone", "icon": "🎭", "label": "ဇာတ်ကြောင်း လေသံ", "kind": "cycle",
+     "desc": "Script ရဲ့ ခံစားချက်အရောင်",
+     "options": [("natural", "သဘာဝ ⭐"), ("dramatic", "ဒရာမာ ဆန်ဆန်"), ("emotional", "စိတ်လှုပ်ရှားဖွယ်"), ("calm", "အေးအေးဆေးဆေး")]},
+    {"key": "split_tg", "icon": "📤", "label": "Telegram ခွဲပို့", "kind": "toggle",
+     "desc": "ဖိုင်ကြီးရင် 45MB အပိုင်းတွေ ခွဲပို့ခြင်း"},
+    {"key": "caption", "icon": "💬", "label": "Video Caption", "kind": "toggle",
+     "desc": "ပို့တဲ့ ဗီဒီယိုမှာ caption စာသား ထည့်ခြင်း"},
+    {"key": "notify", "icon": "🔔", "label": "ပြီး အကြောင်းကြား", "kind": "toggle",
+     "desc": "အလုပ်ပြီးရင် သီးသန့် အကြောင်းကြား စာပို့ခြင်း"},
+    {"key": "fast_mode", "icon": "⚡", "label": "မြန်ဆန်မုဒ်", "kind": "toggle",
+     "desc": "Render preset ကို superfast ပြောင်းပြီး မြန်မြန် ထုတ်ခြင်း"},
+    {"key": "auto_start", "icon": "🚀", "label": "Link တန်း စ", "kind": "toggle",
+     "desc": "Link ပို့လိုက်တာနဲ့ မေးမနေဘဲ တန်းစခြင်း (Off ဆိုရင် အတည်ပြု ခလုတ် ပြမယ်)"},
+]
+FEATURE_BY_KEY = {f["key"]: f for f in FEATURES}
+
+SETTINGS_FILE = os.path.join(WORK_ROOT, "bot_settings.json")
+_settings_lock = asyncio.Lock()
+ACTIVE_JOBS: dict = {}          # chat_id -> job_id
+PENDING_LINKS: dict = {}        # chat_id -> url (auto_start Off က confirm စောင့်နေတာ)
+JOB_STATS: dict = {}            # chat_id -> {"done":..,"failed":..,"cancelled":..}
+
+
+def _load_persisted():
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("users", {}), data.get("stats", {})
+    except Exception:
+        return {}, {}
+
+
+_PERSISTED_USERS, _PERSISTED_STATS = _load_persisted()
+JOB_STATS.update({int(k): v for k, v in _PERSISTED_STATS.items()})
+
+
+def _save_persisted():
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"users": _PERSISTED_USERS, "stats": JOB_STATS}, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"settings save failed: {e}")
+
+
+def get_user_settings(chat_id) -> dict:
+    """User ရဲ့ settings (မရှိရင် default) — အမြဲ မိတ္တူ dict ပြန်ပေးတယ်။"""
+    s = dict(DEFAULT_SETTINGS)
+    saved = _PERSISTED_USERS.get(str(chat_id), {})
+    if isinstance(saved, dict):
+        s.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
+    return s
+
+
+def set_user_setting(chat_id, key: str, value):
+    if key not in DEFAULT_SETTINGS:
+        return get_user_settings(chat_id)
+    _PERSISTED_USERS.setdefault(str(chat_id), {})[key] = value
+    _save_persisted()
+    return get_user_settings(chat_id)
+
+
+def reset_user_settings(chat_id):
+    _PERSISTED_USERS.pop(str(chat_id), None)
+    _save_persisted()
+    return get_user_settings(chat_id)
+
+
+def bump_stat(chat_id, field: str):
+    st = JOB_STATS.setdefault(int(chat_id), {"done": 0, "failed": 0, "cancelled": 0})
+    st[field] = st.get(field, 0) + 1
+    _save_persisted()
+
+
+def is_allowed(user_id) -> bool:
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    return uid == ADMIN_ID or uid in ALLOWED_USER_IDS
+
+
+def feature_value_label(feat: dict, settings: dict) -> str:
+    val = settings.get(feat["key"], DEFAULT_SETTINGS.get(feat["key"]))
+    if feat["kind"] == "toggle":
+        return "🟢 On" if val else "🔴 Off"
+    for v, label in feat.get("options", []):
+        if v == val:
+            return label
+    return str(val)
+
+
+def settings_summary_text(chat_id) -> str:
+    s = get_user_settings(chat_id)
+    lines = ["📋 <b>လက်ရှိ ဆက်တင်များ</b>\n"]
+    for f in FEATURES:
+        lines.append(f"{f['icon']} {f['label']}: <b>{feature_value_label(f, s)}</b>")
+    return "\n".join(lines)
+
+
+def btn(text: str, data: str) -> dict:
+    return {"text": text, "callback_data": data}
+
+
+def main_menu_keyboard(chat_id) -> dict:
+    s = get_user_settings(chat_id)
+    rows = [
+        [btn("🎬 Recap စတင်မယ်", "menu:recap"), btn("⚙️ ဆက်တင်များ (20)", "menu:settings")],
+        [btn(f"🎯 Script: {s['coverage']}%", "feat:coverage"), btn(f"🎙️ အသံ: {s['voice']}", "feat:voice")],
+        [btn("📊 အလုပ်အခြေအနေ", "menu:status"), btn("🛑 လုပ်နေတာ ရပ်မယ်", "menu:cancel")],
+        [btn("📋 ဆက်တင် အကျဉ်း", "menu:summary"), btn("📈 စာရင်းချုပ်", "menu:stats")],
+        [btn("❓ အသုံးပြုနည်း", "menu:help"), btn("🔄 ဆက်တင် ပြန်ချိန်", "menu:reset")],
+    ]
+    return {"inline_keyboard": rows}
+
+
+def settings_keyboard(chat_id) -> dict:
+    """FEATURES registry ကနေ အလိုအလျောက် တည်ဆောက်တဲ့ ခလုတ်တွေ — feature အသစ်ထည့်ရင် ဒီမှာ တန်းပေါ်တယ်။"""
+    s = get_user_settings(chat_id)
+    rows, row = [], []
+    for f in FEATURES:
+        label = f"{f['icon']} {f['label']}"
+        if f["kind"] == "toggle":
+            label += " 🟢" if s.get(f["key"]) else " 🔴"
+        row.append(btn(label, f"feat:{f['key']}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([btn("🏠 ပင်မ မီနူးသို့", "menu:main")])
+    return {"inline_keyboard": rows}
+
+
+def feature_options_keyboard(feat: dict, chat_id) -> dict:
+    s = get_user_settings(chat_id)
+    cur = s.get(feat["key"])
+    rows = []
+    for v, label in feat.get("options", []):
+        mark = "✅ " if v == cur else ""
+        rows.append([btn(f"{mark}{label}", f"set:{feat['key']}:{json.dumps(v)}")])
+    rows.append([btn("⬅️ ဆက်တင်များသို့", "menu:settings"), btn("🏠 ပင်မ", "menu:main")])
+    return {"inline_keyboard": rows}
+
+
+def confirm_keyboard() -> dict:
+    return {"inline_keyboard": [[
+        btn("✅ စတင်မယ်", "job:start"), btn("❌ မလုပ်တော့ဘူး", "job:discard"),
+    ]]}
+
+
+MAIN_MENU_TEXT = (
+    "🎬 <b>RedNote Recap Bot</b>\n"
+    "━━━━━━━━━━━━━━━\n"
+    "ဗီဒီယို link ပို့လိုက်တာနဲ့ မြန်မာ Recap ဗီဒီယို လုပ်ပေးပါတယ်။\n\n"
+    "👇 ခလုတ်လေးတွေ နှိပ်ပြီး သုံးနိုင်ပါတယ်\n"
+    "🎬 <b>Recap စတင်မယ်</b> — link ပို့ဖို့\n"
+    "⚙️ <b>ဆက်တင်များ</b> — feature ၂၀ လုံး ချိန်ညှိရန်\n"
+    "🛑 <b>ရပ်မယ်</b> — လုပ်နေတဲ့ အလုပ် ပယ်ဖျက်ရန်"
+)
+
+HELP_TEXT = (
+    "❓ <b>အသုံးပြုနည်း</b>\n"
+    "━━━━━━━━━━━━━━━\n"
+    "1️⃣ ဗီဒီယို link (http...) ကို ဒီအတိုင်း ပို့လိုက်ပါ\n"
+    "2️⃣ Bot က download → script (input ၏ ဆက်တင်%) → အသံ → ဗီဒီယို လုပ်ပေးပါမယ်\n"
+    "3️⃣ ပြီးရင် Recap ဗီဒီယို ပြန်ပို့ပေးပါမယ်\n\n"
+    "⌨️ <b>Commands:</b>\n"
+    "/start သို့မဟုတ် /menu — ပင်မ မီနူး\n"
+    "/settings — ဆက်တင်များ\n"
+    "/status — အလုပ်အခြေအနေ\n"
+    "/cancel — လုပ်နေတာ ရပ်ရန်\n"
+    "/summary — ဆက်တင်အကျဉ်း\n"
+    "/help — ဒီစာမျက်နှာ\n\n"
+    "💡 ဆက်တင်တွေ ပြောင်းထားရင် နောက်ဗီဒီယိုက စပြီး အကျိုးသက်ရောက်ပါမယ်။"
+)
 
 
 def fmt_progress_bar(pct: int) -> str:
@@ -161,26 +425,50 @@ async def tg_api(method: str, data: dict = None, timeout: float = 90.0):
     return {"ok": False}
 
 
-async def send_text(chat_id: int, text: str, reply_to: int = None):
-    res = await tg_api("sendMessage", {
+async def send_text(chat_id: int, text: str, reply_to: int = None, reply_markup: dict = None):
+    payload = {
         "chat_id": chat_id,
         "text": text,
+        "parse_mode": "HTML",
         "reply_to_message_id": reply_to,
-    })
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    res = await tg_api("sendMessage", payload)
     return res.get("result", {}).get("message_id")
 
 
-async def edit_text(chat_id: int, message_id: int, text: str):
+async def edit_text(chat_id: int, message_id: int, text: str, reply_markup: dict = None):
     if not message_id:
         return
     try:
-        await tg_api("editMessageText", {
+        payload = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
+            "parse_mode": "HTML",
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        await tg_api("editMessageText", payload)
+    except Exception:
+        pass
+
+
+async def answer_callback(callback_id: str, text: str = ""):
+    try:
+        await tg_api("answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "text": text,
+            "show_alert": False,
         })
     except Exception:
         pass
+
+
+async def send_main_menu(chat_id: int, reply_to: int = None):
+    return await send_text(chat_id, MAIN_MENU_TEXT, reply_to=reply_to,
+                           reply_markup=main_menu_keyboard(chat_id))
 
 
 async def tg_upload_media(method: str, data: dict, field_name: str, file_name: str, file_path: str, mime_type: str) -> dict:
@@ -221,11 +509,11 @@ def probe_video_info(path: str) -> tuple[float, int, int]:
     return dur, w, h
 
 
-def compute_output_dims(src_w: int, src_h: int) -> tuple[int, int]:
+def compute_output_dims(src_w: int, src_h: int, long_edge_target: int = 1280) -> tuple[int, int]:
     if src_w <= 0 or src_h <= 0:
         return 1280, 720
     long_edge = max(src_w, src_h)
-    scale = 1280.0 / float(long_edge)
+    scale = float(long_edge_target) / float(long_edge)
     out_w = max(2, int(round(src_w * scale / 2.0)) * 2)
     out_h = max(2, int(round(src_h * scale / 2.0)) * 2)
     return out_w, out_h
@@ -373,9 +661,31 @@ def split_pcm_by_weights(master: np.ndarray, scenes: list) -> list[np.ndarray]:
     return clips
 
 
-async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str):
+def build_voice_filter(settings: dict = None) -> str:
+    """Settings အလိုက် TTS အသံ filter တည်ဆောက်တယ် (deep / speed / volume)."""
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    if s.get("deep"):
+        base = DEEP_VOICE_FILTER
+        speed = float(s.get("speed") or 1.0)
+        if abs(speed - 1.0) > 0.01:
+            base += f",atempo={speed:.3f}"
+    else:
+        speed = float(s.get("speed") or 1.0)
+        base = "loudnorm=I=-16:TP=-1.5:LRA=11"
+        if abs(speed - 1.0) > 0.01:
+            base = f"atempo={speed:.3f}," + base
+    vol = float(s.get("volume") or 100) / 100.0
+    if abs(vol - 1.0) > 0.01:
+        base += f",volume={vol:.2f}"
+    return base
+
+
+async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str, settings: dict = None):
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    voice_name = s.get("voice") or "Charon"
+    voice_filter = build_voice_filter(s)
     client = genai.Client(api_key=GEMINI_API_KEY)
-    joined = "\n\n".join(s["burmese"] for s in batch)
+    joined = "\n\n".join(s_["burmese"] for s_ in batch)
 
     for model in PREFERRED_TTS_MODELS:
         for attempt in range(2):
@@ -386,7 +696,7 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
                         voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon")
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
                         )
                     ),
                 )
@@ -421,7 +731,7 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                     FFMPEG_BIN, "-y",
                     "-f", "s16le", "-ar", "24000", "-ac", "1",
                     "-i", tmp_raw,
-                    "-af", DEEP_VOICE_FILTER,
+                    "-af", voice_filter,
                     "-f", "s16le", "-acodec", "pcm_s16le",
                     "-ac", "1", "-ar", str(SAMPLE_RATE),
                     tmp_pcm,
@@ -455,14 +765,14 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
     return None
 
 
-async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
+async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> list[np.ndarray]:
     BATCH_SIZE = 8
     batches = [scenes[i:i + BATCH_SIZE] for i in range(0, len(scenes), BATCH_SIZE)]
     logger.info(f"TTS: {len(scenes)} scenes in {len(batches)} batches")
     all_clips = []
 
     for b_idx, batch in enumerate(batches):
-        clips = await _tts_one_batch(batch, b_idx, len(batches), work_dir)
+        clips = await _tts_one_batch(batch, b_idx, len(batches), work_dir, settings)
         if clips is None:
             logger.error(f"TTS batch {b_idx + 1}/{len(batches)} failed — silence fallback")
             clips = [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in batch]
@@ -502,6 +812,54 @@ Return JSON:
         }
 
 
+def script_target_chars(chunk_dur: float, settings: dict = None) -> int:
+    """Characters needed so spoken narration = coverage% of input (default 90%)."""
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    ratio = float(s.get("coverage") or 90) / 100.0
+    rate = float(s.get("rate") or SCRIPT_CHARS_PER_SEC)
+    return int(chunk_dur * ratio * rate)
+
+
+def script_total_chars(scenes: list) -> int:
+    return sum(len((s.get("burmese") or "").strip()) for s in scenes if isinstance(s, dict))
+
+
+def sort_scenes(scenes: list) -> list:
+    def _start(s):
+        try:
+            return float(s.get("start", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return 0.0
+    valid = [s for s in scenes if isinstance(s, dict) and (s.get("burmese") or "").strip()]
+    return sorted(valid, key=_start)
+
+
+def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
+    """Trim scenes (from the end) so total <= SCRIPT_MAX_RATIO * target,
+    without ever dropping below the 90% target itself."""
+    limit = int(target_chars * SCRIPT_MAX_RATIO)
+    if script_total_chars(scenes) <= limit:
+        return scenes
+    kept, total = [], 0
+    for scene in scenes:
+        text = (scene.get("burmese") or "").strip()
+        if total + len(text) <= limit:
+            kept.append(scene)
+            total += len(text)
+            continue
+        # Partially keep this scene: cut at the last sentence end (။)
+        # that still keeps us >= target_chars and <= limit.
+        room = limit - total
+        if room >= 40 and total < target_chars:
+            cut = text.rfind("။", 0, room)
+            piece = text[:cut + 1].strip() if cut >= 40 else text[:room].strip()
+            if piece:
+                scene = dict(scene, burmese=piece)
+                kept.append(scene)
+        break
+    return kept if script_total_chars(kept) >= target_chars else scenes[:len(kept)] or scenes
+
+
 async def build_chunk_recap(
     chunk_path: str,
     chunk_dur: float,
@@ -510,14 +868,31 @@ async def build_chunk_recap(
     story_context: dict,
     chunk_index: int,
     tracker: ProgressTracker,
+    settings: dict = None,
 ):
+    st = {**DEFAULT_SETTINGS, **(settings or {})}
+    coverage_ratio = float(st.get("coverage") or 90) / 100.0
+    chars_rate = float(st.get("rate") or SCRIPT_CHARS_PER_SEC)
     client = genai.Client(api_key=GEMINI_API_KEY)
     start_fmt = fmt_time(global_start)
     end_fmt = fmt_time(global_end)
 
-    target_chars = int(chunk_dur * 6.5)
-    scene_count = max(15, int(chunk_dur / 8))
+    # Output script must equal coverage% (default 90%) of the input chunk.
+    target_chars = script_target_chars(chunk_dur, st)
+    target_seconds = chunk_dur * coverage_ratio
+    scene_count = max(15, int(target_seconds / 8))
     chars_per_scene = max(80, target_chars // scene_count)
+    pov_line = (
+        "ပထမလူ ရှုထောင့် (ကျွန်တော်/ကျွန်မ) ဖြင့် ရေးပါ။"
+        if st.get("pov") == "first" else
+        "တတိယလူ ဇာတ်ကြောင်းပြောသူ (narrator) ရှုထောင့်ဖြင့် ရေးပါ။ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြောသလို မရေးပါနှင့်။"
+    )
+    tone_line = {
+        "natural": "သဘာဝကျသော လေသံဖြင့် ရေးပါ။",
+        "dramatic": "ဒရာမာဆန်ဆန်၊ တင်းမာမှုရှိသော လေသံဖြင့် ရေးပါ။",
+        "emotional": "စိတ်လှုပ်ရှားဖွယ်၊ ခံစားချက်ပြင်းသော လေသံဖြင့် ရေးပါ။",
+        "calm": "အေးအေးဆေးဆေး၊ တည်ငြိမ်သော လေသံဖြင့် ရေးပါ။",
+    }.get(st.get("tone"), "သဘာဝကျသော လေသံဖြင့် ရေးပါ။")
     protagonist = story_context.get("protagonist", "") if chunk_index > 1 else ""
 
     if chunk_index == 1:
@@ -540,6 +915,8 @@ async def build_chunk_recap(
 ဤဗီဒီယိုသည် မူရင်းဗီဒီယို၏ {start_fmt} မှ {end_fmt} အထိ ဖြစ်သည်။ ဤအပိုင်းကိုသာ ကြည့်ပြီး အောက်ပါညွှန်ကြားချက်များအတိုင်း ဇာတ်ကြောင်းရေးပါ။
 
 {context_section}
+- ရှုထောင့်: {pov_line}
+- လေသံ: {tone_line}
 
 ## ပြောပြပုံ
 - ဇာတ်လမ်းကို အတိုချုပ်မလုပ်ပါနှင့်။ မူရင်းဗီဒီယိုတွင် ဖြစ်ပျက်သည့်အတိုင်း အစဉ်လိုက်၊ အပြည့်အစုံနီးပါး ပြန်ပြောပြပါ။
@@ -557,7 +934,7 @@ async def build_chunk_recap(
 - ဤအပိုင်းအဆုံးတွင် ဇာတ်လမ်းဆက်နေပါက နောက်ပိုင်းတွင် ဘာဖြစ်မည်ကို ခန့်မှန်းမပြောဘဲ ဤအပိုင်းတွင် မြင်ရသည့်အတိုင်းသာ ရပ်ပါ။
 
 ## ကြာချိန်နှင့် ဗီဒီယိုတည်းဖြတ်ရန် အချိန်မှတ်ချက်များ
-- မူရင်းအပိုင်း၏ ၉၀ မှ ၉၅ ရာခိုင်နှုန်းခန့်ကို ထိန်းသိမ်းပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
+- မူရင်းအပိုင်း၏ {st['coverage']}% ခန့်ကို ထိန်းသိမ်းပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
 - အနည်းဆုံး ခန်း {scene_count} ခန်း ရေးပါ။ ခန်းတစ်ခန်းလျှင် အနည်းဆုံး {chars_per_scene} လုံး ပါဝင်ပါ။
 - အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။
@@ -624,22 +1001,37 @@ async def build_chunk_recap(
     except Exception as e:
         logger.error(f"AI script error: {e}")
 
-    total_chars = sum(len(s.get("burmese", "")) for s in scenes)
-    logger.info(f"Chunk {chunk_index}: {len(scenes)} scenes, {total_chars} chars")
+    scenes = sort_scenes(scenes)
+    total_chars = script_total_chars(scenes)
+    logger.info(
+        f"Chunk {chunk_index}: {len(scenes)} scenes, {total_chars}/{target_chars} chars "
+        f"({(total_chars / chars_rate / chunk_dur * 100) if chunk_dur else 0:.0f}% of input, target {st['coverage']}%)"
+    )
 
-    if total_chars < target_chars * 0.9:
-        await tracker.update("⚠️ စာသားနည်းနေပါသည်။ ထပ်ဖြည့်နေပါသည်...", force=True)
+    # Top up repeatedly until the script reaches 90% of the input.
+    # (Previously only ONE top-up ran, so short scripts slipped through
+    # and the remaining video played with silent narration gaps.)
+    for attempt in range(SCRIPT_TOPUP_ATTEMPTS):
+        if total_chars >= target_chars:
+            break
+        missing = target_chars - total_chars
+        await tracker.update(
+            f"⚠️ Script {total_chars / max(1, target_chars) * 100:.0f}% ပဲရှိသေးသည် (ပစ်မှတ် {st['coverage']}%)။ "
+            f"လိုနေသော {missing} လုံး ထပ်ဖြည့်နေပါသည်... ({attempt + 1}/{SCRIPT_TOPUP_ATTEMPTS})",
+            force=True,
+        )
         extra_prompt = f"""
 မူရင်းဗီဒီယိုကို ကြည့်ပြီး ဇာတ်လမ်းကို ပိုမိုအသေးစိတ်အောင် ထပ်မံရေးပေးပါ။
-ယခင်ရေးထားသော script ပါ အကြောင်းအရာများကို ထပ်မရေးပါနှင့်။
+ယခင်ရေးထားသော script ပါ အကြောင်းအရာများကို စကားလုံးထပ်မရေးပါနှင့်။ ယခင် scenes များ၏ ကြားလပ်နေသော အချိန်များ၊ အသေးစိတ်ဖြစ်ရပ်များကို ဖြည့်ရေးပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အကြောင်းအရာများကို မတီထွင်ပါနှင့်။
 ပထမလူ ရှုထောင့်ကို ဆက်ထိန်းသိမ်းပါ။
-အနည်းဆုံး {max(100, target_chars - total_chars)} လုံး ထပ်ဖြည့်ပါ။
+🎯 အနည်းဆုံး {missing} လုံး အသစ် ထပ်ဖြည့်ပါ။ စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ပြည့်ရပါမည်။
 
 ယခင် script:
 {json.dumps(scenes, ensure_ascii=False)}
 
-JSON object ကိုသာ ပြန်ပေးပါ။
+အောက်ပါပုံစံအတိုင်း JSON object ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် မည်သည့်စာသားမှ မရေးပါနှင့်။
+{{"scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
         """.strip()
         try:
             resp2 = await asyncio.to_thread(
@@ -657,7 +1049,31 @@ JSON object ကိုသာ ပြန်ပေးပါ။
             elif isinstance(extra, list):
                 scenes.extend(extra)
         except Exception as e:
-            logger.warning(f"Extra script error: {e}")
+            logger.warning(f"Extra script error (attempt {attempt + 1}): {e}")
+        scenes = sort_scenes(scenes)
+        total_chars = script_total_chars(scenes)
+        logger.info(f"Chunk {chunk_index} top-up {attempt + 1}: {total_chars}/{target_chars} chars")
+
+    if total_chars < target_chars:
+        logger.warning(
+            f"Chunk {chunk_index}: script only {total_chars}/{target_chars} chars "
+            f"after {SCRIPT_TOPUP_ATTEMPTS} top-ups — continuing with best effort"
+        )
+
+    # Cap over-long scripts at 105% of the 90% target so narration
+    # does not overrun the video.
+    scenes = trim_scenes_to_target(scenes, target_chars)
+    total_chars = script_total_chars(scenes)
+    spoken_est = total_chars / chars_rate
+    coverage_pct = (spoken_est / chunk_dur * 100) if chunk_dur else 0
+    logger.info(
+        f"Chunk {chunk_index} final script: {len(scenes)} scenes, {total_chars} chars, "
+        f"~{spoken_est:.0f}s spoken = {coverage_pct:.0f}% of {chunk_dur:.0f}s input (target {st['coverage']}%)"
+    )
+    await tracker.update(
+        f"📝 Script ပြီးပါပြီ — input ၏ {coverage_pct:.0f}% (ပစ်မှတ် {st['coverage']}%)၊ {total_chars} လုံး",
+        force=True,
+    )
 
     try:
         await asyncio.to_thread(client.files.delete, name=video_file.name)
@@ -667,26 +1083,36 @@ JSON object ကိုသာ ပြန်ပေးပါ။
     if not scenes:
         scenes = [{"start": 0, "end": 5, "burmese": "စာသားရယူရာတွင် အမှားအယွင်းရှိပါသည်။"}]
 
-    keep_ranges = make_keep_ranges(chunk_dur, cuts, max_remove_ratio=0.08)
+    keep_ranges = make_keep_ranges(chunk_dur, cuts, max_remove_ratio=float(st.get('cut') or 0) / 100.0)
     kept_duration = sum(end - start for start, end in keep_ranges)
 
-    if kept_duration < chunk_dur * 0.90:
-        logger.warning(f"Kept {kept_duration:.1f}s < 90%, forcing keep-all")
+    if kept_duration < chunk_dur * coverage_ratio:
+        logger.warning(f"Kept {kept_duration:.1f}s < {st['coverage']}%, forcing keep-all")
         keep_ranges = [(0.0, chunk_dur)]
         kept_duration = chunk_dur
 
-    await tracker.update("🎙️ Charon AI မှ အသံသွင်းနေပါသည်...", force=True)
-    clips = await synthesize_tts(scenes, os.path.dirname(chunk_path))
+    await tracker.update(f"🎙️ {st.get('voice', 'Charon')} AI မှ အသံသွင်းနေပါသည်...", force=True)
+    clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
 
-    out_w, out_h = compute_output_dims(*probe_video_info(chunk_path)[1:])
-    shield_v = "crop=iw*0.96:ih*0.96,hflip,"
-    color = "eq=contrast=1.08:saturation=1.12:gamma=1.02"
+    # Verify the actual spoken audio against the 90% target.
+    audio_seconds = sum(len(c) for c in clips) / SAMPLE_RATE + float(st.get('pause') or 0) * max(0, len(clips) - 1)
+    audio_pct = (audio_seconds / kept_duration * 100) if kept_duration else 0
+    logger.info(
+        f"Chunk {chunk_index} TTS audio: {audio_seconds:.0f}s = {audio_pct:.0f}% "
+        f"of kept video {kept_duration:.0f}s (target ~{st['coverage']}% of input)"
+    )
+    if audio_seconds < kept_duration * coverage_ratio:
+        logger.warning(f"Chunk {chunk_index}: TTS audio below {st['coverage']}% of kept video ({audio_pct:.0f}%)")
+
+    out_w, out_h = compute_output_dims(*probe_video_info(chunk_path)[1:], int(st.get('resolution') or 1280))
+    shield_v = "crop=iw*0.96:ih*0.96,hflip," if st.get("shield") else ""
+    color = "eq=contrast=1.08:saturation=1.12:gamma=1.02," if st.get("color") else ""
 
     master_pcm_path = os.path.join(os.path.dirname(chunk_path), "master_audio.pcm")
     with open(master_pcm_path, "wb") as pcm_f:
         for clip in clips:
             np.clip(clip * 32767.0, -32768, 32767).astype(np.int16).tofile(pcm_f)
-            pause_samples = int(PAUSE_AFTER_SCENE * SAMPLE_RATE)
+            pause_samples = int(float(st.get('pause') or 0) * SAMPLE_RATE)
             if pause_samples > 0:
                 np.zeros(pause_samples, dtype=np.int16).tofile(pcm_f)
 
@@ -709,7 +1135,7 @@ JSON object ကိုသာ ပြန်ပေးပါ။
             f"fps=25,"
             f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase:flags=bicubic,"
             f"crop={out_w}:{out_h},"
-            f"{color},format=yuv420p"
+            f"{color}format=yuv420p"
         )
         result = await asyncio.to_thread(run_cmd, [
             FFMPEG_BIN, "-y",
@@ -719,8 +1145,8 @@ JSON object ကိုသာ ပြန်ပေးပါ။
             "-an",
             "-vf", fc,
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "23",
+            "-preset", "superfast" if st.get("fast_mode") else "ultrafast",
+            "-crf", str(int(st.get("quality") or 23)),
             segment_path,
         ], 300)
 
@@ -796,8 +1222,20 @@ async def split_for_telegram(path: str, work_dir: str) -> list[str]:
 
 
 async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
+    job_settings = get_user_settings(chat_id)
+    chunk_duration = int(job_settings.get("chunk") or CHUNK_DURATION)
     job_id = f"j{secrets.token_hex(5)}"
-    status_id = await send_text(chat_id, "⚡ Recap စတင်နေပါပြီ...", reply_to=reply_msg_id)
+    if chat_id in ACTIVE_JOBS:
+        await send_text(chat_id, "⚠️ အလုပ်တစ်ခု လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ သို့မဟုတ် 🛑 ရပ်မယ် ခလုတ်နှိပ်ပါ။",
+                        reply_to=reply_msg_id, reply_markup=main_menu_keyboard(chat_id))
+        return
+    ACTIVE_JOBS[chat_id] = job_id
+    status_id = await send_text(
+        chat_id,
+        f"⚡ Recap စတင်နေပါပြီ...\n🎯 Script: {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p",
+        reply_to=reply_msg_id,
+        reply_markup={"inline_keyboard": [[btn("🛑 ဒီအလုပ်ကို ရပ်မယ်", "menu:cancel")]]},
+    )
     work_dir = tempfile.mkdtemp(prefix="vid_", dir=WORK_ROOT)
     tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
 
@@ -822,15 +1260,15 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
             force=True,
         )
 
-        total_parts = max(1, int(np.ceil(total_dur / CHUNK_DURATION)))
+        total_parts = max(1, int(np.ceil(total_dur / chunk_duration)))
         chunks = []
 
         for part_num in range(1, total_parts + 1):
             if job_id in CANCELLED_JOBS:
                 raise Exception("cancelled")
 
-            start = (part_num - 1) * CHUNK_DURATION
-            end = min(start + CHUNK_DURATION, total_dur)
+            start = (part_num - 1) * chunk_duration
+            end = min(start + chunk_duration, total_dur)
             chunk_dur = end - start
 
             chunk_path = os.path.join(work_dir, f"chunk_{part_num}.mp4")
@@ -875,6 +1313,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
                     story_context,
                     part_num,
                     tracker,
+                    job_settings,
                 )
 
             if not recap_chunk:
@@ -923,9 +1362,9 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
             force=True,
         )
 
-        parts = await split_for_telegram(final_out, work_dir)
+        parts = await split_for_telegram(final_out, work_dir) if job_settings.get('split_tg') else [final_out]
         for i, part in enumerate(parts):
-            caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_dur)})"
+            caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_dur)})" if job_settings.get("caption") else ""
             if len(parts) > 1:
                 caption += f" - အပိုင်း {i + 1}/{len(parts)}"
             res = await tg_upload_media(
@@ -940,29 +1379,154 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
                 await edit_text(chat_id, status_id, "⚠️ ဗီဒီယိုပို့ရာတွင် အခက်အခဲရှိပါသည်။")
                 break
 
+        bump_stat(chat_id, "done")
         try:
             await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_id})
         except Exception:
             pass
+        if job_settings.get("notify"):
+            await send_text(chat_id, f"✅ <b>Recap ပြီးပါပြီ!</b> ({fmt_time(final_dur)})\n🎯 Script {job_settings['coverage']}% · 🎙️ {job_settings['voice']}",
+                            reply_markup=main_menu_keyboard(chat_id))
 
     except Exception as e:
         logger.exception("Job Error")
-        await edit_text(chat_id, status_id, f"❌ အမှား: {type(e).__name__} - {str(e)[:120]}")
+        if str(e) == "cancelled":
+            bump_stat(chat_id, "cancelled")
+            await edit_text(chat_id, status_id, "🛑 အလုပ်ကို ရပ်လိုက်ပါပြီ။", reply_markup=main_menu_keyboard(chat_id))
+        else:
+            bump_stat(chat_id, "failed")
+            await edit_text(chat_id, status_id, f"❌ အမှား: {type(e).__name__} - {str(e)[:120]}", reply_markup=main_menu_keyboard(chat_id))
     finally:
+        ACTIVE_JOBS.pop(chat_id, None)
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
 
 
+def job_status_text(chat_id) -> str:
+    job = ACTIVE_JOBS.get(chat_id)
+    s = get_user_settings(chat_id)
+    if job:
+        return (f"📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n🟢 လုပ်နေဆဲ (Job: <code>{job}</code>)\n"
+                f"🎯 Script {s['coverage']}% · 🎙️ {s['voice']}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
+    return ("📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n⚪ လက်ရှိ လုပ်နေတာ မရှိပါ။\n\n"
+            "🎬 Recap စဖို့ link ပို့လိုက်ပါ (သို့) ခလုတ်နှိပ်ပါ။")
+
+
+async def handle_callback(cb: dict):
+    """Inline button ခလုတ်တွေ နှိပ်လာရင် ကိုင်တွယ်တယ်။"""
+    data = (cb.get("data") or "").strip()
+    from_user = cb.get("from", {}) or {}
+    msg = cb.get("message", {}) or {}
+    chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+    message_id = msg.get("message_id")
+    if not is_allowed(from_user.get("id")):
+        await answer_callback(cb.get("id"), "⛔ ခွင့်ပြုထားသူ မဟုတ်ပါ")
+        return
+    await answer_callback(cb.get("id"))
+
+    async def show(text, markup):
+        await edit_text(chat_id, message_id, text, reply_markup=markup)
+
+    if data == "menu:main":
+        await show(MAIN_MENU_TEXT, main_menu_keyboard(chat_id))
+    elif data == "menu:settings":
+        await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
+    elif data == "menu:recap":
+        await show("🎬 <b>Recap စတင်ရန်</b>\n\nဗီဒီယို link (http...) ကို ဒီအတိုင်း စာပို့လိုက်ပါ။\nဥပမာ: https://...", main_menu_keyboard(chat_id))
+    elif data == "menu:status":
+        await show(job_status_text(chat_id), main_menu_keyboard(chat_id))
+    elif data == "menu:summary":
+        await show(settings_summary_text(chat_id), main_menu_keyboard(chat_id))
+    elif data == "menu:help":
+        await show(HELP_TEXT, main_menu_keyboard(chat_id))
+    elif data == "menu:stats":
+        st = JOB_STATS.get(int(chat_id), {"done": 0, "failed": 0, "cancelled": 0})
+        await show(f"📈 <b>စာရင်းချုပ်</b>\n━━━━━━━━━━━━━━━\n✅ ပြီးဆုံး: {st.get('done', 0)}\n❌ ပျက်: {st.get('failed', 0)}\n🛑 ရပ်ခဲ့: {st.get('cancelled', 0)}", main_menu_keyboard(chat_id))
+    elif data == "menu:cancel":
+        job = ACTIVE_JOBS.get(chat_id)
+        if job:
+            CANCELLED_JOBS.add(job)
+            await show("🛑 ရပ်ဖို့ တောင်းဆိုလိုက်ပါပြီ... လက်ရှိအပိုင်း ပြီးရင် ရပ်ပါမယ်။", main_menu_keyboard(chat_id))
+        else:
+            await show("⚪ လုပ်နေတဲ့ အလုပ် မရှိပါ။", main_menu_keyboard(chat_id))
+    elif data == "menu:reset":
+        reset_user_settings(chat_id)
+        await show("🔄 ဆက်တင်အားလုံး မူရင်း (default) ပြန်ထားလိုက်ပါပြီ။", main_menu_keyboard(chat_id))
+    elif data.startswith("feat:"):
+        key = data.split(":", 1)[1]
+        feat = FEATURE_BY_KEY.get(key)
+        if not feat:
+            return
+        if feat["kind"] == "toggle":
+            cur = get_user_settings(chat_id).get(key)
+            set_user_setting(chat_id, key, not bool(cur))
+            await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n\n" f"{feat['icon']} {feat['label']}: <b>{feature_value_label(feat, get_user_settings(chat_id))}</b>", settings_keyboard(chat_id))
+        else:
+            await show(f"{feat['icon']} <b>{feat['label']}</b>\n{feat.get('desc', '')}\n\n👇 ရွေးချယ်ပါ:", feature_options_keyboard(feat, chat_id))
+    elif data.startswith("set:"):
+        _, key, raw = data.split(":", 2)
+        feat = FEATURE_BY_KEY.get(key)
+        if not feat:
+            return
+        try:
+            value = json.loads(raw)
+        except Exception:
+            value = raw
+        set_user_setting(chat_id, key, value)
+        await show(f"✅ {feat['icon']} <b>{feat['label']}</b> ကို <b>{feature_value_label(feat, get_user_settings(chat_id))}</b> ပြောင်းလိုက်ပါပြီ။", settings_keyboard(chat_id))
+    elif data == "job:start":
+        url = PENDING_LINKS.pop(chat_id, None)
+        await show("🚀 စတင်လိုက်ပါပြီ...", main_menu_keyboard(chat_id))
+        if url:
+            asyncio.create_task(handle_link_job(chat_id, message_id, url))
+    elif data == "job:discard":
+        PENDING_LINKS.pop(chat_id, None)
+        await show("❌ Link ကို ပယ်လိုက်ပါပြီ။", main_menu_keyboard(chat_id))
+
+
 async def process_admin_update(update: dict):
+    # ခလုတ် (callback) လာရင်
+    if update.get("callback_query"):
+        await handle_callback(update["callback_query"])
+        return
     msg = update.get("message")
     if not msg:
         return
     chat_id = msg.get("chat", {}).get("id")
+    from_id = msg.get("from", {}).get("id")
     msg_id = msg.get("message_id")
     text = (msg.get("text") or "").strip()
+    if not is_allowed(from_id):
+        await send_text(chat_id, "⛔ ဒီ bot ကို သုံးခွင့် မရှိပါ။", reply_to=msg_id)
+        return
 
-    if text and text.startswith("http"):
-        await handle_link_job(chat_id, msg_id, text)
+    cmd = text.split()[0].split("@")[0].lower() if text else ""
+    if cmd in ("/start", "/menu"):
+        await send_main_menu(chat_id, reply_to=msg_id)
+    elif cmd == "/settings":
+        await send_text(chat_id, "⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။", reply_to=msg_id, reply_markup=settings_keyboard(chat_id))
+    elif cmd == "/status":
+        await send_text(chat_id, job_status_text(chat_id), reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+    elif cmd == "/cancel":
+        job = ACTIVE_JOBS.get(chat_id)
+        if job:
+            CANCELLED_JOBS.add(job)
+            await send_text(chat_id, "🛑 ရပ်ဖို့ တောင်းဆိုလိုက်ပါပြီ...", reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+        else:
+            await send_text(chat_id, "⚪ လုပ်နေတဲ့ အလုပ် မရှိပါ။", reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+    elif cmd == "/summary":
+        await send_text(chat_id, settings_summary_text(chat_id), reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+    elif cmd == "/help":
+        await send_text(chat_id, HELP_TEXT, reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+    elif text.startswith("http"):
+        s = get_user_settings(chat_id)
+        if s.get("auto_start"):
+            await handle_link_job(chat_id, msg_id, text)
+        else:
+            PENDING_LINKS[chat_id] = text
+            await send_text(chat_id, "🎬 <b>ဒီ link ကို Recap လုပ်မလား?</b>\n" + text[:200], reply_to=msg_id, reply_markup=confirm_keyboard())
+    elif text:
+        await send_main_menu(chat_id, reply_to=msg_id)
 
 
 app = FastAPI()
