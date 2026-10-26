@@ -71,6 +71,15 @@ PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest
 PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
 
+DEEP_VOICE_FILTER = (
+    "highpass=f=55,"
+    "asetrate=22080,aresample=24000,atempo=1.0870,"
+    "equalizer=f=110:t=q:w=1.0:g=4.5,"
+    "equalizer=f=230:t=q:w=1.1:g=2.5,"
+    "equalizer=f=6500:t=q:w=1.0:g=-1.5,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11"
+)
+
 
 def get_anim_emoji(frame: int) -> str:
     return SPINNING_EMOJIS[frame % len(SPINNING_EMOJIS)]
@@ -241,20 +250,41 @@ async def get_source_duration(url: str) -> float:
     return 0
 
 
-async def download_chunk(url: str, start: float, end: float, out_path: str) -> float:
+async def download_full(url: str, out_path: str, tracker=None, total_dur: float = 0) -> float:
+    """မူရင်းဗီဒီယိုကို တစ်ခါပဲ ဒေါင်း (3GB+ အတွက် သင့်တော်)."""
     cmd = [
         "yt-dlp", "--no-warnings", "--no-part",
         "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
         "--merge-output-format", "mp4",
-        "--download-sections", f"*{start}-{end}",
         "-o", out_path, url,
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
     )
-    await proc.wait()
+
+    last_report = time.monotonic()
+    while True:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+            break
+        except asyncio.TimeoutError:
+            if tracker and time.monotonic() - last_report >= 4.0:
+                last_report = time.monotonic()
+                if os.path.exists(out_path):
+                    mb = os.path.getsize(out_path) / (1024 * 1024)
+                    pct = min(95, int(mb / 10)) if total_dur <= 0 else 10
+                    if total_dur > 0:
+                        pct = min(95, int((mb / max(1, total_dur)) * 100 / 4))
+                    await tracker.update(
+                        f"📥 မူရင်းဗီဒီယို ဒေါင်းနေသည်...\n"
+                        f"📦 {mb:.0f} MB\n"
+                        f"📊 {fmt_progress_bar(pct)}",
+                        force=True,
+                    )
+
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
         return 0
     actual_dur, _, _ = probe_video_info(out_path)
@@ -343,69 +373,103 @@ def split_pcm_by_weights(master: np.ndarray, scenes: list) -> list[np.ndarray]:
     return clips
 
 
-async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
+async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str):
     client = genai.Client(api_key=GEMINI_API_KEY)
-    joined = "\n\n".join(s["burmese"] for s in scenes)
-    cfg = types.GenerateContentConfig(
-        response_modalities=["AUDIO"],
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon")
-            )
-        ),
-    )
-    tmp_raw = os.path.join(work_dir, "tts_raw.bin")
-    tmp_pcm = os.path.join(work_dir, "tts.pcm")
-    try:
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model=PREFERRED_TTS_MODELS[0],
-            contents=f"""
+    joined = "\n\n".join(s["burmese"] for s in batch)
+
+    for model in PREFERRED_TTS_MODELS:
+        for attempt in range(2):
+            tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_raw.bin")
+            tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}.pcm")
+            try:
+                cfg = types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon")
+                        )
+                    ),
+                )
+                resp = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=f"""
 အောက်ပါစာသားကို မြန်မာဘာသာဖြင့် သဘာဝကျသော စကားပြောဟန်ဖြင့် ဖတ်ပါ။
 အသံသည် နက်ရှိုင်းသော (deep, low), ရင်အုပ်သံပါသော, ပဲ့တင်သံမပါသော အသံဖြစ်ရမည်။
 ဇာတ်လမ်းကို ကိုယ်တိုင်ကြုံတွေ့ခဲ့သော အဓိကဇာတ်ကောင်က ပြန်ပြောပြနေသလို အသံသွင်းပါ။
-အသံကို ရှင်းလင်း၊ နွေးထွေးပြီး ခံစားချက်ပါအောင် ဖတ်ပါ။
-စာကြောင်းအဆုံးနှင့် ပုဒ်ဖြတ်အမှတ်အသားများတွင် သဘာဝကျကျ ခဏရပ်ပါ။
-အလွန်မြန်မြန်၊ တစ်သံတည်း သို့မဟုတ် စက်ရုပ်ဆန်ဆန် မဖတ်ပါနှင့်။
-စာသားတွင် မပါသော စကားလုံးများကို မထည့်ပါနှင့်။ နာမည်များကို သေချာရှင်းလင်းစွာ အသံထွက်ပါ။
+အလွန်မြန်မြန်၊ တစ်သံတည်း မဖတ်ပါနှင့်။
+စာသားတွင် မပါသော စကားလုံးများကို မထည့်ပါနှင့်။
 
 {joined}
 """,
-            config=cfg,
-        )
-        data = resp.candidates[0].content.parts[0].inline_data.data
-        with open(tmp_raw, "wb") as f:
-            f.write(data)
+                    config=cfg,
+                )
+                cands = getattr(resp, "candidates", None) or []
+                if not cands or not getattr(cands[0], "content", None):
+                    raise RuntimeError("no candidates")
+                parts = cands[0].content.parts
+                if not parts or not getattr(parts[0], "inline_data", None):
+                    raise RuntimeError("no inline_data")
+                data = parts[0].inline_data.data
+                if not data or len(data) < 1000:
+                    raise RuntimeError(f"too small ({len(data) if data else 0} bytes)")
 
-        deep_voice_filter = (
-            "highpass=f=55,"
-            "asetrate=22080,aresample=24000,atempo=1.0870,"
-            "equalizer=f=110:t=q:w=1.0:g=4.5,"
-            "equalizer=f=230:t=q:w=1.1:g=2.5,"
-            "equalizer=f=6500:t=q:w=1.0:g=-1.5,"
-            "loudnorm=I=-16:TP=-1.5:LRA=11"
-        )
+                with open(tmp_raw, "wb") as f:
+                    f.write(data)
 
-        run_cmd([
-            FFMPEG_BIN, "-y",
-            "-f", "s16le", "-ar", "24000", "-ac", "1",
-            "-i", tmp_raw,
-            "-af", deep_voice_filter,
-            "-f", "s16le", "-acodec", "pcm_s16le",
-            "-ac", "1", "-ar", str(SAMPLE_RATE),
-            tmp_pcm,
-        ], 120)
+                result = run_cmd([
+                    FFMPEG_BIN, "-y",
+                    "-f", "s16le", "-ar", "24000", "-ac", "1",
+                    "-i", tmp_raw,
+                    "-af", DEEP_VOICE_FILTER,
+                    "-f", "s16le", "-acodec", "pcm_s16le",
+                    "-ac", "1", "-ar", str(SAMPLE_RATE),
+                    tmp_pcm,
+                ], 180)
 
-        if os.path.exists(tmp_pcm) and os.path.getsize(tmp_pcm) > 200:
-            master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-            return split_pcm_by_weights(master, scenes)
-    except Exception as e:
-        logger.error(f"TTS error: {e}")
-    finally:
-        for p in (tmp_raw, tmp_pcm):
-            if os.path.exists(p):
-                os.remove(p)
-    return [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in scenes]
+                if result.returncode != 0 or not os.path.exists(tmp_pcm):
+                    raise RuntimeError("ffmpeg convert failed")
+                if os.path.getsize(tmp_pcm) < 400:
+                    raise RuntimeError("pcm too small")
+
+                master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+                clips = split_pcm_by_weights(master, batch)
+                logger.info(f"TTS batch {batch_idx + 1}/{total_batches} OK ({model})")
+                return clips
+
+            except Exception as e:
+                err = str(e)[:200]
+                logger.warning(f"TTS batch {batch_idx + 1} attempt {attempt + 1} ({model}): {err}")
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    await asyncio.sleep(8)
+                else:
+                    await asyncio.sleep(2)
+            finally:
+                for p in (tmp_raw, tmp_pcm):
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+
+    return None
+
+
+async def synthesize_tts(scenes: list, work_dir: str) -> list[np.ndarray]:
+    BATCH_SIZE = 8
+    batches = [scenes[i:i + BATCH_SIZE] for i in range(0, len(scenes), BATCH_SIZE)]
+    logger.info(f"TTS: {len(scenes)} scenes in {len(batches)} batches")
+    all_clips = []
+
+    for b_idx, batch in enumerate(batches):
+        clips = await _tts_one_batch(batch, b_idx, len(batches), work_dir)
+        if clips is None:
+            logger.error(f"TTS batch {b_idx + 1}/{len(batches)} failed — silence fallback")
+            clips = [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in batch]
+        all_clips.extend(clips)
+        await asyncio.sleep(1.5)
+
+    return all_clips
 
 
 async def extract_story_summary(scenes: list, client) -> dict:
@@ -414,13 +478,11 @@ async def extract_story_summary(scenes: list, client) -> dict:
     all_text = "\n".join(s["burmese"] for s in scenes)
     prompt = f"""
 အောက်ပါ မြန်မာဇာတ်လမ်းအပိုင်းကို ဖတ်ပြီး နောက်အပိုင်းအတွက် အကျဉ်းချုပ် ထုတ်ပေးပါ။
-ဇာတ်ကောင်နာမည်များ၊ အဓိကဇာတ်ကောင် (protagonist)၊ အဓိကဖြစ်ရပ်များ၊ နောက်ဆုံးဖြစ်ပျက်နေသည့် အခြေအနေကို ထည့်ပါ။
 
-ဇာတ်လမ်းအပိုင်း:
 {all_text}
 
 Return JSON:
-{{"characters": ["နာမည်1"], "protagonist": "အဓိကဇာတ်ကောင်နာမည်", "summary": "အဓိကအကြောင်းအရာ ၂-၃ ကြောင်း", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
+{{"characters": ["နာမည်1"], "protagonist": "အဓိကဇာတ်ကောင်", "summary": "အဓိကအကြောင်းအရာ ၂-၃ ကြောင်း", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
     """.strip()
     try:
         resp = await asyncio.to_thread(
@@ -477,47 +539,39 @@ async def build_chunk_recap(
 ပေးထားသော ဗီဒီယိုအပိုင်းကို ကြည့်ရှုပြီး အောက်ပါအတိုင်း ရေးပါ။
 
 ဤဗီဒီယိုအပိုင်းသည် မူရင်းဗီဒီယို၏ {start_fmt} မှ {end_fmt} အထိ ဖြစ်သည်။
-ဤအပိုင်း၏ ကြာချိန်မှာ {fmt_time(chunk_dur)} ဖြစ်သည်။
+ကြာချိန် {fmt_time(chunk_dur)}။
 
 {context_section}
 
 ဇာတ်ကြောင်းပြောဟန် (မဖြစ်မနေ) —
-- ဇာတ်လမ်းကို အဓိကဇာတ်ကောင်ရဲ့ ရှုထောင့်ကနေ ပထမလူ (first-person) အနေနဲ့ ပြောပြပါ။
-- အဓိကဇာတ်ကောင်ရဲ့ လိင်/နာမည် သိရင် ပထမဆုံးစာကြောင်းကို "ကျွန်တော်ကတော့ [နာမည်] ပါ" သို့မဟုတ် "ကျွန်မကတော့ [နာမည်] ပါ" ဆိုပြီး စပါ။ နာမည် မသိရင် နာမည်မတီထွင်ပါနှင့်။
-- "အဲဒီအချိန်မှာတော့...", "ဒါပေမယ့် ကျွန်တော် မသိသေးတာက...", "အဲဒီနောက်မှာတော့..." စတဲ့ သဘာဝကျတဲ့ ဆက်စပ်စကားလုံးတွေကို သင့်တင့်သလို သုံးပါ။ စကားလုံးတစ်လုံးတည်း ထပ်ခါတလဲလဲ မသုံးပါနှင့်။
-- လူပြောသလို ရိုးရှင်း၊ နားလည်လွယ်၊ ခံစားချက်ပါတဲ့ ဘာသာစကားနဲ့ ရေးပါ။ စက်ရုပ်ဆန်တဲ့ သို့မဟုတ် တရားဝင်လွန်းတဲ့ စာကြောင်းတွေ မသုံးပါနှင့်။
-- ဇာတ်ကောင်ရဲ့ ခံစားချက်၊ မြင်တဲ့အရာ၊ လုပ်တဲ့အပြုအမူကို ဗီဒီယိုထဲက သတင်းအချက်အလက်အပေါ် အခြေခံပြီး ပြောပါ။ ဗီဒီယိုမှာ မပြထားတဲ့ အတွေး၊ ခံစားချက်တွေကို မတီထွင်ပါနှင့်။
-- မူရင်းစကားပြောတွေကို တိုက်ရိုက်ကူးချမနေပါနှင့်။ ဒါပေမယ့် အဲဒီစကားရဲ့ အဓိပ္ပာယ်ကို အဓိကဇာတ်ကောင်က သူ့အမြင်နဲ့ ပြောပြနေသလို ဖော်ပြပါ။
-- ဇာတ်လမ်းဖြစ်ရပ်တွေကို မကျော်ဘဲ မူရင်းအစဉ်အတိုင်း ဆက်ပြောပါ။ အပိုင်းတွေကြား ရှုထောင့်နဲ့ အဓိကဇာတ်ကောင် မပြောင်းပါနှင့်။
+- အဓိကဇာတ်ကောင်ရဲ့ ရှုထောင့်ကနေ ပထမလူ (first-person) အနေနဲ့ ပြောပြပါ။
+- နာမည်/လိင် သိရင် "ကျွန်တော်ကတော့ [နာမည်] ပါ" သို့မဟုတ် "ကျွန်မကတော့ [နာမည်] ပါ" စပါ။ မသိရင် မတီထွင်ပါနှင့်။
+- "အဲဒီအချိန်မှာတော့...", "အဲဒီနောက်မှာတော့..." စတဲ့ သဘာဝကျတဲ့ ဆက်စပ်စကားလုံးများ သုံးပါ။
+- လူပြောသလို ရိုးရှင်း၊ နားလည်လွယ်၊ ခံစားချက်ပါတဲ့ ဘာသာစကားနဲ့ ရေးပါ။
+- မူရင်းစကားတွေကို တိုက်ရိုက်ကူးမချပါနှင့်။ ဒါပေမယ့် အဓိပ္ပာယ်ကို ထိန်းသိမ်းပါ။
 
 အဓိကရည်မှန်းချက် —
-ဤအပိုင်းကို "အတိုချုပ် recap" မလုပ်ပါနှင့်။ မူရင်းဗီဒီယိုထဲက ဇာတ်လမ်းဖြစ်ရပ်များကို အစဉ်လိုက်၊ နီးပါးပြည့်စုံအောင် ပြန်ပြောပြပါ။
-ဇာတ်လမ်းနှင့် မသက်ဆိုင်သော တိတ်ဆိတ်ချိန်၊ ထပ်ခါတလဲလဲ မြင်ကွင်း၊ အကြောင်းမဲ့ နားချိန်၊ မလိုအပ်သော အစ/အဆုံးပိုင်းများကိုသာ ဖယ်ရှားပါ။
+"အတိုချုပ် recap" မလုပ်ပါနှင့်။ မူရင်းဇာတ်လမ်းဖြစ်ရပ်များကို အစဉ်လိုက်၊ နီးပါးပြည့်စုံအောင် ပြန်ပြောပါ။
+တိတ်ဆိတ်ချိန်၊ ထပ်နေသောမြင်ကွင်း၊ မလိုအပ်သောနားချိန်များကိုသာ ဖယ်ရှားပါ။
 
 လိုက်နာရန် —
-၁။ မူရင်းဗီဒီယိုထဲတွင် ဖြစ်ပျက်သည့် အစဉ်အတိုင်း ပြောပါ။ အစဉ်ကို မပြောင်းပါနှင့်။
-၂။ ဇာတ်ကောင်များ ဘယ်သူဘယ်ဝါ၊ ဘယ်လိုဆက်နွယ်မှု၊ ဘာကြောင့် ထိုလုပ်ရပ်ကို လုပ်သည်၊ ဘာဖြစ်သွားသည် ဆိုတာကို ရှင်းပြပါ။
-၃။ မူရင်းတွင် မပါသော ဖြစ်ရပ်၊ ဇာတ်ကောင်၊ စကားပြောချက်၊ အကြောင်းရင်း သို့မဟုတ် အဆုံးသတ်ကို လုံးဝ မတီထွင်ပါနှင့်။
-၄။ ဤအပိုင်းအဆုံးတွင် ဇာတ်လမ်းဆက်နေပါက နောက်ပိုင်းတွင် ဘာဖြစ်မည်ကို မခန့်မှန်းပါနှင့်။
-၅။ တရုတ်နှင့် နိုင်ငံခြားအမည်များကို မြန်မာအသံထွက်ဖြင့် တစ်သမတ်တည်း ရေးပါ။
-၆။ ဤအပိုင်း၏ ဇာတ်လမ်းဖြစ်ရပ်များ နီးပါးအားလုံး ပါဝင်အောင် စာသားရေးပါ။
-၇။ အနည်းဆုံး ခန်း {scene_count} ခန်း ရေးပါ။
-၈။ ခန်းတစ်ခန်းလျှင် အနည်းဆုံး {chars_per_scene} လုံး ပါဝင်ပါ။
-၉။ နောက်ဆုံးတွင် JSON object တစ်ခုတည်းကိုသာ ပြန်ပေးပါ။
+၁။ မူရင်းအစဉ်အတိုင်း ပြောပါ။
+၂။ ဇာတ်ကောင်ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်၊ အကြောင်းရင်း၊ အကျိုးဆက်များ ရှင်းပြပါ။
+၃။ မူရင်းတွင် မပါသော အကြောင်းအရာများကို မတီထွင်ပါနှင့်။
+၄။ ဇာတ်လမ်းဆက်နေရင် မခန့်မှန်းပါနှင့်။
+၅။ တရုတ်/နိုင်ငံခြားအမည်များကို မြန်မာအသံထွက်ဖြင့် တစ်သမတ်တည်း ရေးပါ။
+၆။ အနည်းဆုံး ခန်း {scene_count} ခန်း ရေးပါ။
+၇။ ခန်းတစ်ခန်းလျှင် အနည်းဆုံး {chars_per_scene} လုံး ပါဝင်ပါ။
+၈။ နောက်ဆုံးတွင် JSON object တစ်ခုတည်းကိုသာ ပြန်ပေးပါ။
 
 JSON ပုံစံ —
 {{
-  "protagonist": "အဓိကဇာတ်ကောင်နာမည် (မသိရင် ကွက်လပ်ထားပါ)",
-  "cuts": [
-    {{"start": 12.0, "end": 15.0, "reason": "ထပ်နေသောမြင်ကွင်း"}}
-  ],
-  "scenes": [
-    {{"start": 0.0, "end": 12.0, "burmese": "ဇာတ်ကြောင်း"}},
-    {{"start": 15.0, "end": 30.0, "burmese": "ဇာတ်ကြောင်း"}}
-  ]
+  "protagonist": "အဓိကဇာတ်ကောင်နာမည် (မသိရင် ကွက်လပ်ထား)",
+  "cuts": [{{"start": 12.0, "end": 15.0, "reason": "ထပ်နေသောမြင်ကွင်း"}}],
+  "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ဇာတ်ကြောင်း"}}]
 }}
 
-cuts သည် မလိုအပ်သော အပိုင်းများသာ ဖြစ်ရမည်။ မူရင်းဗီဒီယို၏ ၈% ထက် မပိုစေရ။
+cuts သည် မူရင်းဗီဒီယို၏ ၈% ထက် မပိုစေရ။
     """.strip()
 
     await tracker.update("🎧 Gemini ဆီ ဗီဒီယိုတင်ပြီး ဇာတ်လမ်းစာသား ရေးနေပါသည်...", force=True)
@@ -559,16 +613,15 @@ cuts သည် မလိုအပ်သော အပိုင်းများ�
         logger.error(f"AI script error: {e}")
 
     total_chars = sum(len(s.get("burmese", "")) for s in scenes)
-    logger.info(f"Chunk {chunk_index}: {len(scenes)} scenes, {total_chars} chars, target {target_chars}")
+    logger.info(f"Chunk {chunk_index}: {len(scenes)} scenes, {total_chars} chars")
 
     if total_chars < target_chars * 0.9:
         await tracker.update("⚠️ စာသားနည်းနေပါသည်။ ထပ်ဖြည့်နေပါသည်...", force=True)
         extra_prompt = f"""
 မူရင်းဗီဒီယိုကို ကြည့်ပြီး ဇာတ်လမ်းကို ပိုမိုအသေးစိတ်အောင် ထပ်မံရေးပေးပါ။
 ယခင်ရေးထားသော script ပါ အကြောင်းအရာများကို ထပ်မရေးပါနှင့်။
-လွတ်နေသော အရေးကြီးဖြစ်ရပ်များ၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထပ်ဖြည့်ပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အကြောင်းအရာများကို မတီထွင်ပါနှင့်။
-ပထမလူ (first-person) ရှုထောင့်ကို ဆက်ထိန်းသိမ်းပါ။
+ပထမလူ ရှုထောင့်ကို ဆက်ထိန်းသိမ်းပါ။
 အနည်းဆုံး {max(100, target_chars - total_chars)} လုံး ထပ်ဖြည့်ပါ။
 
 ယခင် script:
@@ -591,15 +644,13 @@ JSON object ကိုသာ ပြန်ပေးပါ။
                     new_protagonist = extra.get("protagonist", "") or new_protagonist
             elif isinstance(extra, list):
                 scenes.extend(extra)
-            logger.info(f"Added extra scenes: {len(scenes)}")
         except Exception as e:
             logger.warning(f"Extra script error: {e}")
 
     try:
         await asyncio.to_thread(client.files.delete, name=video_file.name)
-        logger.info("Gemini ပေါ်ရှိ ယာယီဗီဒီယိုဖိုင် ဖျက်ပြီးပါပြီ။")
     except Exception as e:
-        logger.warning(f"Gemini ဗီဒီယိုဖိုင် ဖျက်မရပါ: {e}")
+        logger.warning(f"Gemini delete error: {e}")
 
     if not scenes:
         scenes = [{"start": 0, "end": 5, "burmese": "စာသားရယူရာတွင် အမှားအယွင်းရှိပါသည်။"}]
@@ -608,11 +659,9 @@ JSON object ကိုသာ ပြန်ပေးပါ။
     kept_duration = sum(end - start for start, end in keep_ranges)
 
     if kept_duration < chunk_dur * 0.90:
-        logger.warning(f"Kept duration {kept_duration:.1f}s < 90% of {chunk_dur:.1f}s, forcing keep-all")
+        logger.warning(f"Kept {kept_duration:.1f}s < 90%, forcing keep-all")
         keep_ranges = [(0.0, chunk_dur)]
         kept_duration = chunk_dur
-
-    logger.info(f"Keep ranges: {len(keep_ranges)}, kept {kept_duration:.1f}s / {chunk_dur:.1f}s")
 
     await tracker.update("🎙️ Charon AI မှ အသံသွင်းနေပါသည်...", force=True)
     clips = await synthesize_tts(scenes, os.path.dirname(chunk_path))
@@ -664,7 +713,7 @@ JSON object ကိုသာ ပြန်ပေးပါ။
         ], 300)
 
         if result.returncode != 0 or not os.path.exists(segment_path):
-            raise RuntimeError(f"ဗီဒီယိုအပိုင်း {index + 1} ဖန်တီး၍မရပါ။")
+            raise RuntimeError(f"segment {index + 1} failed")
         seg_files.append(segment_path)
 
     concat_txt = os.path.join(os.path.dirname(chunk_path), "concat.txt")
@@ -674,11 +723,8 @@ JSON object ကိုသာ ပြန်ပေးပါ။
 
     video_only = os.path.join(os.path.dirname(chunk_path), "video_only.mp4")
     await asyncio.to_thread(run_cmd, [
-        FFMPEG_BIN, "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", concat_txt,
-        "-c", "copy",
-        video_only,
+        FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
+        "-i", concat_txt, "-c", "copy", video_only,
     ], 300)
 
     out_chunk = chunk_path.replace(".mp4", "_recap.mp4")
@@ -747,36 +793,64 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
 
     try:
         await tracker.update("🔍 ဗီဒီယို အချိန်စစ်ဆေးနေပါသည်...", force=True)
-        total_dur = await get_source_duration(url)
+        probe_dur = await get_source_duration(url)
+
+        source_path = os.path.join(work_dir, "source.mp4")
+        await tracker.update("📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...", force=True)
+        total_dur = await download_full(url, source_path, tracker, probe_dur)
+
         if total_dur <= 0:
-            raise RuntimeError("ဗီဒီယိုကြာချိန် မရပါ။")
+            raise RuntimeError("မူရင်းဗီဒီယို ဒေါင်းမရပါ။")
 
-        logger.info(f"Source duration: {total_dur:.1f}s = {fmt_time(total_dur)}")
-        await tracker.update(f"📹 မူရင်းကြာချိန်: {fmt_time(total_dur)}\n📥 ဒေါင်းလုဒ် စတင်နေပါသည်...", force=True)
+        size_mb = os.path.getsize(source_path) / (1024 * 1024)
+        logger.info(f"Full source: {total_dur:.1f}s = {fmt_time(total_dur)}, {size_mb:.0f}MB")
+        await tracker.update(
+            f"✅ မူရင်းရယူပြီး ({fmt_time(total_dur)}, {size_mb:.0f}MB)\n"
+            f"✂️ အပိုင်းခွဲနေပါသည်...",
+            force=True,
+        )
 
+        total_parts = max(1, int(np.ceil(total_dur / CHUNK_DURATION)))
         chunks = []
-        start = 0
-        part_num = 1
-        total_parts = int(np.ceil(total_dur / CHUNK_DURATION))
 
-        while start < total_dur and part_num <= total_parts + 5:
+        for part_num in range(1, total_parts + 1):
             if job_id in CANCELLED_JOBS:
                 raise Exception("cancelled")
 
+            start = (part_num - 1) * CHUNK_DURATION
             end = min(start + CHUNK_DURATION, total_dur)
+            chunk_dur = end - start
+
+            chunk_path = os.path.join(work_dir, f"chunk_{part_num}.mp4")
+
             await tracker.update(
-                f"📥 ဒေါင်းလုဒ်ဆွဲနေပါသည်... (အပိုင်း {part_num}/{total_parts})\n"
-                f"📊 {fmt_progress_bar(int((start / total_dur) * 100))}",
+                f"✂️ အပိုင်း {part_num}/{total_parts} ခွဲနေပါသည်...\n"
+                f"📊 {fmt_progress_bar(int(((part_num - 1) / total_parts) * 100))}",
                 force=True,
             )
 
-            chunk_path = os.path.join(work_dir, f"chunk_{part_num}.mp4")
-            actual_dur = await download_chunk(url, start, end, chunk_path)
+            extract_result = await asyncio.to_thread(run_cmd, [
+                FFMPEG_BIN, "-y",
+                "-ss", f"{start:.3f}",
+                "-i", source_path,
+                "-t", f"{chunk_dur:.3f}",
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                chunk_path,
+            ], 600)
+
+            if extract_result.returncode != 0 or not os.path.exists(chunk_path):
+                raise RuntimeError(f"အပိုင်း {part_num} ဖြတ်၍မရပါ။")
+
+            actual_dur, _, _ = probe_video_info(chunk_path)
             if actual_dur <= 0:
-                raise RuntimeError(f"အပိုင်း {part_num} ဒေါင်းလုဒ် မရပါ။")
+                raise RuntimeError(f"အပိုင်း {part_num} ကြာချိန် မရပါ။")
+
+            logger.info(f"Chunk {part_num}/{total_parts}: {actual_dur:.1f}s")
 
             await tracker.update(
-                f"✂️ အပိုင်း {part_num}/{total_parts} ကို Recap လုပ်နေပါသည်...",
+                f"🎧 အပိုင်း {part_num}/{total_parts} ကို Recap လုပ်နေပါသည်...\n"
+                f"📊 {fmt_progress_bar(int((start / total_dur) * 100))}",
                 force=True,
             )
 
@@ -797,17 +871,22 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
             chunks.append(recap_chunk)
             story_context = new_summary
             logger.info(
-                f"Story context updated: "
-                f"{len(story_context.get('characters', []))} characters, "
-                f"protagonist='{story_context.get('protagonist', '')}', "
-                f"{len(story_context.get('summary', ''))} summary chars"
+                f"Story context: protagonist='{story_context.get('protagonist', '')}', "
+                f"{len(story_context.get('characters', []))} chars, "
+                f"{len(story_context.get('summary', ''))} summary"
             )
 
-            start += actual_dur
-            part_num += 1
+            if os.path.exists(chunk_path):
+                try:
+                    os.remove(chunk_path)
+                except Exception:
+                    pass
 
-            if actual_dur < CHUNK_DURATION * 0.9:
-                break
+        if os.path.exists(source_path):
+            try:
+                os.remove(source_path)
+            except Exception:
+                pass
 
         await tracker.update("🔗 အပိုင်းတွေ ပေါင်းစပ်နေပါသည်...", force=True)
         final_out = os.path.join(work_dir, "final_recap.mp4")
