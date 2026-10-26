@@ -67,6 +67,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.active_jobs = start(patch.object(bot, "ACTIVE_JOBS", {}))
         self.worker_tasks = start(patch.object(bot, "WORKER_TASKS", {}))
         self.cancelled_jobs = start(patch.object(bot, "CANCELLED_JOBS", set()))
+        self.background_tasks = start(
+            patch.object(bot, "BACKGROUND_TASKS", set())
+        )
+        self.persistent_keyboard_chats = start(
+            patch.object(bot, "PERSISTENT_KEYBOARD_CHATS", set())
+        )
         start(patch.object(bot, "WORKER_JOB_LOCK", asyncio.Lock()))
         start(patch.object(bot, "WORKER_STAGE_SEMAPHORE", asyncio.Semaphore(1)))
         start(patch.object(bot, "video_render_semaphore", asyncio.Semaphore(1)))
@@ -91,7 +97,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot.USER_SETTINGS.clear()
 
     async def asyncTearDown(self):
-        tasks = [task for task in bot.WORKER_TASKS.values() if not task.done()]
+        tasks = [
+            task
+            for task in list(bot.WORKER_TASKS.values()) + list(bot.BACKGROUND_TASKS)
+            if not task.done()
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -99,6 +109,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         bot.WORKER_TASKS.clear()
         bot.ACTIVE_JOBS.clear()
         bot.CANCELLED_JOBS.clear()
+        bot.BACKGROUND_TASKS.clear()
+        bot.PERSISTENT_KEYBOARD_CHATS.clear()
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.tmp.cleanup()
@@ -1398,6 +1410,21 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot.main_menu_keyboard(chat_id),
         )
 
+        # A link sent to a newly deployed process before /start must also
+        # install the bottom buttons once, before the job starts.
+        bot.PERSISTENT_KEYBOARD_CHATS.clear()
+        self.mock_send_text.reset_mock()
+        fake_link_job = AsyncMock(return_value=None)
+        self.start_patch(patch.object(bot, "handle_link_job", new=fake_link_job))
+        await bot.process_admin_update(
+            message_update("https://videos.example/watch/99")
+        )
+        self.mock_send_text.assert_awaited_once()
+        self.assertTrue(
+            self.mock_send_text.await_args.kwargs["reply_markup"]["is_persistent"]
+        )
+        fake_link_job.assert_awaited_once()
+
     async def test_progress_buttons_stay_attached_and_cancel_worker_job(self):
         chat_id = int(bot.ADMIN_ID)
         state = self.create_job(
@@ -1427,7 +1454,18 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         await bot.process_admin_update(status_callback)
-        self.mock_send_text.assert_awaited_once()
+        # First callback after deploy installs persistent buttons, then the
+        # status view is sent separately without overwriting progress.
+        self.assertEqual(self.mock_send_text.await_count, 2)
+        self.assertTrue(
+            self.mock_send_text.await_args_list[0].kwargs["reply_markup"][
+                "is_persistent"
+            ]
+        )
+        self.assertEqual(
+            self.mock_send_text.await_args_list[1].kwargs["reply_markup"],
+            bot.main_menu_keyboard(chat_id),
+        )
         self.mock_edit_text.assert_not_awaited()
 
         callback = {
@@ -1450,6 +1488,99 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(chat_id, bot.ACTIVE_JOBS)
         self.mock_edit_text.assert_awaited()
 
+    def test_public_base_url_prefers_actual_render_hostname(self):
+        with patch.dict(
+            os.environ,
+            {
+                "RENDER_EXTERNAL_HOSTNAME": "actual-service.onrender.com",
+                "RENDER_EXTERNAL_URL": "https://stale-old-service.onrender.com",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                bot._resolve_public_base_url(),
+                "https://actual-service.onrender.com",
+            )
+
+        with patch.dict(
+            os.environ,
+            {
+                "WEBHOOK_BASE_URL": "https://bot.example.com/",
+                "RENDER_EXTERNAL_HOSTNAME": "actual-service.onrender.com",
+                "RENDER_EXTERNAL_URL": "https://stale-old-service.onrender.com",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                bot._resolve_public_base_url(), "https://bot.example.com"
+            )
+
+    async def test_telegram_setup_registers_menu_and_callback_webhook(self):
+        calls = []
+        expected_url = "https://actual-service.onrender.com/webhook"
+
+        async def fake_tg_api(method, data=None, timeout=90.0):
+            calls.append((method, data or {}))
+            if method == "getMe":
+                return {"ok": True, "result": {"username": "recap_test_bot"}}
+            if method == "getWebhookInfo":
+                return {
+                    "ok": True,
+                    "result": {
+                        "url": expected_url,
+                        "allowed_updates": bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+                        "pending_update_count": 0,
+                    },
+                }
+            return {"ok": True, "result": True}
+
+        self.start_patch(patch.object(bot, "tg_api", new=fake_tg_api))
+
+        self.assertTrue(await bot._setup_bot_once(expected_url))
+        self.assertEqual(
+            [method for method, _ in calls],
+            [
+                "getMe",
+                "setMyCommands",
+                "setMyCommands",
+                "setChatMenuButton",
+                "setWebhook",
+                "getWebhookInfo",
+            ],
+        )
+        menu_payload = calls[3][1]
+        webhook_payload = calls[4][1]
+        self.assertEqual(menu_payload, {"menu_button": {"type": "commands"}})
+        self.assertEqual(webhook_payload["url"], expected_url)
+        self.assertEqual(
+            webhook_payload["allowed_updates"],
+            ["message", "edited_message", "callback_query"],
+        )
+
+    async def test_background_task_registry_retains_and_cleans_tasks(self):
+        finished = asyncio.Event()
+
+        async def quick_job():
+            finished.set()
+
+        task = bot._spawn_background(quick_job(), name="test-quick")
+        self.assertIn(task, bot.BACKGROUND_TASKS)
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await task
+        await asyncio.sleep(0)
+        self.assertNotIn(task, bot.BACKGROUND_TASKS)
+
+    async def test_lifespan_starts_telegram_setup(self):
+        started = asyncio.Event()
+
+        async def fake_setup():
+            started.set()
+            await asyncio.Event().wait()
+
+        self.start_patch(patch.object(bot, "_setup_bot", new=fake_setup))
+        async with bot.lifespan(bot.app):
+            await asyncio.wait_for(started.wait(), timeout=1)
+
     async def test_worker_api_auth_and_health(self):
         async with self.api_client() as client:
             health = await client.get("/health")
@@ -1465,7 +1596,17 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 health.json()["first_person_enforcement"], "per_scene_validated"
             )
             self.assertEqual(
-                health.json()["telegram_buttons"], "inline_and_persistent"
+                health.json()["telegram_buttons"], "inline_persistent_and_menu"
+            )
+            self.assertEqual(
+                health.json()["telegram_webhook_allowed_updates"],
+                bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+            )
+            self.assertEqual(health.json()["public_base_url"], bot.PUBLIC_BASE_URL)
+            self.assertEqual(health.json()["render_git_commit"], bot.RENDER_GIT_COMMIT)
+            self.assertEqual(health.json()["render_git_branch"], bot.RENDER_GIT_BRANCH)
+            self.assertEqual(
+                health.json()["render_git_repo_slug"], bot.RENDER_GIT_REPO_SLUG
             )
 
             root = await client.get("/")

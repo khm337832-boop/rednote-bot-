@@ -14,7 +14,9 @@ import tempfile
 import time
 import unicodedata
 import wave
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 import numpy as np
@@ -55,7 +57,51 @@ WORK_ROOT = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://rednote-bot-gzd0.onrender.com").strip()
+
+
+def _clean_public_base_url(value: str) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _resolve_public_base_url() -> str:
+    """Resolve this service's real public URL for Telegram webhook setup.
+
+    Priority matters.  A stale, manually copied ``RENDER_EXTERNAL_URL`` can
+    otherwise make a freshly deployed bot re-register Telegram's webhook to
+    an older service, leaving the user talking to obsolete code.  Render's
+    platform-provided hostname describes the instance that is actually
+    running this process, so prefer it over the generic URL variable.  An
+    explicit ``WEBHOOK_BASE_URL`` remains available for custom domains.
+    """
+    explicit = _clean_public_base_url(
+        os.environ.get("WEBHOOK_BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or ""
+    )
+    if explicit:
+        return explicit
+
+    hostname = str(os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
+    hostname = hostname.replace("https://", "").replace("http://", "")
+    hostname = hostname.strip("/").split("/")[0].strip()
+    if hostname:
+        return f"https://{hostname}"
+
+    render_url = _clean_public_base_url(os.environ.get("RENDER_EXTERNAL_URL"))
+    if render_url:
+        return render_url
+
+    # Local/legacy fallback only; on Render the hostname above is present.
+    return "https://rednote-bot-gzd0.onrender.com"
+
+
+RENDER_EXTERNAL_URL = _resolve_public_base_url()
+PUBLIC_BASE_URL = RENDER_EXTERNAL_URL
+RENDER_GIT_COMMIT = os.environ.get("RENDER_GIT_COMMIT", "").strip()
+RENDER_GIT_BRANCH = os.environ.get("RENDER_GIT_BRANCH", "").strip()
+RENDER_GIT_REPO_SLUG = os.environ.get("RENDER_GIT_REPO_SLUG", "").strip()
+RENDER_SERVICE_NAME = os.environ.get("RENDER_SERVICE_NAME", "").strip()
+RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "").strip()
 
 def _parse_int_env(name: str, default: int) -> int:
     """Env က ဂဏန်းမဟုတ်ရင် bot မပျက်အောင် default သုံးတယ် (deploy ပျက်ခြင်း ကာကွယ်)."""
@@ -148,7 +194,41 @@ PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
 os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
 
 CANCELLED_JOBS: set = set()
+BACKGROUND_TASKS: set = set()
+PERSISTENT_KEYBOARD_CHATS: set = set()
+TELEGRAM_WEBHOOK_ALLOWED_UPDATES = [
+    "message",
+    "edited_message",
+    "callback_query",
+]
 video_render_semaphore = asyncio.Semaphore(1)
+
+
+def _spawn_background(coro, *, name: str = ""):
+    """Create a task and retain a strong reference until it finishes.
+
+    Python may garbage-collect an otherwise unreferenced task.  Telegram
+    webhook/button handling must not depend on a fire-and-forget task that
+    can disappear before it has replied.
+    """
+    task = asyncio.create_task(coro)
+    BACKGROUND_TASKS.add(task)
+
+    def _finished(done_task):
+        BACKGROUND_TASKS.discard(done_task)
+        if done_task.cancelled():
+            return
+        exc = done_task.exception()
+        if exc:
+            logger.error(
+                "Background task %s failed: %s: %s",
+                name or done_task.get_name(),
+                type(exc).__name__,
+                exc,
+            )
+
+    task.add_done_callback(_finished)
+    return task
 
 PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest"]
 PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
@@ -591,17 +671,56 @@ async def answer_callback(callback_id: str, text: str = ""):
         pass
 
 
+async def ensure_persistent_keyboard(
+    chat_id,
+    reply_to: int = None,
+    *,
+    force: bool = False,
+) -> bool:
+    """Install Telegram's bottom reply keyboard for this chat.
+
+    Telegram only shows a reply keyboard after the bot sends a message
+    carrying it; registering commands at startup is not enough for an old
+    chat.  Send one small installer message the first time a chat talks to
+    a newly deployed process, and again whenever ``/start`` forces it.
+    """
+    try:
+        chat_key = int(chat_id)
+    except (TypeError, ValueError):
+        return False
+    if not force and chat_key in PERSISTENT_KEYBOARD_CHATS:
+        return False
+
+    PERSISTENT_KEYBOARD_CHATS.add(chat_key)
+    version = globals().get("BUILD_VERSION", "")
+    text = "⌨️ အောက်ခြေခလုတ်တွေ အဆင်သင့်ဖြစ်ပါပြီ။ Link ကို ဒီအတိုင်းပို့လိုက်ရုံပါပဲ။"
+    if version:
+        text += f"\n🆕 <code>{version}</code>"
+    try:
+        message_id = await send_text(
+            chat_key,
+            text,
+            reply_to=reply_to,
+            reply_markup=persistent_menu_keyboard(),
+        )
+    except Exception as e:
+        PERSISTENT_KEYBOARD_CHATS.discard(chat_key)
+        logger.warning(f"persistent keyboard send failed for {chat_key}: {e}")
+        return False
+    if not message_id:
+        PERSISTENT_KEYBOARD_CHATS.discard(chat_key)
+        return False
+    return True
+
+
 async def send_main_menu(
     chat_id: int,
     reply_to: int = None,
     with_persistent_keyboard: bool = False,
 ):
     if with_persistent_keyboard:
-        await send_text(
-            chat_id,
-            "⌨️ အောက်ခြေခလုတ်တွေ အဆင်သင့်ဖြစ်ပါပြီ။ Link ကို ဒီအတိုင်းပို့လိုက်ရုံပါပဲ။",
-            reply_to=reply_to,
-            reply_markup=persistent_menu_keyboard(),
+        await ensure_persistent_keyboard(
+            chat_id, reply_to=reply_to, force=True
         )
     version = globals().get("BUILD_VERSION", "")
     text = MAIN_MENU_TEXT
@@ -5113,6 +5232,10 @@ async def handle_callback(cb: dict):
         await answer_callback(cb.get("id"), "⛔ ခွင့်ပြုထားသူ မဟုတ်ပါ")
         return
     await answer_callback(cb.get("id"))
+    # A user may tap an inline button from an older menu after a deploy
+    # without ever sending /start again.  Install the persistent bottom
+    # buttons once for that chat as well.
+    await ensure_persistent_keyboard(chat_id)
 
     async def show(text, markup):
         # While a job is running, the callback may come from the live
@@ -5180,7 +5303,10 @@ async def handle_callback(cb: dict):
         url = PENDING_LINKS.pop(chat_id, None)
         await show("🚀 စတင်လိုက်ပါပြီ...", main_menu_keyboard(chat_id))
         if url:
-            asyncio.create_task(handle_link_job(chat_id, message_id, url))
+            _spawn_background(
+                handle_link_job(chat_id, message_id, url),
+                name="telegram-link-job",
+            )
     elif data == "job:discard":
         PENDING_LINKS.pop(chat_id, None)
         await show("❌ Link ကို ပယ်လိုက်ပါပြီ။", main_menu_keyboard(chat_id))
@@ -5201,6 +5327,13 @@ async def process_admin_update(update: dict):
     if not is_allowed(from_id):
         await send_text(chat_id, "⛔ ဒီ bot ကို သုံးခွင့် မရှိပါ။", reply_to=msg_id)
         return
+
+    # Install the bottom buttons on the first ordinary message/link too;
+    # the user should not have to discover that /start is required after
+    # every deployment.  /start and /menu force-install via send_main_menu.
+    first_token = text.split()[0].split("@")[0].lower() if text else ""
+    if text and first_token not in ("/start", "/menu"):
+        await ensure_persistent_keyboard(chat_id, reply_to=msg_id)
 
     # Persistent reply-keyboard buttons arrive as ordinary text messages,
     # not callback_query updates.  Route their exact labels explicitly;
@@ -5256,10 +5389,34 @@ async def process_admin_update(update: dict):
         )
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    version = globals().get("BUILD_VERSION", "")
+    features = globals().get("BUILD_FEATURES", 20)
+    logger.info(
+        "🚀 rednote-bot %s စတင်ပါပြီ (features=%s, public_base=%s, "
+        "render_commit=%s, render_branch=%s)",
+        version,
+        features,
+        PUBLIC_BASE_URL,
+        RENDER_GIT_COMMIT or "unknown",
+        RENDER_GIT_BRANCH or "unknown",
+    )
+    setup_task = _spawn_background(_setup_bot(), name="telegram-setup")
+    try:
+        yield
+    finally:
+        setup_task.cancel()
+        try:
+            await setup_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.3-final-90-first-person-buttons"
+BUILD_VERSION = "v3.4-button-webhook-fix"
 BUILD_FEATURES = 20
 
 
@@ -5277,7 +5434,15 @@ async def root():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "first_person_enforcement": "per_scene_validated",
-        "telegram_buttons": "inline_and_persistent",
+        "telegram_buttons": "inline_persistent_and_menu",
+        "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+        "public_base_url": PUBLIC_BASE_URL,
+        "public_host": urlparse(PUBLIC_BASE_URL).netloc,
+        "render_git_commit": RENDER_GIT_COMMIT,
+        "render_git_branch": RENDER_GIT_BRANCH,
+        "render_git_repo_slug": RENDER_GIT_REPO_SLUG,
+        "render_service_name": RENDER_SERVICE_NAME,
+        "render_service_id": RENDER_SERVICE_ID,
         "worker_api_configured": bool(WORKER_API_KEY),
         "whisper_configured": bool(WHISPER_API_KEY),
         "whisper_model": WHISPER_MODEL,
@@ -5296,7 +5461,14 @@ async def health():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "first_person_enforcement": "per_scene_validated",
-        "telegram_buttons": "inline_and_persistent",
+        "telegram_buttons": "inline_persistent_and_menu",
+        "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+        "public_base_url": PUBLIC_BASE_URL,
+        "public_host": urlparse(PUBLIC_BASE_URL).netloc,
+        "render_git_commit": RENDER_GIT_COMMIT,
+        "render_git_branch": RENDER_GIT_BRANCH,
+        "render_git_repo_slug": RENDER_GIT_REPO_SLUG,
+        "render_service_name": RENDER_SERVICE_NAME,
         "worker_api_configured": bool(WORKER_API_KEY),
     })
 
@@ -5634,42 +5806,137 @@ BOT_COMMANDS = [
 ]
 
 
+def _telegram_result_ok(method: str, response) -> bool:
+    ok = bool((response or {}).get("ok"))
+    if ok:
+        logger.info("Telegram %s: ok", method)
+    else:
+        logger.warning(
+            "Telegram %s failed: %s",
+            method,
+            (response or {}).get("description") or response,
+        )
+    return ok
+
+
+async def _setup_bot_once(expected_webhook_url: str) -> bool:
+    """Register commands, the chat menu button, and this exact webhook."""
+    me = await tg_api("getMe", {})
+    if not _telegram_result_ok("getMe", me):
+        return False
+    username = str(((me or {}).get("result") or {}).get("username") or "")
+    if username:
+        logger.info("Telegram bot identity: @%s", username)
+
+    commands_ok = True
+    for payload in (
+        {"commands": BOT_COMMANDS},
+        {
+            "commands": BOT_COMMANDS,
+            "scope": {"type": "all_private_chats"},
+        },
+    ):
+        result = await tg_api("setMyCommands", payload)
+        commands_ok = _telegram_result_ok("setMyCommands", result) and commands_ok
+
+    menu_result = await tg_api(
+        "setChatMenuButton",
+        {"menu_button": {"type": "commands"}},
+    )
+    menu_ok = _telegram_result_ok("setChatMenuButton", menu_result)
+
+    webhook_result = await tg_api(
+        "setWebhook",
+        {
+            "url": expected_webhook_url,
+            "drop_pending_updates": False,
+            "max_connections": 40,
+            # Explicitly reset this every deploy.  If omitted, Telegram
+            # can retain an older allowed_updates setting and silently
+            # stop delivering inline-button callback_query updates.
+            "allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+        },
+    )
+    webhook_ok = _telegram_result_ok("setWebhook", webhook_result)
+
+    info = await tg_api("getWebhookInfo", {})
+    info_ok = _telegram_result_ok("getWebhookInfo", info)
+    result = (info or {}).get("result") or {}
+    actual_url = str(result.get("url") or "")
+    actual_updates = result.get("allowed_updates") or []
+    url_ok = actual_url == expected_webhook_url
+    updates_ok = (
+        not actual_updates or "callback_query" in actual_updates
+    )
+    logger.info(
+        "Telegram webhook verify: url=%s expected=%s allowed_updates=%s "
+        "pending=%s last_error_date=%s last_error_message=%s",
+        actual_url,
+        expected_webhook_url,
+        actual_updates,
+        result.get("pending_update_count"),
+        result.get("last_error_date"),
+        result.get("last_error_message") or "",
+    )
+    return bool(
+        commands_ok and menu_ok and webhook_ok and info_ok and url_ok and updates_ok
+    )
+
+
 async def _setup_bot():
-    """စတင်တာနဲ့ (၁) Telegram command မီနူး မှတ်ပုံတင်ပြီး (၂) webhook ကို
+    """စတင်တာနဲ့ Telegram command/menu ခလုတ်နှင့် webhook ကို
     ဒီ service ဆီ ပြန်ချိတ်တယ် — အဟောင်း လွဲနေရင် ကိုယ်တိုင် ပြင်သွားအောင်။"""
     if not BOT_TOKEN:
-        logger.warning("BOT_TOKEN မရှိပါ")
+        logger.warning("BOT_TOKEN မရှိပါ — Telegram setup ကျော်ပါမည်")
         return
+    if not PUBLIC_BASE_URL:
+        logger.warning("Public base URL မရှိပါ — Telegram webhook setup ကျော်ပါမည်")
+        return
+
+    expected_webhook_url = f"{PUBLIC_BASE_URL.rstrip('/')}/webhook"
     await asyncio.sleep(2)
-    try:
-        res = await tg_api("setMyCommands", {"commands": BOT_COMMANDS})
-        logger.info(f"setMyCommands: {res.get('ok')}")
-    except Exception as e:
-        logger.warning(f"setMyCommands failed: {e}")
-    if not RENDER_EXTERNAL_URL:
-        return
-    url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/webhook"
-    try:
-        res = await tg_api("setWebhook", {"url": url, "drop_pending_updates": False})
-        logger.info(f"setWebhook -> {url}: {res.get('ok')} / version {BUILD_VERSION}")
-        info = await tg_api("getWebhookInfo", {})
-        logger.info(f"getWebhookInfo: {info.get('result', {})}")
-    except Exception as e:
-        logger.warning(f"setWebhook failed: {e}")
+    for attempt in range(1, 7):
+        try:
+            if await _setup_bot_once(expected_webhook_url):
+                logger.info(
+                    "✅ Telegram setup complete: version=%s webhook=%s",
+                    BUILD_VERSION,
+                    expected_webhook_url,
+                )
+                return
+            logger.warning(
+                "Telegram setup incomplete (attempt %s/6)", attempt
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Telegram setup attempt %s/6 failed: %s: %s",
+                attempt,
+                type(e).__name__,
+                e,
+            )
+        if attempt < 6:
+            await asyncio.sleep(min(30, 2 ** attempt))
 
-
-@app.on_event("startup")
-async def _on_startup():
-    logger.info(f"🚀 rednote-bot {BUILD_VERSION} စတင်ပါပြီ (features={BUILD_FEATURES})")
-    asyncio.create_task(_setup_bot())
+    logger.error(
+        "Telegram setup did not verify after retries; the HTTP app remains "
+        "online and /start can still install buttons when reachable"
+    )
 
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
-    asyncio.create_task(process_admin_update(update))
+    _spawn_background(
+        process_admin_update(update), name="telegram-update"
+    )
     return JSONResponse({"ok": True})
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=max(1, _parse_int_env("PORT", 10000)),
+    )
