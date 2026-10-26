@@ -1531,6 +1531,44 @@ async def process_admin_update(update: dict):
 
 app = FastAPI()
 
+# ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
+BUILD_VERSION = "v2.1-button-menu-20features"
+BUILD_FEATURES = 20
+
+
+@app.get("/")
+async def root():
+    return JSONResponse({
+        "app": "rednote-bot",
+        "version": BUILD_VERSION,
+        "features": BUILD_FEATURES,
+        "status": "online",
+    })
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"ok": True, "app": "rednote-bot", "version": BUILD_VERSION})
+
+
+async def _register_webhook():
+    """စတင်တာနဲ့ Telegram webhook ကို ဒီ service ဆီ ပြန်ချိတ်တယ် (လွဲနေရင် ကိုယ်တိုင် ပြင်သွားအောင်)."""
+    if not BOT_TOKEN or not RENDER_EXTERNAL_URL:
+        return
+    await asyncio.sleep(3)
+    url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/webhook"
+    try:
+        res = await tg_api("setWebhook", {"url": url, "drop_pending_updates": False})
+        logger.info(f"setWebhook -> {url}: {res.get('ok')} / version {BUILD_VERSION}")
+    except Exception as e:
+        logger.warning(f"setWebhook failed: {e}")
+
+
+@app.on_event("startup")
+async def _on_startup():
+    logger.info(f"🚀 rednote-bot {BUILD_VERSION} စတင်ပါပြီ (features={BUILD_FEATURES})")
+    asyncio.create_task(_register_webhook())
+
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
