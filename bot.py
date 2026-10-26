@@ -1,7 +1,9 @@
 import asyncio
 import gc
+import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -11,7 +13,9 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import wave
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import httpx
 import numpy as np
@@ -77,6 +81,44 @@ def _parse_id_list_env(name: str) -> set:
 
 ADMIN_ID = _parse_int_env("ADMIN_ID", 8430004524)
 ALLOWED_USER_IDS = {8855067536} | _parse_id_list_env("ALLOWED_IDS")
+
+# --- n8n worker mode -------------------------------------------------
+# PIPELINE_MODE=direct (default) keeps the original all-in-one bot flow.
+# PIPELINE_MODE=n8n keeps this Telegram bot as the front door/status UI,
+# forwards each accepted link to an n8n Webhook, and lets n8n call the
+# authenticated stage endpoints below on this same Render service.
+PIPELINE_MODE = os.environ.get("PIPELINE_MODE", "direct").strip().lower()
+N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "").strip()
+N8N_WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "").strip()
+WORKER_API_KEY = os.environ.get("WORKER_API_KEY", "").strip()
+WORKER_JOBS_DIR = os.path.join(WORK_ROOT, "n8n_jobs")
+os.makedirs(WORKER_JOBS_DIR, exist_ok=True)
+
+# Whisper is called through an OpenAI-compatible transcription API.
+# This works with OpenAI by default; another compatible provider can be
+# selected by changing WHISPER_API_BASE/WHISPER_MODEL/WHISPER_API_KEY.
+WHISPER_API_BASE = os.environ.get(
+    "WHISPER_API_BASE", "https://api.openai.com/v1"
+).strip().rstrip("/")
+WHISPER_API_KEY = (
+    os.environ.get("WHISPER_API_KEY", "").strip()
+    or os.environ.get("OPENAI_API_KEY", "").strip()
+)
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-1").strip() or "whisper-1"
+WHISPER_CHUNK_SECONDS = max(60, _parse_int_env("WHISPER_CHUNK_SECONDS", 600))
+
+WORKER_STAGES = ("download", "transcribe", "rewrite", "tts", "render", "deliver")
+WORKER_STAGE_LABELS = {
+    "download": "📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...",
+    "transcribe": "📝 Whisper ဖြင့် transcript ထုတ်နေပါသည်...",
+    "rewrite": "🧠 Gemini ဖြင့် ပထမလူ script ပြန်ရေးနေပါသည်...",
+    "tts": "🎙️ Gemini TTS ဖြင့် အသံသွင်းနေပါသည်...",
+    "render": "🎬 အသံကို မထိဘဲ video ကို အချိန်ကိုက် ဖြတ်ဆက်နေပါသည်...",
+    "deliver": "📤 Final video ကို ပို့နေပါသည်...",
+}
+WORKER_TASKS: dict = {}
+WORKER_JOB_LOCK = asyncio.Lock()
+WORKER_STAGE_SEMAPHORE = asyncio.Semaphore(1)
 
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 45 * 1024 * 1024
@@ -1293,31 +1335,1765 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     return out_chunk, new_summary
 
 
-async def split_for_telegram(path: str, work_dir: str) -> list[str]:
-    if not os.path.exists(path):
-        return []
-    if os.path.getsize(path) <= MAX_TG_BYTES:
-        return [path]
-
-    out_dir = os.path.join(work_dir, "tg_parts")
+def _split_video_once(path: str, out_dir: str, segment_seconds: float) -> list[str]:
+    """Split one MP4 at keyframes. Returns non-empty parts in order."""
     os.makedirs(out_dir, exist_ok=True)
-    pattern = os.path.join(out_dir, "part_%03d.mp4")
-    run_cmd([
+    pattern = os.path.join(out_dir, "part_%04d.mp4")
+    result = run_cmd([
         FFMPEG_BIN, "-y",
         "-i", path,
         "-c", "copy",
         "-map", "0",
         "-f", "segment",
-        "-segment_time", "180",
+        "-segment_time", f"{max(1.0, float(segment_seconds)):.3f}",
         "-reset_timestamps", "1",
         pattern,
-    ], 300)
-    parts = sorted(
+    ], 1200)
+    if result.returncode != 0:
+        return []
+    return sorted(
         os.path.join(out_dir, f)
         for f in os.listdir(out_dir)
-        if f.startswith("part_") and f.endswith(".mp4")
+        if (
+            f.startswith("part_")
+            and f.endswith(".mp4")
+            and os.path.getsize(os.path.join(out_dir, f)) > 0
+        )
     )
+
+
+async def split_for_telegram(path: str, work_dir: str) -> list[str]:
+    """Return Telegram-sized parts, recursively resplitting any oversized part.
+
+    A fixed 180-second split is not enough for high-bitrate files: a 3-minute
+    part can still exceed MAX_TG_BYTES.  Estimate the needed segment length
+    from this file's own bitrate, then verify every returned part and split
+    again when necessary.
+    """
+    if not os.path.exists(path):
+        return []
+    if os.path.getsize(path) <= MAX_TG_BYTES:
+        return [path]
+
+    base_dir = os.path.join(work_dir, "tg_parts")
+    os.makedirs(base_dir, exist_ok=True)
+    parts = [path]
+
+    for round_no in range(8):
+        if all(os.path.getsize(part) <= MAX_TG_BYTES for part in parts):
+            break
+
+        new_parts: list[str] = []
+        changed = False
+        for part_index, part in enumerate(parts):
+            size = os.path.getsize(part)
+            if size <= MAX_TG_BYTES:
+                new_parts.append(part)
+                continue
+
+            duration, _, _ = probe_video_info(part)
+            if duration <= 0:
+                new_parts.append(part)
+                continue
+
+            # 10% headroom for bitrate peaks and MP4 overhead.
+            estimate = duration * (MAX_TG_BYTES * 0.90 / float(size))
+            segment_seconds = max(1.0, min(duration / 2.0, estimate))
+            out_dir = os.path.join(base_dir, f"r{round_no}_{part_index}")
+            children = await asyncio.to_thread(
+                _split_video_once, part, out_dir, segment_seconds
+            )
+            if len(children) < 2:
+                # Keyframes may be sparse.  Try a shorter target once for
+                # this file before giving up and returning it unchanged.
+                retry_dir = os.path.join(base_dir, f"r{round_no}_{part_index}_retry")
+                children = await asyncio.to_thread(
+                    _split_video_once, part, retry_dir, max(0.5, segment_seconds / 2.0)
+                )
+            if len(children) >= 2:
+                new_parts.extend(children)
+                changed = True
+            else:
+                new_parts.append(part)
+
+        parts = new_parts
+        if not changed:
+            break
+
     return parts or [path]
+
+
+# =====================================================================
+# n8n worker API implementation
+# =====================================================================
+
+class WorkerJobError(RuntimeError):
+    pass
+
+
+class WorkerCancelled(RuntimeError):
+    pass
+
+
+def _worker_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_safe_worker_job_id(job_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id or ""))
+
+
+def _worker_job_dir(job_id: str) -> str:
+    if not _is_safe_worker_job_id(job_id):
+        raise WorkerJobError("invalid job_id")
+    root = os.path.abspath(WORKER_JOBS_DIR)
+    path = os.path.abspath(os.path.join(root, job_id))
+    if os.path.commonpath([root, path]) != root:
+        raise WorkerJobError("invalid job path")
+    return path
+
+
+def _worker_state_file(job_id: str) -> str:
+    return os.path.join(_worker_job_dir(job_id), "state.json")
+
+
+def _default_stage_map() -> dict:
+    return {
+        stage: {
+            "status": "pending",
+            "attempts": 0,
+            "started_at": "",
+            "finished_at": "",
+            "error": "",
+            "metrics": {},
+        }
+        for stage in WORKER_STAGES
+    }
+
+
+def _save_worker_job(state: dict) -> dict:
+    job_id = str(state.get("job_id") or "")
+    job_dir = _worker_job_dir(job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    state["job_dir"] = job_dir
+    state["updated_at"] = _worker_now()
+    tmp_path = _worker_state_file(job_id) + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, _worker_state_file(job_id))
+    return state
+
+
+def _load_worker_job(job_id: str) -> dict:
+    path = _worker_state_file(job_id)
+    if not os.path.exists(path):
+        raise WorkerJobError("worker job not found")
+    with open(path, encoding="utf-8") as f:
+        state = json.load(f)
+    state["job_id"] = str(state.get("job_id") or job_id)
+    state["job_dir"] = _worker_job_dir(state["job_id"])
+    stages = _default_stage_map()
+    saved = state.get("stages") or {}
+    if isinstance(saved, dict):
+        for name in WORKER_STAGES:
+            if isinstance(saved.get(name), dict):
+                stages[name].update(saved[name])
+                if not isinstance(stages[name].get("metrics"), dict):
+                    stages[name]["metrics"] = {}
+    state["stages"] = stages
+    if not isinstance(state.get("artifacts"), dict):
+        state["artifacts"] = {}
+    if not isinstance(state.get("metrics"), dict):
+        state["metrics"] = {}
+    if not isinstance(state.get("settings"), dict):
+        state["settings"] = get_user_settings(state.get("chat_id"))
+    if not isinstance(state.get("story_context"), dict):
+        state["story_context"] = {
+            "characters": [], "summary": "", "last_scene": "",
+            "protagonist": "", "pronoun": "",
+        }
+    return state
+
+
+def _worker_path(state: dict, relative_path: str) -> str:
+    job_dir = os.path.abspath(state.get("job_dir") or _worker_job_dir(str(state["job_id"])))
+    path = os.path.abspath(os.path.join(job_dir, relative_path))
+    if os.path.commonpath([job_dir, path]) != job_dir:
+        raise WorkerJobError("invalid artifact path")
+    return path
+
+
+def _next_worker_stage(state: dict) -> str:
+    for stage in WORKER_STAGES:
+        if (state.get("stages") or {}).get(stage, {}).get("status") != "done":
+            return stage
+    return ""
+
+
+def _public_worker_job(state: dict) -> dict:
+    task = WORKER_TASKS.get(str(state.get("job_id") or ""))
+    settings = state.get("settings") or {}
+    return {
+        "ok": True,
+        "job_id": state.get("job_id"),
+        "chat_id": state.get("chat_id"),
+        "reply_msg_id": state.get("reply_msg_id"),
+        "status_message_id": state.get("status_message_id"),
+        "url": state.get("url"),
+        "status": state.get("status", "queued"),
+        "current_stage": state.get("current_stage") or "",
+        "next_stage": _next_worker_stage(state),
+        "progress": state.get("progress_text", ""),
+        "error": state.get("error", ""),
+        "task_running": bool(task and not task.done()),
+        "created_at": state.get("created_at", ""),
+        "updated_at": state.get("updated_at", ""),
+        "stages": json.loads(json.dumps(state.get("stages") or {})),
+        "artifacts": json.loads(json.dumps(state.get("artifacts") or {})),
+        "metrics": json.loads(json.dumps(state.get("metrics") or {})),
+        "selected_settings": {
+            "coverage": settings.get("coverage"),
+            "voice": settings.get("voice"),
+            "resolution": settings.get("resolution"),
+            "tone": settings.get("tone"),
+            "rate": settings.get("rate"),
+            "pause": settings.get("pause"),
+            "split_tg": settings.get("split_tg"),
+        },
+    }
+
+
+def _create_worker_job(
+    job_id: str,
+    chat_id: int,
+    url: str,
+    reply_msg_id: int = None,
+    status_message_id: int = None,
+    settings_override: dict = None,
+) -> dict:
+    job_id = str(job_id or "").strip()
+    if not _is_safe_worker_job_id(job_id):
+        raise WorkerJobError("invalid job_id")
+    try:
+        chat_id = int(chat_id)
+    except (TypeError, ValueError) as e:
+        raise WorkerJobError("invalid chat_id") from e
+    url = str(url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise WorkerJobError("invalid url")
+
+    active = ACTIVE_JOBS.get(chat_id)
+    if active and active != job_id:
+        raise WorkerJobError(f"another job is already active: {active}")
+
+    if os.path.exists(_worker_state_file(job_id)):
+        state = _load_worker_job(job_id)
+        if int(state.get("chat_id") or 0) != chat_id or state.get("url") != url:
+            raise WorkerJobError("job_id already belongs to a different request")
+        changed = False
+        if reply_msg_id and not state.get("reply_msg_id"):
+            state["reply_msg_id"] = int(reply_msg_id)
+            changed = True
+        if status_message_id and not state.get("status_message_id"):
+            state["status_message_id"] = int(status_message_id)
+            changed = True
+        if settings_override:
+            settings = get_user_settings(chat_id)
+            settings.update({
+                k: v for k, v in settings_override.items() if k in DEFAULT_SETTINGS
+            })
+            settings["pov"] = "first"
+            if settings != state.get("settings"):
+                state["settings"] = settings
+                changed = True
+        ACTIVE_JOBS[chat_id] = job_id
+        return _save_worker_job(state) if changed else state
+
+    settings = get_user_settings(chat_id)
+    if settings_override:
+        settings.update({
+            k: v for k, v in settings_override.items() if k in DEFAULT_SETTINGS
+        })
+    settings["pov"] = "first"
+    os.makedirs(_worker_job_dir(job_id), exist_ok=True)
+    state = {
+        "job_id": job_id,
+        "job_dir": _worker_job_dir(job_id),
+        "chat_id": chat_id,
+        "reply_msg_id": int(reply_msg_id) if reply_msg_id else None,
+        "status_message_id": int(status_message_id) if status_message_id else None,
+        "url": url,
+        "status": "queued",
+        "current_stage": "",
+        "progress_text": "🤖 n8n workflow စတင်ရန် ပြင်ဆင်နေပါသည်...",
+        "error": "",
+        "cancel_requested": False,
+        "terminal_stat_counted": False,
+        "created_at": _worker_now(),
+        "updated_at": _worker_now(),
+        "stages": _default_stage_map(),
+        "artifacts": {},
+        "metrics": {},
+        "settings": settings,
+        "story_context": {
+            "characters": [], "summary": "", "last_scene": "",
+            "protagonist": "", "pronoun": "",
+        },
+    }
+    ACTIVE_JOBS[chat_id] = job_id
+    return _save_worker_job(state)
+
+
+def _delete_worker_job_record(job_id: str, clear_active: bool = True):
+    job_id = str(job_id or "")
+    if not _is_safe_worker_job_id(job_id):
+        return
+    chat_id = None
+    try:
+        chat_id = int(_load_worker_job(job_id).get("chat_id") or 0) or None
+    except Exception:
+        pass
+    WORKER_TASKS.pop(job_id, None)
+    CANCELLED_JOBS.discard(job_id)
+    if clear_active and chat_id and ACTIVE_JOBS.get(chat_id) == job_id:
+        ACTIVE_JOBS.pop(chat_id, None)
+    shutil.rmtree(_worker_job_dir(job_id), ignore_errors=True)
+
+
+def _clear_worker_active(state: dict):
+    try:
+        chat_id = int(state.get("chat_id") or 0)
+    except (TypeError, ValueError):
+        return
+    if ACTIVE_JOBS.get(chat_id) == state.get("job_id"):
+        ACTIVE_JOBS.pop(chat_id, None)
+
+
+def _worker_tracker(state: dict):
+    chat_id = state.get("chat_id")
+    status_id = state.get("status_message_id")
+    if not chat_id or not status_id:
+        return None
+    return ProgressTracker(int(chat_id), int(status_id), job_id=str(state.get("job_id") or ""))
+
+
+async def _worker_progress(state: dict, text: str, tracker=None, force: bool = True):
+    state["progress_text"] = text
+    _save_worker_job(state)
+    tracker = tracker or _worker_tracker(state)
+    if tracker:
+        await tracker.update(text, force=force)
+
+
+def _worker_check_cancelled(state: dict):
+    if state.get("cancel_requested") or str(state.get("job_id") or "") in CANCELLED_JOBS:
+        raise WorkerCancelled("cancelled")
+
+
+def _set_worker_stage(
+    state: dict,
+    stage: str,
+    status: str,
+    error: str = "",
+    metrics: dict = None,
+):
+    info = state.setdefault("stages", _default_stage_map()).setdefault(stage, {})
+    info["status"] = status
+    if status == "running":
+        info["started_at"] = _worker_now()
+        info["finished_at"] = ""
+        info["error"] = ""
+        info["attempts"] = int(info.get("attempts") or 0) + 1
+    if status in ("done", "failed", "cancelled"):
+        info["finished_at"] = _worker_now()
+    if error:
+        info["error"] = error[:2000]
+    if metrics:
+        current = info.get("metrics") if isinstance(info.get("metrics"), dict) else {}
+        current.update(metrics)
+        info["metrics"] = current
+
+
+def _merged_duration(intervals: list) -> float:
+    clean = []
+    for item in intervals or []:
+        try:
+            start = max(0.0, float(item[0]))
+            end = max(start, float(item[1]))
+        except Exception:
+            continue
+        if end > start:
+            clean.append((start, end))
+    clean.sort()
+    total = 0.0
+    cur_start = None
+    cur_end = None
+    for start, end in clean:
+        if cur_start is None:
+            cur_start, cur_end = start, end
+        elif start <= cur_end:
+            cur_end = max(cur_end, end)
+        else:
+            total += cur_end - cur_start
+            cur_start, cur_end = start, end
+    if cur_start is not None:
+        total += cur_end - cur_start
+    return total
+
+
+def _normalize_whisper_segments(raw_segments: list, offset: float = 0.0) -> list:
+    normalized = []
+    for seg in raw_segments or []:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            start = float(seg.get("start") or 0) + float(offset)
+            end = float(seg.get("end") or start) + float(offset)
+        except (TypeError, ValueError):
+            continue
+        text = str(seg.get("text") or "").strip()
+        if not text or end <= start:
+            continue
+        normalized.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "text": text,
+        })
+    return normalized
+
+
+def _group_transcript_segments(segments: list) -> list:
+    """Deterministically group Whisper segments before Gemini sees them.
+
+    Gemini is never trusted to invent timestamps.  Each group is one future
+    narration scene and it keeps the exact Whisper segment IDs/start/end.
+    """
+    ordered = []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            start = float(seg.get("start") or 0)
+            end = float(seg.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        text = str(seg.get("text") or "").strip()
+        if not text or end <= start:
+            continue
+        clean = dict(seg)
+        clean["id"] = int(seg.get("id") or len(ordered) + 1)
+        clean["start"] = start
+        clean["end"] = end
+        clean["text"] = text
+        ordered.append(clean)
+    ordered.sort(key=lambda s: (s["start"], s["end"], s["id"]))
+
+    groups = []
+    current = []
+    current_speech = 0.0
+    current_chars = 0
+
+    def flush():
+        nonlocal current, current_speech, current_chars
+        if not current:
+            return
+        groups.append({
+            "group_id": len(groups) + 1,
+            "source_segment_ids": [int(s["id"]) for s in current],
+            "start": round(float(current[0]["start"]), 3),
+            "end": round(float(current[-1]["end"]), 3),
+            "speech_seconds": round(float(current_speech), 3),
+            "source_text": " ".join(str(s["text"]).strip() for s in current).strip(),
+        })
+        current = []
+        current_speech = 0.0
+        current_chars = 0
+
+    for seg in ordered:
+        duration = max(0.0, float(seg["end"]) - float(seg["start"]))
+        if current:
+            gap = float(seg["start"]) - float(current[-1]["end"])
+            if gap >= 1.5 and current_speech >= 5.0:
+                flush()
+        current.append(seg)
+        current_speech += duration
+        current_chars += len(str(seg["text"]))
+        span = float(current[-1]["end"]) - float(current[0]["start"])
+        if current_speech >= 12.0 or span >= 20.0 or current_chars >= 650:
+            flush()
+    flush()
+    return groups
+
+
+def _batch_transcript_groups(groups: list, max_groups: int = 20, max_chars: int = 12000) -> list:
+    batches = []
+    batch = []
+    batch_chars = 0
+    for group in groups or []:
+        chars = len(str(group.get("source_text") or ""))
+        if batch and (len(batch) >= max_groups or batch_chars + chars > max_chars):
+            batches.append(batch)
+            batch = []
+            batch_chars = 0
+        batch.append(group)
+        batch_chars += chars
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def _calculate_transcript_coverage(groups: list, scenes_by_group: dict) -> dict:
+    total_speech = 0.0
+    covered_speech = 0.0
+    total_segments = 0
+    covered_segments = 0
+    missing_groups = []
+    for group in groups or []:
+        gid = int(group.get("group_id") or 0)
+        speech = max(0.0, float(group.get("speech_seconds") or 0))
+        ids = [int(x) for x in (group.get("source_segment_ids") or [])]
+        total_speech += speech
+        total_segments += len(ids)
+        text = str((scenes_by_group or {}).get(gid) or "").strip()
+        if text:
+            covered_speech += speech
+            covered_segments += len(ids)
+        else:
+            missing_groups.append(gid)
+    speech_ratio = (covered_speech / total_speech) if total_speech > 0 else 0.0
+    segment_ratio = (covered_segments / total_segments) if total_segments > 0 else 0.0
+    return {
+        "speech_seconds_total": round(total_speech, 3),
+        "speech_seconds_covered": round(covered_speech, 3),
+        "speech_coverage_ratio": round(speech_ratio, 4),
+        "speech_coverage_percent": round(speech_ratio * 100.0, 2),
+        "segment_count_total": total_segments,
+        "segment_count_covered": covered_segments,
+        "segment_coverage_ratio": round(segment_ratio, 4),
+        "segment_coverage_percent": round(segment_ratio * 100.0, 2),
+        "missing_group_ids": missing_groups,
+    }
+
+
+async def _worker_stage_download(state: dict, tracker=None):
+    source_path = _worker_path(state, "source.mp4")
+    duration = 0.0
+    if os.path.exists(source_path) and os.path.getsize(source_path) > 10_000:
+        duration, width, height = probe_video_info(source_path)
+    else:
+        width = height = 0
+
+    if duration <= 0:
+        _worker_check_cancelled(state)
+        await _worker_progress(state, WORKER_STAGE_LABELS["download"], tracker)
+        probe_duration = await get_source_duration(str(state.get("url") or ""))
+        duration = await download_full(
+            str(state.get("url") or ""), source_path, tracker, probe_duration
+        )
+        _worker_check_cancelled(state)
+        if duration <= 0 or not os.path.exists(source_path):
+            raise WorkerJobError("source download failed")
+        _, width, height = probe_video_info(source_path)
+
+    metrics = {
+        "duration_seconds": round(float(duration), 3),
+        "size_bytes": os.path.getsize(source_path),
+        "size_mb": round(os.path.getsize(source_path) / (1024 * 1024), 2),
+        "width": int(width or 0),
+        "height": int(height or 0),
+    }
+    state.setdefault("artifacts", {})["source"] = "source.mp4"
+    state.setdefault("metrics", {})["source"] = metrics
+    _set_worker_stage(state, "download", "done", metrics=metrics)
+    _save_worker_job(state)
+    await _worker_progress(
+        state,
+        f"✅ Download ပြီးပါပြီ ({fmt_time(duration)}, {metrics['size_mb']:.1f}MB)",
+        tracker,
+    )
+
+
+def _extract_whisper_audio_chunks(source_path: str, out_dir: str, source_duration: float) -> list:
+    os.makedirs(out_dir, exist_ok=True)
+    if source_duration <= 0:
+        source_duration = probe_video_info(source_path)[0]
+    chunk_count = max(1, int(math.ceil(float(source_duration) / float(WHISPER_CHUNK_SECONDS))))
+    chunks = []
+    cumulative = 0.0
+    for index in range(chunk_count):
+        nominal_start = index * WHISPER_CHUNK_SECONDS
+        nominal_duration = min(WHISPER_CHUNK_SECONDS, float(source_duration) - nominal_start)
+        if nominal_duration <= 0.05:
+            continue
+        path = os.path.join(out_dir, f"audio_{index:04d}.mp3")
+        if not os.path.exists(path) or os.path.getsize(path) < 1000:
+            result = run_cmd([
+                FFMPEG_BIN, "-y",
+                "-ss", f"{nominal_start:.3f}",
+                "-i", source_path,
+                "-t", f"{nominal_duration:.3f}",
+                "-vn",
+                "-ac", "1",
+                "-ar", "16000",
+                "-b:a", "64k",
+                path,
+            ], 1200)
+            if result.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 1000:
+                detail = result.stderr.decode(errors="ignore")[-500:]
+                raise WorkerJobError(f"Whisper audio extract failed: {detail}")
+        actual_duration = probe_video_info(path)[0] or nominal_duration
+        chunks.append({
+            "path": path,
+            "offset": round(cumulative, 3),
+            "duration": round(float(actual_duration), 3),
+        })
+        cumulative += float(actual_duration)
+    if not chunks:
+        raise WorkerJobError("no audio chunks extracted for Whisper")
+    return chunks
+
+
+async def _transcribe_whisper_chunk(audio_path: str) -> dict:
+    if not WHISPER_API_KEY:
+        raise WorkerJobError(
+            "Whisper credential missing: set WHISPER_API_KEY or OPENAI_API_KEY"
+        )
+
+    def read_bytes() -> bytes:
+        with open(audio_path, "rb") as f:
+            return f.read()
+
+    payload = await asyncio.to_thread(read_bytes)
+    endpoint = f"{WHISPER_API_BASE}/audio/transcriptions"
+    form = [
+        ("model", WHISPER_MODEL),
+        ("response_format", "verbose_json"),
+        ("timestamp_granularities[]", "segment"),
+    ]
+    headers = {"Authorization": f"Bearer {WHISPER_API_KEY}"}
+    last_error = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=1800.0) as client:
+                response = await client.post(
+                    endpoint,
+                    headers=headers,
+                    data=form,
+                    files={
+                        "file": (
+                            os.path.basename(audio_path),
+                            payload,
+                            "audio/mpeg",
+                        )
+                    },
+                )
+            if 200 <= response.status_code < 300:
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise WorkerJobError("Whisper returned a non-object response")
+                return data
+            last_error = response.text[:1000]
+            if response.status_code not in (408, 409, 429) and response.status_code < 500:
+                break
+        except WorkerJobError:
+            raise
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+        if attempt < 2:
+            await asyncio.sleep(2 ** attempt * 2)
+    raise WorkerJobError(f"Whisper transcription failed: {last_error}")
+
+
+async def _worker_stage_transcribe(state: dict, tracker=None):
+    _worker_check_cancelled(state)
+    source_path = _worker_path(state, (state.get("artifacts") or {}).get("source") or "source.mp4")
+    if not os.path.exists(source_path):
+        raise WorkerJobError("downloaded source.mp4 is missing")
+    source_duration = float(
+        ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds") or 0
+    ) or probe_video_info(source_path)[0]
+
+    await _worker_progress(state, WORKER_STAGE_LABELS["transcribe"], tracker)
+    chunks = await asyncio.to_thread(
+        _extract_whisper_audio_chunks,
+        source_path,
+        _worker_path(state, "whisper_audio"),
+        source_duration,
+    )
+    all_segments = []
+    languages = []
+    full_text_parts = []
+    for index, chunk in enumerate(chunks):
+        _worker_check_cancelled(state)
+        data = await _transcribe_whisper_chunk(str(chunk["path"]))
+        language = str(data.get("language") or "").strip()
+        if language:
+            languages.append(language)
+        chunk_segments = _normalize_whisper_segments(
+            data.get("segments") or [], float(chunk.get("offset") or 0)
+        )
+        chunk_text = str(data.get("text") or "").strip()
+        if not chunk_segments and chunk_text:
+            start = float(chunk.get("offset") or 0)
+            end = start + max(0.1, float(chunk.get("duration") or 0.1))
+            chunk_segments = [{"start": round(start, 3), "end": round(end, 3), "text": chunk_text}]
+        if not chunk_text and chunk_segments:
+            chunk_text = " ".join(s["text"] for s in chunk_segments)
+        all_segments.extend(chunk_segments)
+        if chunk_text:
+            full_text_parts.append(chunk_text)
+        await _worker_progress(
+            state,
+            f"{WORKER_STAGE_LABELS['transcribe']} ({index + 1}/{len(chunks)})",
+            tracker,
+        )
+
+    all_segments.sort(key=lambda s: (float(s["start"]), float(s["end"])))
+    for index, segment in enumerate(all_segments):
+        segment["id"] = index + 1
+    if not all_segments or not " ".join(full_text_parts).strip():
+        raise WorkerJobError("Whisper returned no usable transcript text")
+
+    speech_seconds = _merged_duration([
+        (float(s["start"]), float(s["end"])) for s in all_segments
+    ])
+    transcript = {
+        "model": WHISPER_MODEL,
+        "language": max(set(languages), key=languages.count) if languages else "",
+        "source_duration_seconds": round(float(source_duration), 3),
+        "speech_duration_seconds": round(float(speech_seconds), 3),
+        "text": " ".join(full_text_parts).strip(),
+        "segments": all_segments,
+    }
+    transcript_path = _worker_path(state, "transcript.json")
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        json.dump(transcript, f, ensure_ascii=False, indent=2)
+
+    metrics = {
+        "model": WHISPER_MODEL,
+        "language": transcript["language"],
+        "segment_count": len(all_segments),
+        "audio_chunk_count": len(chunks),
+        "source_duration_seconds": round(float(source_duration), 3),
+        "speech_duration_seconds": round(float(speech_seconds), 3),
+        "speech_ratio_of_source": round(
+            speech_seconds / source_duration, 4
+        ) if source_duration > 0 else 0.0,
+    }
+    state.setdefault("artifacts", {})["transcript"] = "transcript.json"
+    state.setdefault("metrics", {})["transcript"] = metrics
+    _set_worker_stage(state, "transcribe", "done", metrics=metrics)
+    _save_worker_job(state)
+    await _worker_progress(
+        state,
+        f"✅ Transcript ပြီးပါပြီ — segment {len(all_segments)} ခု၊ speech {fmt_time(speech_seconds)}",
+        tracker,
+    )
+
+
+def _rewrite_target_chars_for_speech(speech_seconds: float, settings: dict = None) -> int:
+    st = {**DEFAULT_SETTINGS, **(settings or {})}
+    try:
+        coverage_ratio = float(st.get("coverage") or 90) / 100.0
+    except (TypeError, ValueError):
+        coverage_ratio = 0.90
+    try:
+        rate = float(st.get("rate") or SCRIPT_CHARS_PER_SEC)
+    except (TypeError, ValueError):
+        rate = SCRIPT_CHARS_PER_SEC
+    return max(0, int(float(speech_seconds or 0) * coverage_ratio * rate))
+
+
+def _worker_tone_line(settings: dict = None) -> str:
+    tone = str((settings or {}).get("tone") or "natural")
+    return {
+        "natural": "သဘာဝကျသော လေသံဖြင့် ရေးပါ။",
+        "dramatic": "ဒရာမာဆန်ဆန်၊ တင်းမာမှုရှိသော လေသံဖြင့် ရေးပါ။",
+        "emotional": "စိတ်လှုပ်ရှားဖွယ်၊ ခံစားချက်ပြင်းသော လေသံဖြင့် ရေးပါ။",
+        "calm": "အေးအေးဆေးဆေး၊ တည်ငြိမ်သော လေသံဖြင့် ရေးပါ။",
+    }.get(tone, "သဘာဝကျသော လေသံဖြင့် ရေးပါ။")
+
+
+async def _worker_gemini_json(prompt: str, client=None):
+    """Ask Gemini for JSON, trying the same preferred models as the direct bot."""
+    if client is None:
+        if not GEMINI_API_KEY:
+            raise WorkerJobError("GEMINI_API_KEY is not configured")
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+    last_error = None
+    for model in PREFERRED_MODELS:
+        try:
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            raw = str(getattr(response, "text", "") or "").strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+                raw = re.sub(r"\s*```$", "", raw).strip()
+            data = json.loads(raw)
+            if isinstance(data, (dict, list)):
+                return data
+            raise ValueError("Gemini did not return a JSON object/list")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
+    raise WorkerJobError(f"Gemini rewrite failed: {last_error}")
+
+
+def _parse_rewrite_response(data, allowed_group_ids) -> tuple[dict, str, str]:
+    allowed = {int(gid) for gid in (allowed_group_ids or [])}
+    protagonist = ""
+    pronoun = ""
+    raw_scenes = []
+    if isinstance(data, dict):
+        protagonist = str(data.get("protagonist") or "").strip()
+        p = str(data.get("pronoun") or "").strip()
+        if p in ("ကျွန်တော်", "ကျွန်မ"):
+            pronoun = p
+        if isinstance(data.get("scenes"), list):
+            raw_scenes = data["scenes"]
+    elif isinstance(data, list):
+        raw_scenes = data
+
+    scenes = {}
+    for item in raw_scenes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            gid = int(item.get("group_id"))
+        except (TypeError, ValueError):
+            continue
+        if gid not in allowed:
+            continue
+        text = str(item.get("burmese") or item.get("text") or "").strip()
+        if text:
+            scenes[gid] = text
+    return scenes, protagonist, pronoun
+
+
+def _rewrite_prompt(
+    groups: list,
+    target_by_group: dict,
+    story_context: dict,
+    settings: dict,
+    existing_by_group: dict = None,
+    expand: bool = False,
+) -> str:
+    st = {**DEFAULT_SETTINGS, **(settings or {})}
+    context = story_context or {}
+    pronoun = str(context.get("pronoun") or "").strip()
+    protagonist = str(context.get("protagonist") or "").strip()
+    voice_pronoun = "ကျွန်မ" if st.get("voice") in ("Kore", "Aoede") else "ကျွန်တော်"
+    if pronoun in ("ကျွန်တော်", "ကျွန်မ"):
+        other = "ကျွန်မ" if pronoun == "ကျွန်တော်" else "ကျွန်တော်"
+        pronoun_line = (
+            f"ပြောနေသူသည် «{pronoun}» ကိုသာ ဆက်တိုက်သုံးပါ။ "
+            f"ကိုယ့်ကို «{other}» ဟု လုံးဝမပြောင်းပါနှင့်။"
+        )
+    else:
+        pronoun_line = (
+            "အဓိကဇာတ်ကောင်က အမျိုးသားဖြစ်လျှင် «ကျွန်တော်»၊ အမျိုးသမီးဖြစ်လျှင် «ကျွန်မ» သုံးပါ။ "
+            f"ကျား/မကို transcript မှ မသေချာလျှင် «{voice_pronoun}» သုံးပြီး မပြောင်းပါနှင့်။"
+        )
+
+    existing = {}
+    for key, value in (existing_by_group or {}).items():
+        try:
+            existing[int(key)] = str(value or "").strip()
+        except (TypeError, ValueError):
+            continue
+
+    payload_groups = []
+    for group in groups or []:
+        gid = int(group.get("group_id") or 0)
+        item = {
+            "group_id": gid,
+            "start": group.get("start"),
+            "end": group.get("end"),
+            "source_segment_ids": group.get("source_segment_ids") or [],
+            "target_burmese_chars": int(target_by_group.get(gid) or 0),
+            "source_text": str(group.get("source_text") or ""),
+        }
+        if expand and existing.get(gid):
+            item["existing_burmese"] = existing[gid]
+        payload_groups.append(item)
+
+    task_line = (
+        "existing_burmese ကို အခြေခံပြီး source_text ထဲက ကျန်နေသေးသော အချက်များဖြင့် ချဲ့ရေးပါ။"
+        if expand
+        else "source_text ကို Burmese ပထမလူ ဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပါ။"
+    )
+    context_json = json.dumps({
+        "protagonist": protagonist,
+        "pronoun": pronoun,
+        "characters": context.get("characters") or [],
+        "previous_summary": str(context.get("summary") or "")[-2500:],
+        "last_scene": str(context.get("last_scene") or "")[-1000:],
+    }, ensure_ascii=False)
+    groups_json = json.dumps(payload_groups, ensure_ascii=False)
+
+    return f"""
+သင်သည် Whisper transcript ကို မြန်မာဘာသာဖြင့် အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောပြသလို ပထမလူဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပေးရမည်။
+
+အဓိကတာဝန်: {task_line}
+လေသံ: {_worker_tone_line(st)}
+နာမ်စား: {pronoun_line}
+
+လိုက်နာရမည်များ:
+- Output သည် Burmese သာ ဖြစ်ရမည်။ မူရင်းဘာသာစကားကို ဘာသာပြန်ပါ။
+- အကျဉ်းချုပ် မဟုတ်ပါ။ Group တစ်ခုစီရှိ အကြောင်းအရာအားလုံးနီးပါးကို အပြည့်အဝ ပြန်ပြောပါ။ Target coverage = {st.get('coverage')}% ဖြစ်သည်။
+- Input group တစ်ခုအတွက် output scene တစ်ခုတည်းသာ ထုတ်ပါ။ group_id ကို အတိအကျ ကူးထည့်ပါ။ Group များကို မပေါင်းပါနှင့်၊ မခွဲပါနှင့်၊ အစဉ်မပြောင်းပါနှင့်။
+- start/end သို့မဟုတ် source_segment_ids ကို ကိုယ်တိုင် မဖန်တီးပါနှင့်။ ၎င်းတို့ကို worker က ထည့်ပေးမည်။
+- Scene တစ်ခုစီအတွက် target_burmese_chars ပမာဏခန့် ရေးပါ။ မလုံလောက်ပါက source_text ထဲရှိ အရာ၊ နေရာ၊ အကြောင်းရင်း၊ စကားပြောချက်နှင့် အကျိုးဆက်များကို ပိုမိုပြည့်စုံအောင်ရေးပါ။
+- ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို နာမည် သို့မဟုတ် «သူ/သူမ» ဟု မညွှန်းပါနှင့်။
+- အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «အဲဒီတုန်းက ကျွန်တော်/ကျွန်မ မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှသိလိုက်ရတာက…» ပုံစံဖြင့် retrospective ရေးပါ။
+- Transcript တွင် မပါသော အဖြစ်အပျက်၊ အမည်၊ အကြောင်းရင်းများကို မတီထွင်ပါနှင့်။
+- Dialogue ၏ အဓိပ္ပာယ်နှင့် ပြောသူ/ကြားသူကို ထိန်းသိမ်းပါ။ တိုက်ရိုက်စာလုံးချင်း ကူးနိုင်သလောက် တိကျကျ Burmese အဖြစ် ပြန်ရေးပါ။
+- Visual-only အချက်ကို transcript မှ မသိနိုင်လျှင် မှန်းမရေးပါနှင့်။
+- Scene text ထဲတွင် timestamp, heading, bullet, quotation label သို့မဟုတ် ရှင်းလင်းချက် မထည့်ပါနှင့်။ TTS ဖတ်မည့် စာသားသာရေးပါ။
+
+ယခင်ဇာတ်လမ်းအခြေအနေ:
+{context_json}
+
+ပြန်ရေးရမည့် transcript groups:
+{groups_json}
+
+JSON ကိုသာ အောက်ပါပုံစံဖြင့် ပြန်ပေးပါ:
+{{
+  "protagonist": "အဓိကဇာတ်ကောင်အမည် သို့မဟုတ် ကွက်လပ်",
+  "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ",
+  "scenes": [
+    {{"group_id": 1, "burmese": "TTS ဖတ်မည့် Burmese ပထမလူစာသား"}}
+  ]
+}}
+""".strip()
+
+
+async def _worker_stage_rewrite(state: dict, tracker=None):
+    _worker_check_cancelled(state)
+    if not GEMINI_API_KEY:
+        raise WorkerJobError("GEMINI_API_KEY is not configured")
+    settings = {**DEFAULT_SETTINGS, **(state.get("settings") or {})}
+    settings["pov"] = "first"
+
+    transcript_rel = (state.get("artifacts") or {}).get("transcript") or "transcript.json"
+    transcript_path = _worker_path(state, transcript_rel)
+    if not os.path.exists(transcript_path):
+        raise WorkerJobError("transcript.json is missing; run transcribe first")
+    with open(transcript_path, encoding="utf-8") as f:
+        transcript = json.load(f)
+
+    segments = transcript.get("segments") or []
+    groups = _group_transcript_segments(segments)
+    if not groups:
+        raise WorkerJobError("transcript contains no usable timestamped segments")
+
+    speech_seconds = sum(float(g.get("speech_seconds") or 0) for g in groups)
+    if speech_seconds <= 0:
+        speech_seconds = float(transcript.get("speech_duration_seconds") or 0)
+    target_chars = _rewrite_target_chars_for_speech(speech_seconds, settings)
+
+    if speech_seconds > 0:
+        minimum = 35 if target_chars >= 35 * len(groups) else max(1, target_chars // len(groups))
+        target_by_group = {
+            int(g["group_id"]): max(
+                minimum,
+                int(round(target_chars * float(g.get("speech_seconds") or 0) / speech_seconds)),
+            )
+            for g in groups
+        }
+    else:
+        target_by_group = {int(g["group_id"]): 80 for g in groups}
+
+    await _worker_progress(state, WORKER_STAGE_LABELS["rewrite"], tracker)
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    story_context = {
+        "characters": [], "summary": "", "last_scene": "",
+        "protagonist": "", "pronoun": "",
+    }
+    scenes_by_group: dict[int, str] = {}
+    batches = _batch_transcript_groups(groups)
+
+    for batch_index, batch in enumerate(batches, start=1):
+        _worker_check_cancelled(state)
+        allowed = [int(g["group_id"]) for g in batch]
+        prompt = _rewrite_prompt(
+            batch, target_by_group, story_context, settings,
+            existing_by_group=scenes_by_group,
+        )
+        data = await _worker_gemini_json(prompt, client)
+        parsed, response_protagonist, response_pronoun = _parse_rewrite_response(data, allowed)
+        for gid, text in parsed.items():
+            if text.strip():
+                scenes_by_group[int(gid)] = text.strip()
+
+        detected_pronoun = _detect_pronoun(" ".join(parsed.values()))
+        if response_protagonist and not story_context.get("protagonist"):
+            story_context["protagonist"] = response_protagonist
+        if not story_context.get("pronoun"):
+            story_context["pronoun"] = detected_pronoun or response_pronoun
+
+        batch_scenes = [
+            {"burmese": scenes_by_group[int(g["group_id"])]}
+            for g in batch
+            if scenes_by_group.get(int(g["group_id"]))
+        ]
+        if batch_scenes:
+            try:
+                summary = await extract_story_summary(batch_scenes, client)
+            except Exception as e:
+                logger.warning(f"Worker story summary update failed: {e}")
+                summary = {}
+            if isinstance(summary, dict) and summary:
+                merged = dict(story_context)
+                merged.update(summary)
+                if story_context.get("protagonist"):
+                    merged["protagonist"] = story_context["protagonist"]
+                if story_context.get("pronoun"):
+                    merged["pronoun"] = story_context["pronoun"]
+                story_context = {
+                    "characters": merged.get("characters") or [],
+                    "summary": str(merged.get("summary") or ""),
+                    "last_scene": str(merged.get("last_scene") or ""),
+                    "protagonist": str(merged.get("protagonist") or ""),
+                    "pronoun": str(merged.get("pronoun") or ""),
+                }
+            if not story_context.get("last_scene") and batch_scenes:
+                story_context["last_scene"] = batch_scenes[-1]["burmese"]
+
+        await _worker_progress(
+            state,
+            f"{WORKER_STAGE_LABELS['rewrite']} ({batch_index}/{len(batches)})",
+            tracker,
+        )
+
+    # Retry only the missing groups so coverage can reach the selected target.
+    for _retry_round in range(2):
+        missing = [
+            g for g in groups if not str(scenes_by_group.get(int(g["group_id"])) or "").strip()
+        ]
+        if not missing:
+            break
+        for batch in _batch_transcript_groups(missing):
+            _worker_check_cancelled(state)
+            allowed = [int(g["group_id"]) for g in batch]
+            prompt = _rewrite_prompt(
+                batch, target_by_group, story_context, settings,
+                existing_by_group=scenes_by_group,
+            )
+            data = await _worker_gemini_json(prompt, client)
+            parsed, response_protagonist, response_pronoun = _parse_rewrite_response(data, allowed)
+            for gid, text in parsed.items():
+                if text.strip():
+                    scenes_by_group[int(gid)] = text.strip()
+            if response_protagonist and not story_context.get("protagonist"):
+                story_context["protagonist"] = response_protagonist
+            if not story_context.get("pronoun"):
+                story_context["pronoun"] = (
+                    _detect_pronoun(" ".join(parsed.values())) or response_pronoun
+                )
+
+    # Expand underfilled groups using only omitted facts from their own source.
+    for _topup_round in range(SCRIPT_TOPUP_ATTEMPTS):
+        _worker_check_cancelled(state)
+        total_chars = sum(len(v.strip()) for v in scenes_by_group.values())
+        if total_chars >= target_chars:
+            break
+        candidates = []
+        for group in groups:
+            gid = int(group["group_id"])
+            current_text = str(scenes_by_group.get(gid) or "").strip()
+            wanted = int(target_by_group.get(gid) or 0)
+            if current_text and wanted > 0 and len(current_text) < wanted * 0.98:
+                candidates.append((len(current_text) / wanted, -float(group.get("speech_seconds") or 0), group))
+        if not candidates:
+            break
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        topup_groups = [item[2] for item in candidates[:40]]
+        for batch in _batch_transcript_groups(topup_groups):
+            allowed = [int(g["group_id"]) for g in batch]
+            prompt = _rewrite_prompt(
+                batch, target_by_group, story_context, settings,
+                existing_by_group=scenes_by_group, expand=True,
+            )
+            data = await _worker_gemini_json(prompt, client)
+            parsed, _, _ = _parse_rewrite_response(data, allowed)
+            for gid, new_text in parsed.items():
+                old_text = str(scenes_by_group.get(int(gid)) or "")
+                if len(new_text.strip()) > len(old_text.strip()):
+                    scenes_by_group[int(gid)] = new_text.strip()
+
+    coverage_metrics = _calculate_transcript_coverage(groups, scenes_by_group)
+    total_chars = sum(len(v.strip()) for v in scenes_by_group.values())
+    try:
+        required_ratio = float(settings.get("coverage") or 90) / 100.0
+    except (TypeError, ValueError):
+        required_ratio = 0.90
+    required_ratio = max(0.0, min(1.0, required_ratio))
+    coverage_metrics.update({
+        "required_speech_coverage_ratio": round(required_ratio, 4),
+        "required_speech_coverage_percent": round(required_ratio * 100.0, 2),
+        "target_burmese_chars": int(target_chars),
+        "actual_burmese_chars": int(total_chars),
+        "char_target_ratio": round(total_chars / target_chars, 4) if target_chars else 0.0,
+        "char_target_percent": round(total_chars / target_chars * 100.0, 2) if target_chars else 0.0,
+        "estimated_spoken_seconds": round(
+            total_chars / float(settings.get("rate") or SCRIPT_CHARS_PER_SEC), 3
+        ),
+        "group_count": len(groups),
+        "scene_count": len(scenes_by_group),
+        "language": str(transcript.get("language") or ""),
+    })
+    if not scenes_by_group:
+        raise WorkerJobError("Gemini returned no usable rewritten scenes")
+    if float(coverage_metrics.get("speech_coverage_ratio") or 0) < required_ratio:
+        raise WorkerJobError(
+            "Transcript coverage is below target: "
+            f"{coverage_metrics.get('speech_coverage_percent')}% < {required_ratio * 100:.1f}%"
+        )
+    if total_chars < target_chars:
+        logger.warning(
+            "Worker rewrite char target not fully reached: %s/%s chars; segment coverage %s%%",
+            total_chars, target_chars, coverage_metrics.get("speech_coverage_percent"),
+        )
+
+    scenes = []
+    for group in groups:
+        gid = int(group["group_id"])
+        text = str(scenes_by_group.get(gid) or "").strip()
+        if not text:
+            continue
+        scenes.append({
+            "group_id": gid,
+            "source_segment_ids": [int(x) for x in (group.get("source_segment_ids") or [])],
+            "start": float(group.get("start") or 0),
+            "end": float(group.get("end") or group.get("start") or 0),
+            "speech_seconds": float(group.get("speech_seconds") or 0),
+            "burmese": text,
+        })
+
+    script = {
+        "story_context": story_context,
+        "coverage": coverage_metrics,
+        "target_by_group": {str(k): int(v) for k, v in target_by_group.items()},
+        "groups": groups,
+        "scenes": scenes,
+    }
+    script_path = _worker_path(state, "script.json")
+    with open(script_path, "w", encoding="utf-8") as f:
+        json.dump(script, f, ensure_ascii=False, indent=2)
+
+    state["story_context"] = story_context
+    state.setdefault("artifacts", {})["script"] = "script.json"
+    state.setdefault("metrics", {})["script"] = coverage_metrics
+    _set_worker_stage(state, "rewrite", "done", metrics=coverage_metrics)
+    _save_worker_job(state)
+    await _worker_progress(
+        state,
+        "✅ Script ပြီးပါပြီ — transcript coverage "
+        f"{coverage_metrics.get('speech_coverage_percent', 0):.1f}%, စာလုံး {total_chars} လုံး",
+        tracker,
+    )
+
+
+def _worker_settings(state: dict) -> dict:
+    settings = {**DEFAULT_SETTINGS, **(state.get("settings") or {})}
+    settings["pov"] = "first"
+    return settings
+
+
+def _load_worker_json(state: dict, artifact_key: str, default_name: str) -> dict:
+    relative = (state.get("artifacts") or {}).get(artifact_key) or default_name
+    path = _worker_path(state, str(relative))
+    if not os.path.exists(path):
+        raise WorkerJobError(f"required worker artifact is missing: {relative}")
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise WorkerJobError(f"invalid worker artifact: {relative}")
+    return data
+
+
+def _write_worker_json(state: dict, relative_path: str, data: dict):
+    path = _worker_path(state, relative_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
+
+
+async def _worker_stage_tts(state: dict, tracker=None):
+    _worker_check_cancelled(state)
+    settings = _worker_settings(state)
+    script = _load_worker_json(state, "script", "script.json")
+    scenes = sort_scenes(script.get("scenes") or [])
+    if not scenes:
+        raise WorkerJobError("script.json contains no scenes; run rewrite first")
+
+    await _worker_progress(state, WORKER_STAGE_LABELS["tts"], tracker)
+    clips = await synthesize_tts(scenes, str(state.get("job_dir") or ""), settings)
+    _worker_check_cancelled(state)
+    if clips is None:
+        raise WorkerJobError("Gemini TTS returned no clips")
+    clips = list(clips)
+    if len(clips) < len(scenes):
+        raise WorkerJobError(
+            f"Gemini TTS returned {len(clips)} clips for {len(scenes)} scenes"
+        )
+    clips = clips[:len(scenes)]
+
+    clips_dir = _worker_path(state, "audio_clips")
+    os.makedirs(clips_dir, exist_ok=True)
+    try:
+        pause_seconds = float(settings.get("pause") or 0)
+    except (TypeError, ValueError):
+        pause_seconds = PAUSE_AFTER_SCENE
+    pause_samples = max(0, int(round(pause_seconds * SAMPLE_RATE)))
+    pause_bytes = (np.zeros(pause_samples, dtype="<i2").tobytes() if pause_samples else b"")
+
+    entries = []
+    total_speech_samples = 0
+    silent_count = 0
+    narration_path = _worker_path(state, "narration.wav")
+    with wave.open(narration_path, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(SAMPLE_RATE)
+        for index, (scene, clip) in enumerate(zip(scenes, clips), start=1):
+            arr = np.asarray(clip if clip is not None else [], dtype=np.float32).reshape(-1)
+            pcm = np.clip(arr * 32767.0, -32768, 32767).astype("<i2")
+            filename = f"scene_{index:04d}.pcm"
+            pcm.tofile(os.path.join(clips_dir, filename))
+            max_abs = float(np.max(np.abs(arr))) if arr.size else 0.0
+            silent = bool(arr.size == 0 or max_abs < 0.001)
+            silent_count += int(silent)
+            total_speech_samples += int(arr.size)
+            entries.append({
+                "scene_index": index,
+                "group_id": scene.get("group_id"),
+                "file": f"audio_clips/{filename}",
+                "samples": int(arr.size),
+                "duration_seconds": round(float(arr.size) / SAMPLE_RATE, 6),
+                "silent": silent,
+                "max_abs": round(max_abs, 6),
+            })
+            wav_file.writeframes(pcm.tobytes())
+            if index < len(scenes) and pause_bytes:
+                wav_file.writeframes(pause_bytes)
+
+    if not entries or silent_count == len(entries):
+        raise WorkerJobError("Gemini TTS produced only silent audio")
+    if silent_count > max(1, int(len(entries) * 0.25)):
+        raise WorkerJobError(
+            f"Gemini TTS produced too many silent scenes: {silent_count}/{len(entries)}"
+        )
+
+    narration_seconds = (
+        total_speech_samples / SAMPLE_RATE
+        + pause_seconds * max(0, len(entries) - 1)
+    )
+    source_seconds = float(
+        ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds") or 0
+    )
+    audio_data = {
+        "sample_rate": SAMPLE_RATE,
+        "pause_seconds": pause_seconds,
+        "narration_file": "narration.wav",
+        "clips": entries,
+        "total_speech_seconds": round(total_speech_samples / SAMPLE_RATE, 6),
+        "total_narration_seconds": round(narration_seconds, 6),
+        "silent_scene_count": silent_count,
+        "voice": settings.get("voice"),
+    }
+    _write_worker_json(state, "audio.json", audio_data)
+    metrics = {
+        "scene_count": len(entries),
+        "silent_scene_count": silent_count,
+        "speech_seconds": round(total_speech_samples / SAMPLE_RATE, 3),
+        "narration_seconds": round(narration_seconds, 3),
+        "narration_ratio_of_source": round(
+            narration_seconds / source_seconds, 4
+        ) if source_seconds > 0 else 0.0,
+        "voice": settings.get("voice"),
+    }
+    state.setdefault("artifacts", {})["audio"] = "audio.json"
+    state.setdefault("artifacts", {})["narration"] = "narration.wav"
+    state.setdefault("metrics", {})["audio"] = metrics
+    _set_worker_stage(state, "tts", "done", metrics=metrics)
+    _save_worker_job(state)
+    await _worker_progress(
+        state,
+        f"✅ အသံသွင်းပြီးပါပြီ — {fmt_time(narration_seconds)} ({settings.get('voice')})",
+        tracker,
+    )
+
+
+def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: float, pause_seconds: float = 0.0) -> list:
+    """Build start-aligned video cuts without changing narration speed.
+
+    - If narration is shorter than its source scene, only the beginning of
+      that scene is kept.
+    - If narration is longer, following source footage may be borrowed, but
+      only until the next selected scene starts.
+    - A frozen final frame is used only for any remaining shortage.
+    """
+    if len(scenes) != len(audio_durations):
+        raise WorkerJobError("scene/audio count mismatch while building render plan")
+    source_duration = float(source_duration or 0)
+    if source_duration <= 0:
+        raise WorkerJobError("source duration is unknown")
+    try:
+        pause_seconds = max(0.0, float(pause_seconds or 0))
+    except (TypeError, ValueError):
+        pause_seconds = 0.0
+
+    plan = []
+    output_cursor = 0.0
+    for index, (scene, raw_audio_duration) in enumerate(zip(scenes, audio_durations)):
+        try:
+            start = float(scene.get("start") or 0)
+            end = float(scene.get("end") or start)
+            audio_duration = max(0.0, float(raw_audio_duration or 0))
+        except (TypeError, ValueError, AttributeError) as e:
+            raise WorkerJobError(f"invalid scene timing at index {index + 1}") from e
+
+        start = max(0.0, min(start, max(0.0, source_duration - 0.04)))
+        end = max(start, min(end, source_duration))
+        if index + 1 < len(scenes):
+            try:
+                limit = float(scenes[index + 1].get("start") or source_duration)
+            except (TypeError, ValueError, AttributeError):
+                limit = source_duration
+        else:
+            limit = source_duration
+        limit = max(start, min(float(limit), source_duration))
+
+        pause_after = pause_seconds if index + 1 < len(scenes) else 0.0
+        desired_seconds = audio_duration + pause_after
+        available_seconds = max(0.0, limit - start)
+        input_seconds = min(desired_seconds, available_seconds)
+        if input_seconds <= 0:
+            input_seconds = min(0.04, source_duration)
+            if start + input_seconds > source_duration:
+                start = max(0.0, source_duration - input_seconds)
+        freeze_seconds = max(0.0, desired_seconds - input_seconds)
+        original_scene_seconds = max(0.0, end - start)
+        borrowed_seconds = max(0.0, input_seconds - original_scene_seconds)
+
+        plan.append({
+            "scene_index": index + 1,
+            "group_id": scene.get("group_id"),
+            "source_segment_ids": scene.get("source_segment_ids") or [],
+            "source_start": round(start, 6),
+            "source_end": round(end, 6),
+            "source_limit": round(limit, 6),
+            "narration_seconds": round(audio_duration, 6),
+            "pause_after_seconds": round(pause_after, 6),
+            "desired_output_seconds": round(desired_seconds, 6),
+            "input_seconds": round(input_seconds, 6),
+            "borrowed_seconds": round(borrowed_seconds, 6),
+            "freeze_seconds": round(freeze_seconds, 6),
+            "output_start": round(output_cursor, 6),
+            "output_end": round(output_cursor + desired_seconds, 6),
+        })
+        output_cursor += desired_seconds
+    return plan
+
+
+def _worker_video_filter(out_w: int, out_h: int, settings: dict, freeze_seconds: float = 0.0) -> str:
+    filters = []
+    if settings.get("shield"):
+        filters.extend(["crop=iw*0.96:ih*0.96", "hflip"])
+    filters.extend([
+        "fps=25",
+        f"scale={int(out_w)}:{int(out_h)}:force_original_aspect_ratio=increase:flags=bicubic",
+        f"crop={int(out_w)}:{int(out_h)}",
+    ])
+    if settings.get("color"):
+        filters.append("eq=contrast=1.08:saturation=1.12:gamma=1.02")
+    if float(freeze_seconds or 0) > 0.01:
+        filters.append(f"tpad=stop_mode=clone:stop_duration={float(freeze_seconds):.3f}")
+    filters.append("format=yuv420p")
+    return ",".join(filters)
+
+
+async def _worker_stage_render(state: dict, tracker=None):
+    _worker_check_cancelled(state)
+    settings = _worker_settings(state)
+    script = _load_worker_json(state, "script", "script.json")
+    audio = _load_worker_json(state, "audio", "audio.json")
+    scenes = sort_scenes(script.get("scenes") or [])
+    clips = sorted(
+        [c for c in (audio.get("clips") or []) if isinstance(c, dict)],
+        key=lambda c: int(c.get("scene_index") or 0),
+    )
+    if not scenes:
+        raise WorkerJobError("script.json contains no scenes")
+    if len(clips) != len(scenes):
+        raise WorkerJobError(f"scene/audio count mismatch: {len(scenes)} scenes, {len(clips)} clips")
+
+    source_rel = (state.get("artifacts") or {}).get("source") or "source.mp4"
+    source_path = _worker_path(state, str(source_rel))
+    narration_rel = (state.get("artifacts") or {}).get("narration") or audio.get("narration_file") or "narration.wav"
+    narration_path = _worker_path(state, str(narration_rel))
+    if not os.path.exists(source_path):
+        raise WorkerJobError("downloaded source.mp4 is missing")
+    if not os.path.exists(narration_path):
+        raise WorkerJobError("narration.wav is missing")
+
+    source_duration, src_w, src_h = probe_video_info(source_path)
+    if source_duration <= 0:
+        source_duration = float(
+            ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds") or 0
+        )
+    if source_duration <= 0:
+        raise WorkerJobError("could not determine source video duration")
+    out_w, out_h = compute_output_dims(src_w, src_h, int(settings.get("resolution") or 1280))
+    audio_durations = [float(c.get("duration_seconds") or 0) for c in clips]
+    try:
+        pause_seconds = float(audio.get("pause_seconds", settings.get("pause") or 0) or 0)
+    except (TypeError, ValueError):
+        pause_seconds = 0.0
+    plan = _build_alignment_plan(scenes, audio_durations, source_duration, pause_seconds)
+    _write_worker_json(state, "render_plan.json", {"items": plan})
+    state.setdefault("artifacts", {})["render_plan"] = "render_plan.json"
+    _save_worker_job(state)
+
+    await _worker_progress(state, WORKER_STAGE_LABELS["render"], tracker)
+    segments_dir = _worker_path(state, "render_segments")
+    os.makedirs(segments_dir, exist_ok=True)
+    segment_files = []
+
+    async with video_render_semaphore:
+        for index, item in enumerate(plan, start=1):
+            _worker_check_cancelled(state)
+            segment_path = os.path.join(segments_dir, f"segment_{index:04d}.mp4")
+            ffmpeg_filter = _worker_video_filter(
+                out_w, out_h, settings, float(item.get("freeze_seconds") or 0)
+            )
+            result = await asyncio.to_thread(run_cmd, [
+                FFMPEG_BIN, "-y",
+                "-ss", f"{float(item.get('source_start') or 0):.3f}",
+                "-i", source_path,
+                "-t", f"{max(0.04, float(item.get('input_seconds') or 0.04)):.3f}",
+                "-an",
+                "-vf", ffmpeg_filter,
+                "-c:v", "libx264",
+                "-preset", "superfast" if settings.get("fast_mode") else "ultrafast",
+                "-crf", str(int(settings.get("quality") or 23)),
+                segment_path,
+            ], 900)
+            if result.returncode != 0 or not os.path.exists(segment_path) or os.path.getsize(segment_path) <= 0:
+                detail = result.stderr.decode(errors="ignore")[-600:]
+                raise WorkerJobError(f"render segment {index} failed: {detail}")
+            segment_files.append(segment_path)
+            if index == 1 or index == len(plan) or index % 10 == 0:
+                pct = int(index / len(plan) * 100) if plan else 100
+                await _worker_progress(
+                    state,
+                    f"{WORKER_STAGE_LABELS['render']} ({index}/{len(plan)})\n📊 {fmt_progress_bar(pct)}",
+                    tracker,
+                )
+
+        _worker_check_cancelled(state)
+        concat_path = _worker_path(state, "render_concat.txt")
+        with open(concat_path, "w", encoding="utf-8") as f:
+            for segment in segment_files:
+                escaped = segment.replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+        video_only_path = _worker_path(state, "video_only.mp4")
+        result = await asyncio.to_thread(run_cmd, [
+            FFMPEG_BIN, "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_path,
+            "-c", "copy",
+            video_only_path,
+        ], 900)
+        if result.returncode != 0 or not os.path.exists(video_only_path) or os.path.getsize(video_only_path) <= 0:
+            detail = result.stderr.decode(errors="ignore")[-600:]
+            raise WorkerJobError(f"video concat failed: {detail}")
+
+        _worker_check_cancelled(state)
+        final_path = _worker_path(state, "final.mp4")
+        result = await asyncio.to_thread(run_cmd, [
+            FFMPEG_BIN, "-y",
+            "-i", video_only_path,
+            "-i", narration_path,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            final_path,
+        ], 900)
+        if result.returncode != 0 or not os.path.exists(final_path) or os.path.getsize(final_path) <= 0:
+            detail = result.stderr.decode(errors="ignore")[-600:]
+            raise WorkerJobError(f"final mux failed: {detail}")
+
+    final_duration, final_w, final_h = probe_video_info(final_path)
+    expected_duration = sum(float(item.get("desired_output_seconds") or 0) for item in plan)
+    metrics = {
+        "source_duration_seconds": round(float(source_duration), 3),
+        "expected_duration_seconds": round(float(expected_duration), 3),
+        "final_duration_seconds": round(float(final_duration), 3),
+        "final_ratio_of_source": round(final_duration / source_duration, 4) if source_duration else 0.0,
+        "size_bytes": os.path.getsize(final_path),
+        "size_mb": round(os.path.getsize(final_path) / (1024 * 1024), 2),
+        "width": int(final_w or out_w),
+        "height": int(final_h or out_h),
+        "segment_count": len(plan),
+        "borrowed_seconds": round(sum(float(i.get("borrowed_seconds") or 0) for i in plan), 3),
+        "freeze_seconds": round(sum(float(i.get("freeze_seconds") or 0) for i in plan), 3),
+        "removed_source_seconds": round(
+            max(0.0, source_duration - sum(float(i.get("input_seconds") or 0) for i in plan)), 3
+        ),
+        "audio_alignment_filters_used": [],
+    }
+    state.setdefault("artifacts", {})["final_video"] = "final.mp4"
+    state.setdefault("artifacts", {})["render_plan"] = "render_plan.json"
+    state.setdefault("metrics", {})["render"] = metrics
+    _set_worker_stage(state, "render", "done", metrics=metrics)
+    _save_worker_job(state)
+    await _worker_progress(
+        state,
+        f"✅ Final video ပြီးပါပြီ — {fmt_time(final_duration)}, {metrics['size_mb']:.1f}MB",
+        tracker,
+    )
+
+
+async def _worker_stage_deliver(state: dict, tracker=None):
+    _worker_check_cancelled(state)
+    settings = _worker_settings(state)
+    chat_id = int(state.get("chat_id") or 0)
+    if not chat_id:
+        raise WorkerJobError("chat_id is missing")
+    final_rel = (state.get("artifacts") or {}).get("final_video") or "final.mp4"
+    final_path = _worker_path(state, str(final_rel))
+    if not os.path.exists(final_path) or os.path.getsize(final_path) <= 0:
+        raise WorkerJobError("final.mp4 is missing; run render first")
+
+    await _worker_progress(state, WORKER_STAGE_LABELS["deliver"], tracker)
+    final_duration, _, _ = probe_video_info(final_path)
+    if settings.get("split_tg", True):
+        parts = await split_for_telegram(final_path, str(state.get("job_dir") or ""))
+    else:
+        parts = [final_path]
+    if not parts:
+        raise WorkerJobError("could not prepare final video for Telegram")
+    for part in parts:
+        if not os.path.exists(part) or os.path.getsize(part) <= 0:
+            raise WorkerJobError("a Telegram delivery part is missing or empty")
+        if os.path.getsize(part) > MAX_TG_BYTES:
+            raise WorkerJobError(
+                "a final video part still exceeds the Telegram limit; "
+                "enable Telegram splitting or lower the output settings"
+            )
+
+    for index, part in enumerate(parts, start=1):
+        _worker_check_cancelled(state)
+        caption = ""
+        if settings.get("caption", True):
+            caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_duration)})"
+            if len(parts) > 1:
+                caption += f" - အပိုင်း {index}/{len(parts)}"
+        result = await tg_upload_media(
+            "sendVideo",
+            {"chat_id": str(chat_id), "caption": caption},
+            "video",
+            f"recap_{index}.mp4",
+            part,
+            "video/mp4",
+        )
+        if not (result or {}).get("ok"):
+            raise WorkerJobError(f"Telegram upload failed for part {index}/{len(parts)}")
+        await _worker_progress(
+            state,
+            f"{WORKER_STAGE_LABELS['deliver']} ({index}/{len(parts)})",
+            tracker,
+        )
+
+    metrics = {
+        "part_count": len(parts),
+        "part_sizes_bytes": [os.path.getsize(part) for part in parts],
+        "final_duration_seconds": round(float(final_duration), 3),
+    }
+    state.setdefault("artifacts", {})["delivery_parts"] = [
+        os.path.relpath(part, str(state.get("job_dir") or "")) for part in parts
+    ]
+    state.setdefault("metrics", {})["delivery"] = metrics
+    _set_worker_stage(state, "deliver", "done", metrics=metrics)
+    _save_worker_job(state)
+
+    status_id = state.get("status_message_id")
+    if status_id:
+        try:
+            await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": int(status_id)})
+        except Exception:
+            pass
+    if settings.get("notify", True):
+        await send_text(
+            chat_id,
+            f"✅ <b>Recap ပြီးပါပြီ!</b> ({fmt_time(final_duration)})\n"
+            f"🎯 Script {settings.get('coverage')}% · 🎙️ {settings.get('voice')}",
+            reply_markup=main_menu_keyboard(chat_id),
+        )
+
+
+async def _worker_terminal(state: dict, status: str, error: str = ""):
+    state["status"] = status
+    state["current_stage"] = ""
+    if error:
+        state["error"] = error[:2000]
+    elif status == "delivered":
+        state["error"] = ""
+
+    stat_field = {
+        "delivered": "done",
+        "failed": "failed",
+        "cancelled": "cancelled",
+    }.get(status)
+    if stat_field and not state.get("terminal_stat_counted"):
+        state["terminal_stat_counted"] = True
+        try:
+            bump_stat(int(state.get("chat_id") or 0), stat_field)
+        except Exception as e:
+            logger.warning(f"worker stat update failed: {e}")
+
+    _clear_worker_active(state)
+    _save_worker_job(state)
+
+    if status in ("failed", "cancelled"):
+        try:
+            chat_id = int(state.get("chat_id") or 0)
+            status_id = state.get("status_message_id")
+            if chat_id and status_id:
+                message = (
+                    "🛑 အလုပ်ကို ရပ်လိုက်ပါပြီ။"
+                    if status == "cancelled"
+                    else f"❌ အမှား: {(error or state.get('error') or 'worker failed')[:300]}"
+                )
+                await edit_text(
+                    chat_id,
+                    int(status_id),
+                    message,
+                    reply_markup=main_menu_keyboard(chat_id),
+                )
+        except Exception as e:
+            logger.warning(f"worker terminal Telegram update failed: {e}")
+
+
+def _worker_stage_function(stage: str):
+    return {
+        "download": _worker_stage_download,
+        "transcribe": _worker_stage_transcribe,
+        "rewrite": _worker_stage_rewrite,
+        "tts": _worker_stage_tts,
+        "render": _worker_stage_render,
+        "deliver": _worker_stage_deliver,
+    }.get(stage)
+
+
+async def _run_worker_stage(job_id: str, stage: str):
+    current_task = asyncio.current_task()
+    try:
+        async with WORKER_STAGE_SEMAPHORE:
+            state = _load_worker_job(job_id)
+            tracker = _worker_tracker(state)
+            stage_info = (state.get("stages") or {}).get(stage) or {}
+            if stage_info.get("status") == "done":
+                return _public_worker_job(state)
+
+            stage_function = _worker_stage_function(stage)
+            if stage_function is None:
+                raise WorkerJobError(f"unknown worker stage: {stage}")
+
+            state["status"] = "running"
+            state["current_stage"] = stage
+            state["error"] = ""
+            info = state.setdefault("stages", _default_stage_map()).setdefault(stage, {})
+            if info.get("status") != "running":
+                info["status"] = "running"
+                info["started_at"] = _worker_now()
+                info["finished_at"] = ""
+                info["error"] = ""
+            _save_worker_job(state)
+
+            try:
+                _worker_check_cancelled(state)
+                await stage_function(state, tracker)
+                _worker_check_cancelled(state)
+
+                # Real stage functions mark themselves done with metrics.
+                # This also makes small test doubles behave correctly.
+                current_info = (state.get("stages") or {}).get(stage) or {}
+                if current_info.get("status") != "done":
+                    current_info["status"] = "done"
+                    current_info["finished_at"] = _worker_now()
+                    current_info["error"] = ""
+                    state.setdefault("stages", {})[stage] = current_info
+
+                state["current_stage"] = ""
+                if stage == "deliver":
+                    await _worker_terminal(state, "delivered")
+                else:
+                    state["status"] = "stage_done"
+                    _save_worker_job(state)
+                return _public_worker_job(state)
+            except WorkerCancelled:
+                _set_worker_stage(state, stage, "cancelled", error="cancelled")
+                await _worker_terminal(state, "cancelled", "cancelled")
+                return _public_worker_job(state)
+            except asyncio.CancelledError:
+                _set_worker_stage(state, stage, "cancelled", error="cancelled")
+                await _worker_terminal(state, "cancelled", "cancelled")
+                raise
+            except Exception as e:
+                logger.exception(f"Worker stage failed: job={job_id} stage={stage}")
+                message = f"{type(e).__name__}: {e}"
+                _set_worker_stage(state, stage, "failed", error=message)
+                await _worker_terminal(state, "failed", message)
+                return _public_worker_job(state)
+    finally:
+        if WORKER_TASKS.get(job_id) is current_task:
+            WORKER_TASKS.pop(job_id, None)
+
+
+async def _forward_job_to_n8n(state: dict) -> bool:
+    if not N8N_WEBHOOK_URL:
+        return False
+    payload = {
+        "job_id": state.get("job_id"),
+        "chat_id": state.get("chat_id"),
+        "reply_msg_id": state.get("reply_msg_id"),
+        "status_message_id": state.get("status_message_id"),
+        "url": state.get("url"),
+        "worker_base_url": RENDER_EXTERNAL_URL.rstrip("/"),
+        "create_status_message": not bool(state.get("status_message_id")),
+        "settings": state.get("settings") or {},
+    }
+    headers = {"Content-Type": "application/json"}
+    if N8N_WEBHOOK_SECRET:
+        headers["X-N8N-Secret"] = N8N_WEBHOOK_SECRET
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(N8N_WEBHOOK_URL, headers=headers, json=payload)
+        if 200 <= response.status_code < 300:
+            return True
+        logger.warning(
+            "n8n webhook rejected job %s: HTTP %s %s",
+            state.get("job_id"), response.status_code, response.text[:500],
+        )
+    except Exception as e:
+        logger.warning(f"n8n webhook forward failed for {state.get('job_id')}: {e}")
+    return False
 
 
 async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
@@ -1335,6 +3111,55 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
         reply_to=reply_msg_id,
         reply_markup={"inline_keyboard": [[btn("🛑 ဒီအလုပ်ကို ရပ်မယ်", "menu:cancel")]]},
     )
+
+    # Optional n8n orchestration.  The Telegram webhook/menu/status remain
+    # here; n8n only calls this service's authenticated stage endpoints.
+    # If forwarding fails, clean only the worker record and continue with
+    # the unchanged direct pipeline below (ACTIVE_JOBS/job_id are kept).
+    if PIPELINE_MODE == "n8n" and N8N_WEBHOOK_URL:
+        n8n_tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
+        forwarded = False
+        try:
+            async with WORKER_JOB_LOCK:
+                worker_state = _create_worker_job(
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    url=url,
+                    reply_msg_id=reply_msg_id,
+                    status_message_id=status_id,
+                    settings_override=job_settings,
+                )
+            await n8n_tracker.update(
+                "🤖 n8n workflow ဆီ ပို့နေပါသည်...",
+                force=True,
+            )
+            forwarded = await _forward_job_to_n8n(worker_state)
+            if forwarded:
+                return
+            logger.warning(f"n8n did not accept job {job_id}; using direct pipeline")
+            await n8n_tracker.update(
+                "⚠️ n8n မရသေးလို့ မူလလုပ်ငန်းစဉ်ဖြင့် ဆက်လုပ်ပါမည်...",
+                force=True,
+            )
+        except Exception as e:
+            logger.warning(f"n8n handoff failed for {job_id}, using direct pipeline: {e}")
+            try:
+                await n8n_tracker.update(
+                    "⚠️ n8n မရသေးလို့ မူလလုပ်ငန်းစဉ်ဖြင့် ဆက်လုပ်ပါမည်...",
+                    force=True,
+                )
+            except Exception:
+                pass
+
+        was_cancelled = job_id in CANCELLED_JOBS
+        try:
+            _delete_worker_job_record(job_id, clear_active=False)
+        except Exception as e:
+            logger.warning(f"failed to remove unforwarded worker record {job_id}: {e}")
+        ACTIVE_JOBS[chat_id] = job_id
+        if was_cancelled:
+            CANCELLED_JOBS.add(job_id)
+
     work_dir = tempfile.mkdtemp(prefix="vid_", dir=WORK_ROOT)
     tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
 
@@ -1632,7 +3457,7 @@ async def process_admin_update(update: dict):
 app = FastAPI()
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.0-new-code-button-menu"
+BUILD_VERSION = "v3.1-n8n-worker"
 BUILD_FEATURES = 20
 
 
@@ -1643,12 +3468,346 @@ async def root():
         "version": BUILD_VERSION,
         "features": BUILD_FEATURES,
         "status": "online",
+        "pipeline_mode": PIPELINE_MODE,
+        "worker_api_configured": bool(WORKER_API_KEY),
+        "whisper_configured": bool(WHISPER_API_KEY),
+        "whisper_model": WHISPER_MODEL,
+        "n8n_webhook_configured": bool(N8N_WEBHOOK_URL),
     })
 
 
 @app.get("/health")
 async def health():
-    return JSONResponse({"ok": True, "app": "rednote-bot", "version": BUILD_VERSION})
+    return JSONResponse({
+        "ok": True,
+        "app": "rednote-bot",
+        "version": BUILD_VERSION,
+        "pipeline_mode": PIPELINE_MODE,
+        "worker_api_configured": bool(WORKER_API_KEY),
+    })
+
+
+# --- Authenticated n8n worker API ------------------------------------
+# These endpoints are intentionally disabled unless WORKER_API_KEY is set.
+# n8n starts one stage, polls GET /api/v1/jobs/{job_id}, and only starts
+# the next stage after the previous one is marked done.
+
+
+def _worker_auth_error(request: Request):
+    if not WORKER_API_KEY:
+        return JSONResponse(
+            {"ok": False, "error": "worker API is not configured"},
+            status_code=503,
+        )
+    supplied = (request.headers.get("x-worker-key") or "").strip()
+    authorization = (request.headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    if not supplied or not hmac.compare_digest(supplied, WORKER_API_KEY):
+        return JSONResponse(
+            {"ok": False, "error": "unauthorized"},
+            status_code=401,
+        )
+    return None
+
+
+def _worker_error_response(message: str, status_code: int = 400):
+    return JSONResponse({"ok": False, "error": str(message)}, status_code=status_code)
+
+
+async def _worker_request_json(request: Request) -> dict:
+    try:
+        data = await request.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _worker_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _worker_public_with_task_state(state: dict) -> dict:
+    public = _public_worker_job(state)
+    task = WORKER_TASKS.get(str(state.get("job_id") or ""))
+    task_alive = bool(task and not task.done())
+    public["task_running"] = task_alive
+    public["stale_running"] = bool(
+        not task_alive
+        and any(
+            (info or {}).get("status") == "running"
+            for info in (state.get("stages") or {}).values()
+        )
+    )
+    return public
+
+
+@app.post("/api/v1/jobs")
+async def worker_create_job(request: Request):
+    auth_error = _worker_auth_error(request)
+    if auth_error:
+        return auth_error
+
+    payload = await _worker_request_json(request)
+    nested_body = payload.get("body")
+    if isinstance(nested_body, dict) and not payload.get("url"):
+        payload = {**nested_body, **{k: v for k, v in payload.items() if k != "body"}}
+
+    job_id = str(payload.get("job_id") or f"j{secrets.token_hex(5)}").strip()
+    settings_override = payload.get("settings") if isinstance(payload.get("settings"), dict) else None
+    try:
+        async with WORKER_JOB_LOCK:
+            state = _create_worker_job(
+                job_id=job_id,
+                chat_id=payload.get("chat_id"),
+                url=str(payload.get("url") or ""),
+                reply_msg_id=payload.get("reply_msg_id"),
+                status_message_id=payload.get("status_message_id"),
+                settings_override=settings_override,
+            )
+    except WorkerJobError as e:
+        message = str(e)
+        status_code = 409 if "already active" in message or "already belongs" in message else 400
+        return _worker_error_response(message, status_code)
+    except Exception as e:
+        logger.exception("worker job create failed")
+        return _worker_error_response(f"{type(e).__name__}: {e}", 500)
+
+    if _worker_bool(payload.get("create_status_message")) and not state.get("status_message_id"):
+        settings = state.get("settings") or get_user_settings(state.get("chat_id"))
+        status_id = await send_text(
+            int(state["chat_id"]),
+            "⚡ Recap စတင်နေပါပြီ...\n"
+            f"🎯 Script: {settings.get('coverage', 90)}% · "
+            f"🎙️ {settings.get('voice', 'Charon')} · 📐 {settings.get('resolution', 1280)}p",
+            reply_to=state.get("reply_msg_id"),
+            reply_markup={"inline_keyboard": [[btn("🛑 ဒီအလုပ်ကို ရပ်မယ်", "menu:cancel")]]},
+        )
+        if status_id:
+            async with WORKER_JOB_LOCK:
+                try:
+                    state = _load_worker_job(job_id)
+                    if not state.get("status_message_id"):
+                        state["status_message_id"] = int(status_id)
+                        _save_worker_job(state)
+                except Exception as e:
+                    logger.warning(f"could not save worker status message id: {e}")
+
+    return JSONResponse(_worker_public_with_task_state(state), status_code=200)
+
+
+@app.get("/api/v1/jobs/{job_id}")
+async def worker_get_job(job_id: str, request: Request):
+    auth_error = _worker_auth_error(request)
+    if auth_error:
+        return auth_error
+    try:
+        state = _load_worker_job(job_id)
+    except WorkerJobError:
+        return _worker_error_response("worker job not found", 404)
+    except Exception as e:
+        logger.exception("worker job load failed")
+        return _worker_error_response(f"{type(e).__name__}: {e}", 500)
+    return JSONResponse(_worker_public_with_task_state(state))
+
+
+@app.post("/api/v1/jobs/{job_id}/stages/{stage}")
+async def worker_start_stage(job_id: str, stage: str, request: Request):
+    auth_error = _worker_auth_error(request)
+    if auth_error:
+        return auth_error
+    if stage not in WORKER_STAGES:
+        return _worker_error_response("unknown worker stage", 404)
+
+    async with WORKER_JOB_LOCK:
+        try:
+            state = _load_worker_job(job_id)
+        except WorkerJobError:
+            return _worker_error_response("worker job not found", 404)
+
+        stage_info = (state.get("stages") or {}).get(stage) or {}
+        if stage_info.get("status") == "done":
+            return JSONResponse(_worker_public_with_task_state(state), status_code=200)
+
+        task = WORKER_TASKS.get(job_id)
+        if task and not task.done():
+            if state.get("current_stage") and state.get("current_stage") != stage:
+                return _worker_error_response(
+                    f"another worker stage is already running: {state.get('current_stage')}",
+                    409,
+                )
+            return JSONResponse(_worker_public_with_task_state(state), status_code=202)
+
+        if state.get("status") in ("delivered", "cancelled"):
+            return _worker_error_response(
+                f"worker job is already {state.get('status')}", 409
+            )
+        if state.get("status") == "failed" and stage_info.get("status") != "failed":
+            return _worker_error_response("worker job is failed", 409)
+        if job_id in CANCELLED_JOBS or state.get("cancel_requested"):
+            return _worker_error_response("worker job cancellation was requested", 409)
+
+        stage_index = WORKER_STAGES.index(stage)
+        incomplete = [
+            previous
+            for previous in WORKER_STAGES[:stage_index]
+            if ((state.get("stages") or {}).get(previous) or {}).get("status") != "done"
+        ]
+        if incomplete:
+            return _worker_error_response(
+                f"previous worker stage is not done: {incomplete[0]}", 409
+            )
+
+        try:
+            chat_id = int(state.get("chat_id") or 0)
+        except (TypeError, ValueError):
+            chat_id = 0
+        active = ACTIVE_JOBS.get(chat_id) if chat_id else None
+        if active and active != job_id:
+            return _worker_error_response(
+                f"another job is already active: {active}", 409
+            )
+
+        # A failed stage may be explicitly restarted.  Its previous final
+        # error/stat remain historical information, but this new attempt
+        # becomes the active one for the chat again.
+        if state.get("status") == "failed":
+            state["terminal_stat_counted"] = False
+        state["cancel_requested"] = False
+        if chat_id:
+            ACTIVE_JOBS[chat_id] = job_id
+        _set_worker_stage(state, stage, "running")
+        state["status"] = "running"
+        state["current_stage"] = stage
+        state["error"] = ""
+        _save_worker_job(state)
+        WORKER_TASKS[job_id] = asyncio.create_task(_run_worker_stage(job_id, stage))
+        return JSONResponse(_worker_public_with_task_state(state), status_code=202)
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+async def worker_cancel_job(job_id: str, request: Request):
+    auth_error = _worker_auth_error(request)
+    if auth_error:
+        return auth_error
+
+    task = None
+    needs_terminal = False
+    async with WORKER_JOB_LOCK:
+        try:
+            state = _load_worker_job(job_id)
+        except WorkerJobError:
+            return _worker_error_response("worker job not found", 404)
+
+        if state.get("status") == "delivered":
+            return JSONResponse(_worker_public_with_task_state(state))
+
+        state["cancel_requested"] = True
+        CANCELLED_JOBS.add(job_id)
+        task = WORKER_TASKS.get(job_id)
+        if task and not task.done():
+            state["status"] = "cancelling"
+            _save_worker_job(state)
+            task.cancel()
+            return JSONResponse(_worker_public_with_task_state(state), status_code=202)
+
+        current_stage = state.get("current_stage") or _next_worker_stage(state)
+        if current_stage:
+            info = (state.get("stages") or {}).get(current_stage) or {}
+            if info.get("status") not in ("done", "cancelled"):
+                _set_worker_stage(state, current_stage, "cancelled", error="cancelled")
+        _save_worker_job(state)
+        needs_terminal = state.get("status") != "cancelled"
+
+    if needs_terminal:
+        await _worker_terminal(state, "cancelled", "cancelled")
+    return JSONResponse(_worker_public_with_task_state(state))
+
+
+@app.post("/api/v1/jobs/{job_id}/fail")
+async def worker_fail_job(job_id: str, request: Request):
+    auth_error = _worker_auth_error(request)
+    if auth_error:
+        return auth_error
+
+    payload = await _worker_request_json(request)
+    reason = str(payload.get("reason") or payload.get("error") or "n8n workflow failed").strip()
+    if not reason:
+        reason = "n8n workflow failed"
+
+    async with WORKER_JOB_LOCK:
+        try:
+            state = _load_worker_job(job_id)
+        except WorkerJobError:
+            return _worker_error_response("worker job not found", 404)
+
+        if state.get("status") == "delivered":
+            return JSONResponse(_worker_public_with_task_state(state))
+
+        task = WORKER_TASKS.get(job_id)
+        if task and not task.done():
+            return _worker_error_response("worker stage is still running", 409)
+
+        failed_stage = state.get("current_stage")
+        if not failed_stage:
+            for name in WORKER_STAGES:
+                if ((state.get("stages") or {}).get(name) or {}).get("status") == "failed":
+                    failed_stage = name
+                    break
+        if failed_stage:
+            info = (state.get("stages") or {}).get(failed_stage) or {}
+            if info.get("status") != "done":
+                _set_worker_stage(state, failed_stage, "failed", error=reason)
+        state["error"] = reason[:2000]
+        _save_worker_job(state)
+
+    await _worker_terminal(state, "failed", reason)
+    return JSONResponse(_worker_public_with_task_state(state))
+
+
+@app.delete("/api/v1/jobs/{job_id}")
+async def worker_cleanup_job(job_id: str, request: Request):
+    auth_error = _worker_auth_error(request)
+    if auth_error:
+        return auth_error
+    if not _is_safe_worker_job_id(job_id):
+        return _worker_error_response("invalid job_id", 400)
+
+    payload = await _worker_request_json(request)
+    force = _worker_bool(payload.get("force")) or _worker_bool(
+        request.query_params.get("force")
+    )
+    task = None
+
+    async with WORKER_JOB_LOCK:
+        try:
+            _load_worker_job(job_id)
+        except WorkerJobError:
+            return JSONResponse({"ok": True, "job_id": job_id, "deleted": False})
+
+        task = WORKER_TASKS.get(job_id)
+        if task and not task.done():
+            if not force:
+                return _worker_error_response("worker stage is still running", 409)
+            CANCELLED_JOBS.add(job_id)
+            task.cancel()
+
+    if task and not task.done():
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async with WORKER_JOB_LOCK:
+        _delete_worker_job_record(job_id, clear_active=True)
+
+    return JSONResponse({"ok": True, "job_id": job_id, "deleted": True})
 
 
 BOT_COMMANDS = [

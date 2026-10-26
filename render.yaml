@@ -15,4 +15,27 @@ services:
         sync: false
       - key: ADMIN_ID
         sync: false
+      # --- Optional n8n orchestration ---------------------------------
+      # မထည့်ရင် PIPELINE_MODE မရှိတဲ့အတွက် direct bot flow ပဲ သုံးမယ်။
+      # n8n ကို အပြည့်အဝစစ်ပြီးမှသာ PIPELINE_MODE=n8n ပြောင်းပါ။
+      - key: PIPELINE_MODE
+        value: direct
+      - key: N8N_WEBHOOK_URL
+        sync: false         # Activated n8n production webhook URL
+      - key: N8N_WEBHOOK_SECRET
+        sync: false         # n8n ဘက်က N8N_WEBHOOK_SECRET နဲ့ အတူတူထားပါ
+      - key: WORKER_API_KEY
+        sync: false         # n8n HTTP node တွေက X-Worker-Key အဖြစ် ပို့မယ့်လျှို့ဝှက်ကုဒ်
+      # Whisper (OpenAI-compatible API) — WHISPER_API_KEY မရှိရင်
+      # OPENAI_API_KEY ကို fallback အဖြစ် သုံးပါတယ်။
+      - key: WHISPER_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: WHISPER_API_BASE
+        value: https://api.openai.com/v1
+      - key: WHISPER_MODEL
+        value: whisper-1
+      - key: WHISPER_CHUNK_SECONDS
+        value: "600"
       # RENDER_EXTERNAL_URL ကို Render က အလိုအလျောက် ပေးပါတယ် (မထည့်ရပါ)
