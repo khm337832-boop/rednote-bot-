@@ -53,8 +53,29 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://rednote-bot-gzd0.onrender.com").strip()
 
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "8430004524").strip() or "8430004524")
-ALLOWED_USER_IDS = {8855067536}
+def _parse_int_env(name: str, default: int) -> int:
+    """Env က ဂဏန်းမဟုတ်ရင် bot မပျက်အောင် default သုံးတယ် (deploy ပျက်ခြင်း ကာကွယ်)."""
+    try:
+        return int((os.environ.get(name, "") or "").strip() or default)
+    except (TypeError, ValueError):
+        logger.warning(f"env {name} ဂဏန်း မဟုတ်ပါ — default {default} သုံးပါမယ်")
+        return default
+
+
+def _parse_id_list_env(name: str) -> set:
+    out = set()
+    for part in (os.environ.get(name, "") or "").replace(";", ",").split(","):
+        part = part.strip()
+        if part:
+            try:
+                out.add(int(part))
+            except ValueError:
+                logger.warning(f"env {name} ထဲက '{part}' ကို ကျော်ပါမယ် (ဂဏန်း မဟုတ်ပါ)")
+    return out
+
+
+ADMIN_ID = _parse_int_env("ADMIN_ID", 8430004524)
+ALLOWED_USER_IDS = {8855067536} | _parse_id_list_env("ALLOWED_IDS")
 
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 45 * 1024 * 1024
@@ -1532,7 +1553,7 @@ async def process_admin_update(update: dict):
 app = FastAPI()
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v2.2-button-menu-20features"
+BUILD_VERSION = "v2.3-button-menu-20features"
 BUILD_FEATURES = 20
 
 
