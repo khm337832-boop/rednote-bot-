@@ -16,7 +16,7 @@ import unicodedata
 import wave
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import numpy as np
@@ -150,7 +150,11 @@ WHISPER_API_KEY = (
     or os.environ.get("OPENAI_API_KEY", "").strip()
 )
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-1").strip() or "whisper-1"
-WHISPER_CHUNK_SECONDS = max(60, _parse_int_env("WHISPER_CHUNK_SECONDS", 600))
+# The whole intake pipeline is built around two-minute source parts, so
+# Whisper audio is never sent in pieces longer than the video segments.
+WHISPER_CHUNK_SECONDS = max(
+    60, min(120, _parse_int_env("WHISPER_CHUNK_SECONDS", 120))
+)
 
 WORKER_STAGES = ("download", "transcribe", "rewrite", "tts", "render", "deliver")
 WORKER_STAGE_LABELS = {
@@ -167,8 +171,17 @@ WORKER_STAGE_SEMAPHORE = asyncio.Semaphore(1)
 
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 45 * 1024 * 1024
-CHUNK_DURATION = 300
+# Product rule: download the complete source first, split it into
+# two-minute parts (last part may be shorter), recap the parts one by one,
+# then join all recap parts back into one final video.  This is fixed for
+# every source duration, e.g. 3 hours -> 90 source parts.
+SOURCE_SEGMENT_SECONDS = 120
+CHUNK_DURATION = SOURCE_SEGMENT_SECONDS
 PAUSE_AFTER_SCENE = 0.20
+TELEGRAM_VIDEO_EXTENSIONS = {
+    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mpeg", ".mpg",
+    ".3gp", ".3g2", ".ts", ".mts", ".m2ts",
+}
 
 # --- Final-duration target (input -> final video) ---
 # The product requirement is about the *actual final video duration*, not
@@ -273,7 +286,7 @@ DEFAULT_SETTINGS = {
     "color": True,         # 9  🎨 အရောင် မြှင့်တင်မှု
     "pause": 0.20,         # 10 ⏸ ခန်းကြား နားချိန် (စက္ကန့်)
     "cut": 8,              # 11 ✂️ ဖြတ်ထုတ်ခွင့် %
-    "chunk": 300,          # 12 📦 အပိုင်းခွဲချိန် (စက္ကန့်)
+    "chunk": SOURCE_SEGMENT_SECONDS,  # 12 📦 မူရင်းကို ၂ မိနစ်စီခွဲ (fixed)
     "rate": 6.5,           # 13 🗣 Script အလျင် (စာလုံး/စက္ကန့်)
     "pov": "first",        # 14 👤 ပြောပြသူ ရှုထောင့်
     "tone": "natural",     # 15 🎭 ဇာတ်ကြောင်း လေသံ
@@ -316,9 +329,9 @@ FEATURES = [
     {"key": "cut", "icon": "✂️", "label": "ဖြတ်ထုတ်ခွင့်", "kind": "cycle",
      "desc": "မလိုတဲ့ အပိုင်း ဖြတ်ထုတ်ခွင့် အများဆုံး %",
      "options": [(0, "လုံးဝ မဖြတ်"), (5, "5%"), (8, "8% ⭐"), (15, "15%")]},
-    {"key": "chunk", "icon": "📦", "label": "အပိုင်းခွဲ အချိန်", "kind": "cycle",
-     "desc": "ရှည်တဲ့ ဗီဒီယိုကို ခွဲလုပ်မည့် အပိုင်းအရှည်",
-     "options": [(180, "3 မိနစ်"), (300, "5 မိနစ် ⭐"), (600, "10 မိနစ်")]},
+    {"key": "chunk", "icon": "📦", "label": "မူရင်းပိုင်းချိန်", "kind": "cycle",
+     "desc": "Source ကို download ပြီးတာနဲ့ အမြဲတမ်း ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်ကာ ပြန်ဆက်သည်",
+     "options": [(SOURCE_SEGMENT_SECONDS, "2 မိနစ် ⭐ (အမြဲတမ်း)")]},
     {"key": "rate", "icon": "🗣️", "label": "Script အလျင် ချိန်ညှိ", "kind": "cycle",
      "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — စာသား ပမာဏ တွက်ရန်",
      "options": [(5.5, "5.5 နှေး"), (6.5, "6.5 ⭐"), (7.5, "7.5 မြန်")]},
@@ -336,15 +349,16 @@ FEATURES = [
      "desc": "အလုပ်ပြီးရင် သီးသန့် အကြောင်းကြား စာပို့ခြင်း"},
     {"key": "fast_mode", "icon": "⚡", "label": "မြန်ဆန်မုဒ်", "kind": "toggle",
      "desc": "Render preset ကို superfast ပြောင်းပြီး မြန်မြန် ထုတ်ခြင်း"},
-    {"key": "auto_start", "icon": "🚀", "label": "Link တန်း စ", "kind": "toggle",
-     "desc": "Link ပို့လိုက်တာနဲ့ မေးမနေဘဲ တန်းစခြင်း (Off ဆိုရင် အတည်ပြု ခလုတ် ပြမယ်)"},
+    {"key": "auto_start", "icon": "🚀", "label": "Video/Link တန်းစ", "kind": "toggle",
+     "desc": "Video file သို့မဟုတ် link ပို့လိုက်တာနဲ့ မေးမနေဘဲ တန်းစခြင်း (Off ဆိုရင် အတည်ပြု ခလုတ် ပြမယ်)"},
 ]
 FEATURE_BY_KEY = {f["key"]: f for f in FEATURES}
 
 SETTINGS_FILE = os.path.join(WORK_ROOT, "bot_settings.json")
 _settings_lock = asyncio.Lock()
 ACTIVE_JOBS: dict = {}          # chat_id -> job_id
-PENDING_LINKS: dict = {}        # chat_id -> url (auto_start Off က confirm စောင့်နေတာ)
+PENDING_LINKS: dict = {}        # legacy chat_id -> url (confirm စောင့်နေတာ)
+PENDING_INPUTS: dict = {}       # chat_id -> source spec (link or Telegram video)
 JOB_STATS: dict = {}            # chat_id -> {"done":..,"failed":..,"cancelled":..}
 
 
@@ -515,28 +529,92 @@ def persistent_menu_keyboard() -> dict:
         ],
         "resize_keyboard": True,
         "is_persistent": True,
-        "input_field_placeholder": "ဗီဒီယို link ပို့ပါ…",
+        "input_field_placeholder": "ဗီဒီယို သို့မဟုတ် link ပို့ပါ…",
     }
 
 
 MAIN_MENU_TEXT = (
     "🎬 <b>RedNote Recap Bot</b>\n"
     "━━━━━━━━━━━━━━━\n"
-    "ဗီဒီယို link ပို့လိုက်တာနဲ့ မြန်မာ Recap ဗီဒီယို လုပ်ပေးပါတယ်။\n\n"
+    "Video file သို့မဟုတ် RedNote/video link ပို့လိုက်တာနဲ့ မြန်မာ Recap "
+    "ဗီဒီယို လုပ်ပေးပါတယ်။\n\n"
     "👇 ခလုတ်လေးတွေ နှိပ်ပြီး သုံးနိုင်ပါတယ်\n"
-    "🎬 <b>Recap စတင်မယ်</b> — link ပို့ဖို့\n"
+    "🎬 <b>Recap စတင်မယ်</b> — video/link ပို့ဖို့\n"
     "⚙️ <b>ဆက်တင်များ</b> — feature ၂၀ လုံး ချိန်ညှိရန်\n"
     "🛑 <b>ရပ်မယ်</b> — လုပ်နေတဲ့ အလုပ် ပယ်ဖျက်ရန်"
 )
 
+
+def start_features_text(chat_id=None) -> str:
+    """Full plain-language explanation shown when the user presses /start.
+
+    This is generated from the actual FEATURES registry and the user's
+    current settings, so /start describes what this deployed bot really
+    does (and the values currently selected), rather than a stale manual
+    list copied into a welcome message.
+    """
+    try:
+        settings = get_user_settings(chat_id) if chat_id is not None else dict(DEFAULT_SETTINGS)
+    except Exception:
+        settings = dict(DEFAULT_SETTINGS)
+    coverage = settings.get("coverage", MINIMUM_SCRIPT_COVERAGE_PERCENT)
+    version = globals().get("BUILD_VERSION", "")
+    feature_lines = []
+    for index, feat in enumerate(FEATURES, start=1):
+        feature_lines.append(
+            f"{index:02d}. {feat['icon']} {feat['label']}: "
+            f"<b>{feature_value_label(feat, settings)}</b>"
+        )
+    version_line = f"\n🆕 Version: <code>{version}</code>" if version else ""
+    auto_line = (
+        "Video/Link ပို့တာနဲ့ တန်းစပါမယ်။"
+        if settings.get("auto_start")
+        else "Video/Link ပို့ပြီးရင် ✅ စတင်မယ် ခလုတ်အရင် ပြပါမယ်။"
+    )
+    return (
+        "🎬 <b>RedNote Recap Bot — လုပ်ဆောင်ချက်များ</b>\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "<b>📥 ပို့နိုင်တာတွေ</b>\n"
+        "• Telegram ထဲ တိုက်ရိုက်ပို့တဲ့ <b>video file</b>\n"
+        "• Document အဖြစ် ပို့တဲ့ video file\n"
+        "• <b>RedNote link</b> နှင့် အခြား video link\n\n"
+        "<b>⚙️ Bot လုပ်မယ့် အစီအစဉ်</b>\n"
+        "1️⃣ Source video အပြည့်အစုံကို အရင် download လုပ်မယ်။\n"
+        "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ</b> ခွဲမယ်။ "
+        "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။\n"
+        "3️⃣ အပိုင်းတွေကို တစ်ပိုင်းချင်း အစဉ်အတိုင်း recap လုပ်မယ်။ "
+        "ဇာတ်ကောင်နာမည်တွေ၊ အဓိကဇာတ်ကောင်၊ ကျွန်တော်/ကျွန်မ နာမ်စား၊ "
+        "ရှေ့က ဖြစ်ပျက်မှုအကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းသို့ "
+        "ဆက်သယ်သွားမယ်။\n"
+        "4️⃣ အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် "
+        "<b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် အချိန်လိုက် အပြည့်အဝ ပြန်ပြောမယ်။ "
+        "Scene တိုင်းရဲ့ စာသားအစစ်ကို စစ်ပြီး third-person ဖြစ်နေရင် ပြန်ပြင်မယ်။\n"
+        f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး Final ကြာချိန်ကို မူရင်း၏ "
+        f"<b>{coverage}%</b> ရအောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။\n"
+        "6️⃣ Recap ပြီးတဲ့ အပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး "
+        "final video တစ်ခုလုပ်၍ ပြန်ပို့မယ်။ File က 45MB ကျော်မှသာ "
+        "Telegram ပို့နိုင်အောင် အပိုင်းခွဲပို့မယ်။\n\n"
+        "<b>⌨️ ခလုတ် / Command တွေ</b>\n"
+        "🎬 Recap စတင်မယ် · ⚙️ ဆက်တင်များ · 📊 အခြေအနေ · "
+        "🛑 ရပ်မယ် · 📋 အကျဉ်း · ❓ အကူအညီ\n"
+        "/start · /menu · /settings · /status · /cancel · /summary · /help\n"
+        f"🚀 {auto_line}\n\n"
+        "<b>🎛️ လက်ရှိ Feature ၂၀ နဲ့ တန်ဖိုးများ</b>\n"
+        + "\n".join(feature_lines)
+        + version_line
+        + "\n\n🎬 စဖို့အတွက် video file ဒါမှမဟုတ် link ကို ဒီအတိုင်း ပို့လိုက်ပါ။"
+    )
+
+
 HELP_TEXT = (
     "❓ <b>အသုံးပြုနည်း</b>\n"
     "━━━━━━━━━━━━━━━\n"
-    "1️⃣ ဗီဒီယို link (http...) ကို ဒီအတိုင်း ပို့လိုက်ပါ\n"
-    "2️⃣ Bot က download → ပထမလူ script အပြည့်အစုံ → အသံကြာချိန် တိုင်းတာညှိခြင်း → Final ဗီဒီယို (မူရင်း၏ ဆက်တင်%) လုပ်ပေးပါမယ်\n"
-    "3️⃣ ပြီးရင် Recap ဗီဒီယို ပြန်ပို့ပေးပါမယ်\n\n"
+    "1️⃣ Telegram video file၊ document video သို့မဟုတ် RedNote/video link ပို့ပါ\n"
+    "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီခွဲ → တစ်ပိုင်းချင်း "
+    "ပထမလူ recap → အပိုင်းအားလုံး ပြန်ဆက် → Final video ပြန်ပို့ပါမယ်\n"
+    "3️⃣ လုပ်နေစဉ်မှာ အပိုင်းနံပါတ် (ဥပမာ 12/90) နဲ့ progress ကို ပြပါမယ်\n\n"
     "⌨️ <b>Commands:</b>\n"
-    "/start သို့မဟုတ် /menu — ပင်မ မီနူး\n"
+    "/start သို့မဟုတ် /menu — လုပ်ဆောင်ချက် အပြည့်အစုံ + ပင်မ မီနူး\n"
     "/settings — ဆက်တင်များ\n"
     "/status — အလုပ်အခြေအနေ\n"
     "/cancel — လုပ်နေတာ ရပ်ရန်\n"
@@ -693,7 +771,7 @@ async def ensure_persistent_keyboard(
 
     PERSISTENT_KEYBOARD_CHATS.add(chat_key)
     version = globals().get("BUILD_VERSION", "")
-    text = "⌨️ အောက်ခြေခလုတ်တွေ အဆင်သင့်ဖြစ်ပါပြီ။ Link ကို ဒီအတိုင်းပို့လိုက်ရုံပါပဲ။"
+    text = "⌨️ အောက်ခြေခလုတ်တွေ အဆင်သင့်ဖြစ်ပါပြီ။ Video file သို့မဟုတ် Link ကို ဒီအတိုင်းပို့လိုက်ရုံပါပဲ။"
     if version:
         text += f"\n🆕 <code>{version}</code>"
     try:
@@ -722,14 +800,9 @@ async def send_main_menu(
         await ensure_persistent_keyboard(
             chat_id, reply_to=reply_to, force=True
         )
-    version = globals().get("BUILD_VERSION", "")
-    text = MAIN_MENU_TEXT
-    if version:
-        coverage = get_user_settings(chat_id).get("coverage", 90)
-        text += (
-            f"\n\n🆕 Version: <code>{version}</code> · "
-            f"🎯 Final = မူရင်း၏ {coverage}%"
-        )
+    # /start and /menu explain the complete current workflow and all 20
+    # currently selected features before the user sends a video/link.
+    text = start_features_text(chat_id)
     return await send_text(
         chat_id,
         text,
@@ -760,6 +833,132 @@ async def tg_upload_media(method: str, data: dict, field_name: str, file_name: s
     finally:
         del payload_bytes
         gc.collect()
+
+
+def _safe_video_extension(file_name: str = "", mime_type: str = "") -> str:
+    ext = os.path.splitext(str(file_name or ""))[1].lower()
+    if ext in TELEGRAM_VIDEO_EXTENSIONS:
+        return ext
+    mime = str(mime_type or "").lower()
+    mime_extensions = {
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+        "video/x-m4v": ".m4v",
+        "video/x-matroska": ".mkv",
+        "video/webm": ".webm",
+        "video/x-msvideo": ".avi",
+        "video/mpeg": ".mpeg",
+        "video/3gpp": ".3gp",
+        "video/mp2t": ".ts",
+    }
+    return mime_extensions.get(mime, ".mp4")
+
+
+def _telegram_video_attachment(msg: dict) -> dict | None:
+    """Normalize a video uploaded directly in Telegram.
+
+    Users can send a normal Telegram video, an animation/video note, or a
+    video as a document (the latter preserves the original file).  Return
+    only safe metadata needed to download it later; never trust a client
+    supplied filename as a filesystem path.
+    """
+    if not isinstance(msg, dict):
+        return None
+
+    candidates = []
+    for kind in ("video", "animation", "video_note"):
+        value = msg.get(kind)
+        if isinstance(value, dict) and value.get("file_id"):
+            candidates.append((kind, value))
+
+    document = msg.get("document")
+    if isinstance(document, dict) and document.get("file_id"):
+        mime = str(document.get("mime_type") or "").lower()
+        ext = os.path.splitext(str(document.get("file_name") or ""))[1].lower()
+        if mime.startswith("video/") or ext in TELEGRAM_VIDEO_EXTENSIONS:
+            candidates.append(("document", document))
+
+    if not candidates:
+        return None
+    kind, value = candidates[0]
+    file_name = os.path.basename(str(value.get("file_name") or "telegram-video"))
+    return {
+        "kind": "telegram_file",
+        "telegram_kind": kind,
+        "file_id": str(value.get("file_id") or ""),
+        "file_unique_id": str(value.get("file_unique_id") or ""),
+        "file_name": file_name,
+        "mime_type": str(value.get("mime_type") or ""),
+        "file_size": int(value.get("file_size") or 0),
+        "duration": float(value.get("duration") or 0),
+        "extension": _safe_video_extension(
+            file_name, str(value.get("mime_type") or "")
+        ),
+    }
+
+
+def _telegram_attachment_label(attachment: dict) -> str:
+    name = str((attachment or {}).get("file_name") or "Telegram video")
+    size = int((attachment or {}).get("file_size") or 0)
+    duration = float((attachment or {}).get("duration") or 0)
+    details = []
+    if duration > 0:
+        details.append(fmt_time(duration))
+    if size > 0:
+        details.append(f"{size / (1024 * 1024):.1f}MB")
+    return name + (f" ({', '.join(details)})" if details else "")
+
+
+async def download_telegram_file(file_id: str, out_path: str, tracker=None) -> float:
+    """Download an uploaded Telegram file to disk and return its duration."""
+    if not file_id or not BOT_TOKEN:
+        return 0.0
+    result = await tg_api("getFile", {"file_id": file_id}, timeout=120.0)
+    if not (result or {}).get("ok"):
+        logger.warning(
+            "Telegram getFile failed: %s",
+            (result or {}).get("description") or "unknown error",
+        )
+        return 0.0
+    file_path = str(((result or {}).get("result") or {}).get("file_path") or "")
+    if not file_path:
+        return 0.0
+
+    # Never log this URL: it contains the bot token.
+    download_url = (
+        f"https://api.telegram.org/file/bot{BOT_TOKEN}/"
+        f"{quote(file_path.lstrip('/'), safe='/')}"
+    )
+    downloaded = 0
+    last_report = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=1800.0, follow_redirects=True) as client:
+            async with client.stream("GET", download_url) as response:
+                if int(getattr(response, "status_code", 0) or 0) >= 400:
+                    logger.warning(
+                        "Telegram file download HTTP %s", response.status_code
+                    )
+                    return 0.0
+                with open(out_path, "wb") as fh:
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        if not chunk:
+                            continue
+                        fh.write(chunk)
+                        downloaded += len(chunk)
+                        if tracker and time.monotonic() - last_report >= 4.0:
+                            last_report = time.monotonic()
+                            await tracker.update(
+                                "📥 Telegram video ကို လက်ခံနေပါသည်...\n"
+                                f"📦 {downloaded / (1024 * 1024):.1f} MB",
+                                force=True,
+                            )
+    except Exception as e:
+        logger.warning(f"Telegram file download failed: {type(e).__name__}: {e}")
+        return 0.0
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
+        return 0.0
+    return float(probe_video_info(out_path)[0] or 0)
 
 
 def probe_video_info(path: str) -> tuple[float, int, int]:
@@ -844,6 +1043,36 @@ async def download_full(url: str, out_path: str, tracker=None, total_dur: float 
         return 0
     actual_dur, _, _ = probe_video_info(out_path)
     return actual_dur
+
+
+def build_source_segment_plan(
+    total_duration: float,
+    segment_seconds: float = SOURCE_SEGMENT_SECONDS,
+) -> list[dict]:
+    """Build non-overlapping two-minute windows for any source duration."""
+    try:
+        duration = float(total_duration or 0)
+    except (TypeError, ValueError):
+        return []
+    if duration <= 0:
+        return []
+    step = max(1.0, float(segment_seconds or SOURCE_SEGMENT_SECONDS))
+    count = max(1, int(math.ceil(duration / step - 1e-9)))
+    plan = []
+    for index in range(count):
+        start = index * step
+        end = min(duration, start + step)
+        if end - start <= 0.01:
+            continue
+        plan.append(
+            {
+                "index": len(plan) + 1,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(end - start, 3),
+            }
+        )
+    return plan
 
 
 def make_keep_ranges(duration: float, cuts: list, max_remove_ratio: float = 0.08):
@@ -1209,10 +1438,12 @@ Return JSON:
 
 
 def _with_required_coverage(settings: dict = None) -> dict:
-    """Return job settings with the product-wide 90% floor applied.
+    """Return job settings with product-wide required values applied.
 
-    A saved/stale value below 90 must never make an individual link produce
-    a short recap.  Values above 90 (95/100) remain available.
+    A saved/stale coverage value below 90 must never make an individual
+    source produce a short recap.  The source is also always partitioned
+    into fixed two-minute parts, regardless of a stale 3/5/10-minute
+    setting saved by an older bot version.
     """
     s = {**DEFAULT_SETTINGS, **(settings or {})}
     try:
@@ -1221,6 +1452,8 @@ def _with_required_coverage(settings: dict = None) -> dict:
         coverage = float(MINIMUM_SCRIPT_COVERAGE_PERCENT)
     coverage = max(float(MINIMUM_SCRIPT_COVERAGE_PERCENT), min(100.0, coverage))
     s["coverage"] = int(coverage) if coverage.is_integer() else coverage
+    s["chunk"] = SOURCE_SEGMENT_SECONDS
+    s["pov"] = "first"
     return s
 
 
@@ -2105,6 +2338,188 @@ JSON ကိုသာပြန်ပေးပါ:
     if new_pronoun and not new_summary.get("pronoun"):
         new_summary["pronoun"] = new_pronoun
     return out_chunk, new_summary
+
+
+def _extract_source_segment_file(
+    source_path: str,
+    output_path: str,
+    start: float,
+    duration: float,
+) -> bool:
+    """Accurately extract one planned source window as a standalone MP4."""
+    result = run_cmd(
+        [
+            FFMPEG_BIN, "-y",
+            "-ss", f"{max(0.0, float(start)):.3f}",
+            "-i", source_path,
+            "-t", f"{max(0.01, float(duration)):.3f}",
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            output_path,
+        ],
+        1200,
+    )
+    return bool(
+        result.returncode == 0
+        and os.path.exists(output_path)
+        and os.path.getsize(output_path) > 0
+    )
+
+
+async def _prepare_source_segments(
+    source_path: str,
+    work_dir: str,
+    total_duration: float,
+    segment_seconds: float = SOURCE_SEGMENT_SECONDS,
+) -> list[dict]:
+    """Physically split a downloaded source into two-minute video files.
+
+    Prefer FFmpeg's one-pass segment muxer: it partitions the source with
+    no overlaps/gaps.  If keyframes/container make that unusable or the
+    count is not the planned two-minute count, accurately extract every
+    planned window instead.  A JSON manifest is retained in the job dir
+    while the job runs so progress/logs can identify each part.
+    """
+    plan = build_source_segment_plan(total_duration, segment_seconds)
+    if not plan:
+        return []
+    segment_dir = os.path.join(work_dir, "source_segments")
+    os.makedirs(segment_dir, exist_ok=True)
+
+    candidates = await asyncio.to_thread(
+        _split_video_once, source_path, segment_dir, float(segment_seconds)
+    )
+    prepared: list[dict] = []
+    cursor = 0.0
+    for index, path in enumerate(candidates, start=1):
+        duration, _, _ = probe_video_info(path)
+        if duration <= 0:
+            prepared = []
+            break
+        prepared.append(
+            {
+                "index": index,
+                "path": path,
+                "start": round(cursor, 3),
+                "end": round(cursor + duration, 3),
+                "duration": round(float(duration), 3),
+            }
+        )
+        cursor += float(duration)
+
+    total_tolerance = max(2.0, float(total_duration) * 0.02)
+    max_candidate_duration = max(
+        (float(item["duration"]) for item in prepared), default=0.0
+    )
+    # Stream-copy segmentation can only cut at keyframes.  Accept it only
+    # when its boundaries are still the requested two-minute boundaries;
+    # otherwise use the accurate extraction fallback below rather than
+    # silently recapping, for example, a 170-second part as "2 minutes".
+    boundary_tolerance = 2.0
+    boundaries_ok = len(prepared) == len(plan) and all(
+        abs(float(candidate["start"]) - float(planned["start"]))
+        <= boundary_tolerance
+        and abs(float(candidate["end"]) - float(planned["end"]))
+        <= boundary_tolerance
+        for candidate, planned in zip(prepared, plan)
+    )
+    one_pass_ok = bool(
+        boundaries_ok
+        and abs(cursor - float(total_duration)) <= total_tolerance
+        and max_candidate_duration <= float(segment_seconds) + boundary_tolerance
+    )
+    if not one_pass_ok:
+        shutil.rmtree(segment_dir, ignore_errors=True)
+        os.makedirs(segment_dir, exist_ok=True)
+        prepared = []
+        for item in plan:
+            output_path = os.path.join(
+                segment_dir, f"source_part_{int(item['index']):04d}.mp4"
+            )
+            ok = await asyncio.to_thread(
+                _extract_source_segment_file,
+                source_path,
+                output_path,
+                float(item["start"]),
+                float(item["duration"]),
+            )
+            actual_duration = probe_video_info(output_path)[0] if ok else 0.0
+            if not ok or actual_duration <= 0:
+                raise RuntimeError(
+                    f"၂ မိနစ်ပိုင်း {item['index']}/{len(plan)} ဖြတ်၍မရပါ။"
+                )
+            prepared.append(
+                {
+                    **item,
+                    "path": output_path,
+                    "duration": round(float(actual_duration), 3),
+                    "end": round(float(item["start"]) + float(actual_duration), 3),
+                }
+            )
+
+    manifest_path = os.path.join(work_dir, "source_segments.json")
+    try:
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "source_segment_seconds": float(segment_seconds),
+                    "source_duration_seconds": round(float(total_duration), 3),
+                    "segments": [
+                        {
+                            "index": int(item["index"]),
+                            "file": os.path.basename(str(item["path"])),
+                            "start": float(item["start"]),
+                            "end": float(item["end"]),
+                            "duration": float(item["duration"]),
+                        }
+                        for item in prepared
+                    ],
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except Exception as e:
+        logger.warning(f"source segment manifest write failed: {e}")
+    return prepared
+
+
+def _concat_video_parts(parts: list[str], output_path: str, concat_path: str) -> bool:
+    """Join recap parts in order into one MP4 and verify the result."""
+    valid_parts = [
+        str(part)
+        for part in (parts or [])
+        if part and os.path.exists(str(part)) and os.path.getsize(str(part)) > 0
+    ]
+    if not valid_parts:
+        return False
+    with open(concat_path, "w", encoding="utf-8") as f:
+        for part in valid_parts:
+            escaped = part.replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
+    result = run_cmd(
+        [
+            FFMPEG_BIN, "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ],
+        1200,
+    )
+    return bool(
+        result.returncode == 0
+        and os.path.exists(output_path)
+        and os.path.getsize(output_path) > 0
+    )
 
 
 def _split_video_once(path: str, out_dir: str, segment_seconds: float) -> list[str]:
@@ -4965,8 +5380,28 @@ async def _forward_job_to_n8n(state: dict) -> bool:
 
 
 async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
+    await _handle_source_job(
+        chat_id, reply_msg_id, {"kind": "url", "url": str(url or "")}
+    )
+
+
+async def handle_telegram_video_job(chat_id: int, reply_msg_id: int, attachment: dict):
+    await _handle_source_job(
+        chat_id,
+        reply_msg_id,
+        {"kind": "telegram_file", **dict(attachment or {})},
+    )
+
+
+async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict):
     job_settings = _with_required_coverage(get_user_settings(chat_id))
-    chunk_duration = int(job_settings.get("chunk") or CHUNK_DURATION)
+    source_spec = dict(source_spec or {})
+    source_kind = str(source_spec.get("kind") or "url")
+    url = str(source_spec.get("url") or "")
+    # Fixed product rule: first split every downloaded source into
+    # two-minute parts, regardless of any stale user chunk setting.
+    segment_seconds = SOURCE_SEGMENT_SECONDS
+    job_settings["chunk"] = segment_seconds
     job_id = f"j{secrets.token_hex(5)}"
     if chat_id in ACTIVE_JOBS:
         await send_text(chat_id, "⚠️ အလုပ်တစ်ခု လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ သို့မဟုတ် 🛑 ရပ်မယ် ခလုတ်နှိပ်ပါ။",
@@ -4975,7 +5410,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     ACTIVE_JOBS[chat_id] = job_id
     status_id = await send_text(
         chat_id,
-        f"⚡ Recap စတင်နေပါပြီ...\n🎯 Final duration: မူရင်း၏ {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p",
+        f"⚡ Recap စတင်နေပါပြီ...\n✂️ မူရင်းကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ ပြန်ဆက်ပါမယ်\n🎯 Final duration: မူရင်း၏ {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p",
         reply_to=reply_msg_id,
         reply_markup=job_progress_keyboard(),
     )
@@ -4984,7 +5419,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     # here; n8n only calls this service's authenticated stage endpoints.
     # If forwarding fails, clean only the worker record and continue with
     # the unchanged direct pipeline below (ACTIVE_JOBS/job_id are kept).
-    if PIPELINE_MODE == "n8n" and N8N_WEBHOOK_URL:
+    if source_kind == "url" and PIPELINE_MODE == "n8n" and N8N_WEBHOOK_URL:
         n8n_tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
         forwarded = False
         try:
@@ -5034,65 +5469,93 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     story_context = {"characters": [], "summary": "", "last_scene": "", "protagonist": "", "pronoun": ""}
 
     try:
-        await tracker.update("🔍 ဗီဒီယို အချိန်စစ်ဆေးနေပါသည်...", force=True)
-        probe_dur = await get_source_duration(url)
-
-        source_path = os.path.join(work_dir, "source.mp4")
-        await tracker.update("📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...", force=True)
-        total_dur = await download_full(url, source_path, tracker, probe_dur)
+        if source_kind == "telegram_file":
+            extension = _safe_video_extension(
+                str(source_spec.get("file_name") or ""),
+                str(source_spec.get("mime_type") or ""),
+            )
+            source_path = os.path.join(work_dir, f"source{extension}")
+            await tracker.update(
+                f"📥 Telegram video ကို လက်ခံနေပါသည်... ({_telegram_attachment_label(source_spec)})",
+                force=True,
+            )
+            total_dur = await download_telegram_file(
+                str(source_spec.get("file_id") or ""), source_path, tracker
+            )
+        else:
+            await tracker.update("🔍 ဗီဒီယို အချိန်စစ်ဆေးနေပါသည်...", force=True)
+            probe_dur = await get_source_duration(url)
+            source_path = os.path.join(work_dir, "source.mp4")
+            await tracker.update("📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...", force=True)
+            total_dur = await download_full(url, source_path, tracker, probe_dur)
 
         if total_dur <= 0:
             raise RuntimeError("မူရင်းဗီဒီယို ဒေါင်းမရပါ။")
 
         size_mb = os.path.getsize(source_path) / (1024 * 1024)
         logger.info(f"Full source: {total_dur:.1f}s = {fmt_time(total_dur)}, {size_mb:.0f}MB")
+        segment_plan = build_source_segment_plan(total_dur, segment_seconds)
         await tracker.update(
             f"✅ မူရင်းရယူပြီး ({fmt_time(total_dur)}, {size_mb:.0f}MB)\n"
-            f"✂️ အပိုင်းခွဲနေပါသည်...",
+            f"✂️ ၂ မိနစ်စီ {len(segment_plan)} ပိုင်းခွဲနေပါသည်...",
             force=True,
         )
 
-        total_parts = max(1, int(np.ceil(total_dur / chunk_duration)))
-        chunks = []
+        source_segments = await _prepare_source_segments(
+            source_path, work_dir, total_dur, segment_seconds
+        )
+        if not source_segments:
+            raise RuntimeError("မူရင်းဗီဒီယိုကို ၂ မိနစ်ပိုင်းများ ခွဲ၍မရပါ။")
 
-        for part_num in range(1, total_parts + 1):
+        total_parts = len(source_segments)
+        logger.info(
+            "Prepared %s fixed %ss source segments for job %s",
+            total_parts,
+            segment_seconds,
+            job_id,
+        )
+        # All source parts now exist, so the full original is no longer
+        # needed.  Removing it before rendering keeps long jobs from using
+        # roughly double disk space for source + source segments.
+        try:
+            os.remove(source_path)
+        except Exception:
+            pass
+        await tracker.update(
+            f"✅ ၂ မိနစ်ပိုင်း {total_parts} ခုရပါပြီ\n"
+            "🎬 တစ်ပိုင်းချင်း အစဉ်အတိုင်း Recap လုပ်ပြီး နောက်ဆုံးမှာ အားလုံးပြန်ဆက်ပါမယ်",
+            force=True,
+        )
+
+        chunks = []
+        for segment in source_segments:
             if job_id in CANCELLED_JOBS:
                 raise Exception("cancelled")
 
-            start = (part_num - 1) * chunk_duration
-            end = min(start + chunk_duration, total_dur)
-            chunk_dur = end - start
-
-            chunk_path = os.path.join(work_dir, f"chunk_{part_num}.mp4")
-
-            await tracker.update(
-                f"✂️ အပိုင်း {part_num}/{total_parts} ခွဲနေပါသည်...\n"
-                f"📊 {fmt_progress_bar(int(((part_num - 1) / total_parts) * 100))}",
-                force=True,
-            )
-
-            extract_result = await asyncio.to_thread(run_cmd, [
-                FFMPEG_BIN, "-y",
-                "-ss", f"{start:.3f}",
-                "-i", source_path,
-                "-t", f"{chunk_dur:.3f}",
-                "-c", "copy",
-                "-avoid_negative_ts", "make_zero",
-                chunk_path,
-            ], 600)
-
-            if extract_result.returncode != 0 or not os.path.exists(chunk_path):
-                raise RuntimeError(f"အပိုင်း {part_num} ဖြတ်၍မရပါ။")
-
+            part_num = int(segment.get("index") or (len(chunks) + 1))
+            chunk_path = str(segment.get("path") or "")
+            start = float(segment.get("start") or 0)
+            segment_end = float(segment.get("end") or 0)
             actual_dur, _, _ = probe_video_info(chunk_path)
             if actual_dur <= 0:
-                raise RuntimeError(f"အပိုင်း {part_num} ကြာချိန် မရပါ။")
+                actual_dur = float(segment.get("duration") or 0)
+            if not chunk_path or not os.path.exists(chunk_path) or actual_dur <= 0:
+                raise RuntimeError(f"၂ မိနစ်ပိုင်း {part_num} ကြာချိန် မရပါ။")
+            if segment_end <= start:
+                segment_end = start + actual_dur
 
-            logger.info(f"Chunk {part_num}/{total_parts}: {actual_dur:.1f}s")
-
+            logger.info(
+                "Source segment %s/%s: %s-%s (%ss)",
+                part_num,
+                total_parts,
+                fmt_time(start),
+                fmt_time(segment_end),
+                f"{actual_dur:.1f}",
+            )
             await tracker.update(
-                f"🎧 အပိုင်း {part_num}/{total_parts} ကို Recap လုပ်နေပါသည်...\n"
-                f"📊 {fmt_progress_bar(int((start / total_dur) * 100))}",
+                f"🎧 ၂ မိနစ်ပိုင်း {part_num}/{total_parts} "
+                f"({fmt_time(start)}–{fmt_time(segment_end)}) ကို Recap လုပ်နေပါသည်...\n"
+                f"📊 {fmt_progress_bar(int((start / total_dur) * 100) if total_dur else 0)}",
                 force=True,
             )
 
@@ -5101,7 +5564,7 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
                     chunk_path,
                     actual_dur,
                     start,
-                    start + actual_dur,
+                    segment_end,
                     story_context,
                     part_num,
                     tracker,
@@ -5132,21 +5595,21 @@ async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
             except Exception:
                 pass
 
-        await tracker.update("🔗 အပိုင်းတွေ ပေါင်းစပ်နေပါသည်...", force=True)
+        if len(chunks) != total_parts:
+            raise RuntimeError(
+                f"Recap အပိုင်းမစုံပါ: {len(chunks)}/{total_parts} ပိုင်းသာရပါသည်။"
+            )
+        await tracker.update(
+            f"🔗 Recap ပြီးတဲ့ {total_parts} ပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်နေပါသည်...",
+            force=True,
+        )
         final_out = os.path.join(work_dir, "final_recap.mp4")
         concat_final = os.path.join(work_dir, "final_concat.txt")
-        with open(concat_final, "w") as f:
-            for c in chunks:
-                f.write(f"file '{c}'\n")
-
-        run_cmd([
-            FFMPEG_BIN, "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_final,
-            "-c", "copy",
-            "-movflags", "+faststart",
-            final_out,
-        ], 300)
+        concat_ok = await asyncio.to_thread(
+            _concat_video_parts, chunks, final_out, concat_final
+        )
+        if not concat_ok:
+            raise RuntimeError("Recap အပိုင်းအားလုံးကို final video တစ်ခုအဖြစ် ပြန်ဆက်၍မရပါ။")
 
         final_dur, _, _ = probe_video_info(final_out)
         target_final_dur, final_low, final_high = _final_duration_window(
@@ -5254,11 +5717,11 @@ async def handle_callback(cb: dict):
         await edit_text(chat_id, message_id, text, reply_markup=markup)
 
     if data == "menu:main":
-        await show(MAIN_MENU_TEXT, main_menu_keyboard(chat_id))
+        await show(start_features_text(chat_id), main_menu_keyboard(chat_id))
     elif data == "menu:settings":
         await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
     elif data == "menu:recap":
-        await show("🎬 <b>Recap စတင်ရန်</b>\n\nဗီဒီယို link (http...) ကို ဒီအတိုင်း စာပို့လိုက်ပါ။\nဥပမာ: https://...", main_menu_keyboard(chat_id))
+        await show("🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Source ကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ အားလုံးပြန်ဆက်ပို့ပါမယ်။", main_menu_keyboard(chat_id))
     elif data == "menu:status":
         await show(job_status_text(chat_id), main_menu_keyboard(chat_id))
     elif data == "menu:summary":
@@ -5300,16 +5763,28 @@ async def handle_callback(cb: dict):
         set_user_setting(chat_id, key, value)
         await show(f"✅ {feat['icon']} <b>{feat['label']}</b> ကို <b>{feature_value_label(feat, get_user_settings(chat_id))}</b> ပြောင်းလိုက်ပါပြီ။", settings_keyboard(chat_id))
     elif data == "job:start":
-        url = PENDING_LINKS.pop(chat_id, None)
+        pending = PENDING_INPUTS.pop(chat_id, None)
+        legacy_url = PENDING_LINKS.pop(chat_id, None)
         await show("🚀 စတင်လိုက်ပါပြီ...", main_menu_keyboard(chat_id))
-        if url:
+        if isinstance(pending, dict) and pending.get("kind") == "telegram_file":
             _spawn_background(
-                handle_link_job(chat_id, message_id, url),
-                name="telegram-link-job",
+                handle_telegram_video_job(chat_id, message_id, pending),
+                name="telegram-video-job",
             )
+        else:
+            url = ""
+            if isinstance(pending, dict):
+                url = str(pending.get("url") or "")
+            url = url or str(legacy_url or "")
+            if url:
+                _spawn_background(
+                    handle_link_job(chat_id, message_id, url),
+                    name="telegram-link-job",
+                )
     elif data == "job:discard":
+        PENDING_INPUTS.pop(chat_id, None)
         PENDING_LINKS.pop(chat_id, None)
-        await show("❌ Link ကို ပယ်လိုက်ပါပြီ။", main_menu_keyboard(chat_id))
+        await show("❌ Video/Link ကို ပယ်လိုက်ပါပြီ။", main_menu_keyboard(chat_id))
 
 
 async def process_admin_update(update: dict):
@@ -5323,16 +5798,20 @@ async def process_admin_update(update: dict):
     chat_id = msg.get("chat", {}).get("id")
     from_id = msg.get("from", {}).get("id")
     msg_id = msg.get("message_id")
-    text = (msg.get("text") or "").strip()
+    # A directly uploaded video normally has no text, only video/document
+    # metadata and an optional caption.  Treat captions like text for links
+    # or commands, while the attachment itself takes priority as the source.
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    attachment = _telegram_video_attachment(msg)
     if not is_allowed(from_id):
         await send_text(chat_id, "⛔ ဒီ bot ကို သုံးခွင့် မရှိပါ။", reply_to=msg_id)
         return
 
-    # Install the bottom buttons on the first ordinary message/link too;
-    # the user should not have to discover that /start is required after
-    # every deployment.  /start and /menu force-install via send_main_menu.
+    # Install the bottom buttons on the first ordinary message/link/video
+    # too; the user should not have to discover that /start is required
+    # after every deployment.  /start and /menu force-install via menu.
     first_token = text.split()[0].split("@")[0].lower() if text else ""
-    if text and first_token not in ("/start", "/menu"):
+    if (text or attachment) and first_token not in ("/start", "/menu"):
         await ensure_persistent_keyboard(chat_id, reply_to=msg_id)
 
     # Persistent reply-keyboard buttons arrive as ordinary text messages,
@@ -5342,8 +5821,8 @@ async def process_admin_update(update: dict):
     if text == PERSISTENT_BUTTON_RECAP:
         await send_text(
             chat_id,
-            "🎬 <b>Recap စတင်ရန်</b>\n\nဗီဒီယို link (http...) ကို ဒီအတိုင်း စာပို့လိုက်ပါ။\n"
-            "⏱️ Final ဗီဒီယိုကြာချိန်ကို မူရင်းဗီဒီယို၏ 90% အတိအကျနီးပါး ချိန်ညှိပေးပါမယ်။",
+            "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file၊ document video သို့မဟုတ် RedNote/video link ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n"
+            "✂️ Source ကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ အားလုံးပြန်ဆက်ပို့ပါမယ်။",
             reply_to=msg_id,
             reply_markup=main_menu_keyboard(chat_id),
         )
@@ -5376,16 +5855,39 @@ async def process_admin_update(update: dict):
         await send_text(chat_id, settings_summary_text(chat_id), reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
     elif cmd == "/help":
         await send_text(chat_id, HELP_TEXT, reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+    elif attachment:
+        s = get_user_settings(chat_id)
+        if s.get("auto_start"):
+            await handle_telegram_video_job(chat_id, msg_id, attachment)
+        else:
+            PENDING_INPUTS[chat_id] = dict(attachment)
+            await send_text(
+                chat_id,
+                "🎬 <b>ဒီ video ကို Recap လုပ်မလား?</b>\n"
+                f"{_telegram_attachment_label(attachment)}\n"
+                "✂️ ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ အားလုံးပြန်ဆက်ပို့ပါမယ်။",
+                reply_to=msg_id,
+                reply_markup=confirm_keyboard(),
+            )
     elif text.startswith("http"):
         s = get_user_settings(chat_id)
         if s.get("auto_start"):
             await handle_link_job(chat_id, msg_id, text)
         else:
             PENDING_LINKS[chat_id] = text
+            PENDING_INPUTS[chat_id] = {"kind": "url", "url": text}
             await send_text(chat_id, "🎬 <b>ဒီ link ကို Recap လုပ်မလား?</b>\n" + text[:200], reply_to=msg_id, reply_markup=confirm_keyboard())
     elif text:
         await send_main_menu(
             chat_id, reply_to=msg_id, with_persistent_keyboard=True
+        )
+    elif msg.get("document") or msg.get("audio") or msg.get("voice") or msg.get("photo"):
+        await send_text(
+            chat_id,
+            "⚠️ ဒီဖိုင်ကို video အဖြစ် မဖတ်နိုင်ပါ။ Telegram video၊ "
+            "document video (MP4/MOV/MKV/WebM စသည်) သို့မဟုတ် video link ပို့ပါ။",
+            reply_to=msg_id,
+            reply_markup=main_menu_keyboard(chat_id),
         )
 
 
@@ -5416,7 +5918,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.5-button-webhook-healthz-fix"
+BUILD_VERSION = "v3.6-two-minute-segment-recap"
 BUILD_FEATURES = 20
 
 
@@ -5434,6 +5936,9 @@ async def root():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "first_person_enforcement": "per_scene_validated",
+        "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
+        "segment_pipeline": "download_split_120s_recap_each_concat_send",
+        "input_types": ["telegram_video", "telegram_document_video", "video_link"],
         "telegram_buttons": "inline_persistent_and_menu",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
         "public_base_url": PUBLIC_BASE_URL,
@@ -5466,6 +5971,9 @@ async def health():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "first_person_enforcement": "per_scene_validated",
+        "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
+        "segment_pipeline": "download_split_120s_recap_each_concat_send",
+        "input_types": ["telegram_video", "telegram_document_video", "video_link"],
         "telegram_buttons": "inline_persistent_and_menu",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
         "public_base_url": PUBLIC_BASE_URL,

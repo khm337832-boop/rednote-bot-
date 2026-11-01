@@ -62,7 +62,7 @@ WHISPER_API_KEY=<Whisper/OpenAI-compatible API key>
 
 WHISPER_API_BASE=https://api.openai.com/v1
 WHISPER_MODEL=whisper-1
-WHISPER_CHUNK_SECONDS=600
+WHISPER_CHUNK_SECONDS=120
 ```
 
 အရေးကြီးချက်များ:
@@ -71,7 +71,7 @@ WHISPER_CHUNK_SECONDS=600
 - `WORKER_API_KEY` မထည့်လျှင် worker API အားလုံး `503` ပြန်ပြီး ပိတ်ထားပါမည်။
 - `WHISPER_API_KEY` မရှိလျှင်လည်း `OPENAI_API_KEY` ကို fallback အဖြစ် သုံးပါသည်။
 - အခြား OpenAI-compatible transcription provider သုံးလျှင် `WHISPER_API_BASE` ကို ၎င်း၏ `/v1` base URL ဖြင့် ပြောင်းပါ။ Code က endpoint ကို `${WHISPER_API_BASE}/audio/transcriptions` အဖြစ် ခေါ်ပါသည်။
-- `WHISPER_CHUNK_SECONDS=600` ဆိုလျှင် အသံကို ၁၀ မိနစ်အပိုင်းများအဖြစ် ခွဲပို့ပါမည်။ Provider ၏ file-size limit နိမ့်လျှင် ဤတန်ဖိုးကို လျှော့ပါ။
+- `WHISPER_CHUNK_SECONDS=120` ဆိုလျှင် အသံကို ၂ မိနစ်အပိုင်းများအဖြစ် ခွဲပို့ပါမည်။ Code ကလည်း ဤတန်ဖိုးကို အများဆုံး 120 seconds သို့ ကန့်သတ်ထားသောကြောင့် video segment တန်ဖိုးနှင့် ကိုက်ညီပါသည်။
 
 Env ပြောင်းပြီးနောက် Render deploy ပြီးလျှင် အောက်ပါ URL ကို ဖွင့်စစ်ပါ:
 

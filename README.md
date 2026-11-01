@@ -1,18 +1,23 @@
 # rednote-bot-
 
-Telegram bot that turns a video link into a Burmese recap video
+Telegram bot that accepts a directly uploaded Telegram video/document
+video or a RedNote/video link and turns it into a Burmese recap video
 (Gemini script → Gemini TTS → ffmpeg render), controlled with
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v3.5-button-webhook-healthz-fix` installs the persistent bottom buttons
-from `/start`, `/menu`, **or the first ordinary message/video link sent to
-each newly deployed process**. `/start` and `/menu` always force-install
-them again and open the inline main menu:
+Version `v3.6-two-minute-segment-recap` downloads the complete source,
+splits it into fixed **2-minute parts**, recaps those parts **one by one in
+order**, joins all recap parts back into one video, and sends it to the
+user. It installs the persistent bottom buttons from `/start`, `/menu`,
+**or the first ordinary message/video/link sent to each newly deployed
+process**. `/start` and `/menu` always force-install them again, explain the
+full current workflow, list all 20 currently selected features, and open
+the inline main menu:
 
 | Button | What it does |
 |---|---|
-| 🎬 Recap စတင်မယ် | Send a video link to start a recap |
+| 🎬 Recap စတင်မယ် | Send a Telegram video file or video link to start a recap |
 | ⚙️ ဆက်တင်များ (20) | Open the 20-feature settings panel |
 | 📊 အလုပ်အခြေအနေ | Show the running job |
 | 🛑 လုပ်နေတာ ရပ်မယ် | Cancel the running job |
@@ -26,6 +31,23 @@ The live progress message also keeps **Cancel / Status / Settings / Main**
 inline buttons attached. While a job is running, Status and Settings open
 in separate messages so progress updates do not overwrite them. Cancel
 persists the request for worker jobs as well as cancelling direct jobs.
+
+## Two-minute segmented recap pipeline
+
+Whatever the source duration is, the direct Telegram intake now follows
+this exact order:
+
+1. Accept a Telegram video, a document video, or a video link and
+   download the complete source.
+2. Split the downloaded source into 2-minute video files. A 3-hour
+   source becomes 90 parts; only the last part may be shorter.
+3. Recap one part at a time in source order. Character names, the
+   protagonist/pronoun, the prior-events summary, and the last scene are
+   carried into the next part to preserve chronology.
+4. Verify that the number of completed recap parts equals the number of
+   source parts, join them back in order, verify the final duration, and
+   send the joined video. Only a joined file over Telegram's delivery
+   size limit is split again for sending.
 
 ## Final-duration and first-person guarantees
 
@@ -62,7 +84,7 @@ a third-person summary if repair does not succeed.
 9. 🎨 အရောင် မြှင့် (color enhance) on/off
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
-12. 📦 အပိုင်းခွဲ အချိန် — chunk size 3 / 5 / 10 min
+12. 📦 မူရင်းပိုင်းချိန် — source is always split into fixed 2-minute parts
 13. 🗣️ Script အလျင် ချိန်ညှိ — initial TTS chars/sec estimate 5.5 / 6.5 / 7.5 (later corrected from measured TTS)
 14. 👤 ပြောပြသူ ရှုထောင့် — protagonist first-person (ကျွန်တော်/ကျွန်မ) always; every scene is validated/repaired and the script retells the whole video in order, scene by scene, no summarizing
 15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
@@ -70,7 +92,7 @@ a third-person summary if repair does not succeed.
 17. 💬 Video Caption on/off
 18. 🔔 ပြီး အကြောင်းကြား — completion notification on/off
 19. ⚡ မြန်ဆန်မုဒ် — faster render preset on/off
-20. 🚀 Link တန်း စ — auto-start on link, or ask for ✅ confirmation first
+20. 🚀 Video/Link တန်းစ — auto-start on an uploaded video or link, or ask for ✅ confirmation first
 
 Settings are **per user**, saved to disk (`bot_settings.json` in the
 work dir), and apply from the next video.
@@ -125,7 +147,9 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v3.5-button-webhook-healthz-fix"`,
+URLs must show `"version":"v3.6-two-minute-segment-recap"`,
+`"source_segment_seconds":120`,
+`"segment_pipeline":"download_split_120s_recap_each_concat_send"`,
 `"telegram_buttons":"inline_persistent_and_menu"`, the service's real
 `public_host`, and the deployed `render_git_repo_slug`,
 `render_git_commit`, and `render_git_branch`.
