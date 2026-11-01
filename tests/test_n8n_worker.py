@@ -65,6 +65,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         start(patch.object(bot, "N8N_WEBHOOK_SECRET", ""))
 
         self.active_jobs = start(patch.object(bot, "ACTIVE_JOBS", {}))
+        self.pending_links = start(patch.object(bot, "PENDING_LINKS", {}))
+        self.pending_inputs = start(patch.object(bot, "PENDING_INPUTS", {}))
         self.worker_tasks = start(patch.object(bot, "WORKER_TASKS", {}))
         self.cancelled_jobs = start(patch.object(bot, "CANCELLED_JOBS", set()))
         self.background_tasks = start(
@@ -108,6 +110,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(*tasks, return_exceptions=True)
         bot.WORKER_TASKS.clear()
         bot.ACTIVE_JOBS.clear()
+        bot.PENDING_LINKS.clear()
+        bot.PENDING_INPUTS.clear()
         bot.CANCELLED_JOBS.clear()
         bot.BACKGROUND_TASKS.clear()
         bot.PERSISTENT_KEYBOARD_CHATS.clear()
@@ -479,6 +483,225 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coverage["speech_seconds_covered"], 10.0)
         self.assertEqual(coverage["missing_group_ids"], [])
         self.assertEqual(coverage["underfilled_group_ids"], [2])
+
+    def test_source_is_always_planned_in_two_minute_parts(self):
+        three_hours = bot.build_source_segment_plan(3 * 60 * 60)
+        self.assertEqual(len(three_hours), 90)
+        self.assertTrue(all(item["duration"] == 120 for item in three_hours))
+        self.assertEqual(three_hours[0]["start"], 0)
+        self.assertEqual(three_hours[-1]["end"], 3 * 60 * 60)
+
+        with_remainder = bot.build_source_segment_plan(301)
+        self.assertEqual(
+            [(x["start"], x["end"], x["duration"]) for x in with_remainder],
+            [(0, 120, 120), (120, 240, 120), (240, 301, 61)],
+        )
+        self.assertEqual(bot.build_source_segment_plan(0), [])
+
+        # A stale 10-minute setting from an older bot version cannot change
+        # the fixed two-minute intake architecture.
+        settings = bot._with_required_coverage({"chunk": 600})
+        self.assertEqual(settings["chunk"], bot.SOURCE_SEGMENT_SECONDS)
+        self.assertEqual(bot.DEFAULT_SETTINGS["chunk"], 120)
+
+    def test_telegram_video_attachment_detection(self):
+        telegram_video = bot._telegram_video_attachment(
+            {
+                "video": {
+                    "file_id": "video-file",
+                    "file_unique_id": "unique-1",
+                    "duration": 180,
+                    "file_size": 123456,
+                    "mime_type": "video/mp4",
+                }
+            }
+        )
+        self.assertEqual(telegram_video["file_id"], "video-file")
+        self.assertEqual(telegram_video["extension"], ".mp4")
+
+        document_video = bot._telegram_video_attachment(
+            {
+                "document": {
+                    "file_id": "doc-file",
+                    "file_name": "../../movie.mkv",
+                    "mime_type": "video/x-matroska",
+                }
+            }
+        )
+        self.assertEqual(document_video["file_name"], "movie.mkv")
+        self.assertEqual(document_video["extension"], ".mkv")
+
+        self.assertIsNone(
+            bot._telegram_video_attachment(
+                {
+                    "document": {
+                        "file_id": "pdf-file",
+                        "file_name": "notes.pdf",
+                        "mime_type": "application/pdf",
+                    }
+                }
+            )
+        )
+
+    async def test_download_telegram_file_streams_to_disk(self):
+        get_file = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"file_path": "videos/file_1.mp4"},
+            }
+        )
+        self.start_patch(patch.object(bot, "tg_api", new=get_file))
+        self.start_patch(patch.object(bot, "BOT_TOKEN", "test-token"))
+        self.start_patch(
+            patch.object(bot, "probe_video_info", new=Mock(return_value=(12.0, 0, 0)))
+        )
+        requested = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def aiter_bytes(self, _size):
+                yield b"0123456789" * 1100
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, method, url):
+                requested["method"] = method
+                requested["url"] = url
+                return FakeResponse()
+
+        self.start_patch(patch.object(bot.httpx, "AsyncClient", FakeClient))
+        out_path = self.tmp_path / "telegram-source.mp4"
+        duration = await bot.download_telegram_file("file-1", str(out_path))
+
+        self.assertEqual(duration, 12.0)
+        self.assertEqual(out_path.read_bytes(), b"0123456789" * 1100)
+        self.assertEqual(requested["method"], "GET")
+        self.assertIn("/file/bottest-token/videos/file_1.mp4", requested["url"])
+
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    async def test_prepare_source_segments_creates_ordered_parts(self):
+        source_path = self.tmp_path / "five-second-source.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN, "-y",
+                "-f", "lavfi",
+                "-i", "color=c=blue:s=64x64:r=10:d=5",
+                "-g", "5",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                str(source_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        work_dir = self.tmp_path / "segment-job"
+        work_dir.mkdir()
+        segments = await bot._prepare_source_segments(
+            str(source_path), str(work_dir), 5, segment_seconds=2
+        )
+
+        self.assertEqual([item["index"] for item in segments], [1, 2, 3])
+        self.assertTrue(all(Path(item["path"]).exists() for item in segments))
+        self.assertAlmostEqual(sum(item["duration"] for item in segments), 5, delta=0.4)
+        manifest = json.loads((work_dir / "source_segments.json").read_text())
+        self.assertEqual(manifest["source_segment_seconds"], 2)
+        self.assertEqual(len(manifest["segments"]), 3)
+
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    async def test_prepare_source_segments_falls_back_when_keyframes_are_sparse(self):
+        source_path = self.tmp_path / "sparse-keyframe-source.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN, "-y",
+                "-f", "lavfi",
+                "-i", "color=c=red:s=64x64:r=10:d=5",
+                "-g", "1000",
+                "-keyint_min", "1000",
+                "-sc_threshold", "0",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                str(source_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        work_dir = self.tmp_path / "sparse-segment-job"
+        work_dir.mkdir()
+        segments = await bot._prepare_source_segments(
+            str(source_path), str(work_dir), 5, segment_seconds=2
+        )
+
+        self.assertEqual([item["index"] for item in segments], [1, 2, 3])
+        self.assertTrue(all(item["duration"] <= 2.25 for item in segments))
+        self.assertAlmostEqual(sum(item["duration"] for item in segments), 5, delta=0.4)
+
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    def test_concat_video_parts_joins_recap_files_in_order(self):
+        parts = []
+        for index, color in enumerate(("blue", "green"), start=1):
+            part = self.tmp_path / f"recap-{index}.mp4"
+            result = subprocess.run(
+                [
+                    bot.FFMPEG_BIN, "-y",
+                    "-f", "lavfi",
+                    "-i", f"color=c={color}:s=64x64:r=10:d=1",
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    str(part),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode != 0:
+                self.skipTest("could not generate a local MP4 fixture")
+            parts.append(str(part))
+
+        output = self.tmp_path / "joined.mp4"
+        concat_list = self.tmp_path / "joined.txt"
+        self.assertTrue(
+            bot._concat_video_parts(parts, str(output), str(concat_list))
+        )
+        duration, _, _ = bot.probe_video_info(str(output))
+        self.assertAlmostEqual(duration, 2.0, delta=0.25)
+        self.assertEqual(
+            concat_list.read_text(encoding="utf-8").count("file '"), 2
+        )
 
     def test_final_duration_window_is_literal_source_percentage(self):
         settings = {"coverage": 90, "rate": 10.0, "speed": 2.0}
@@ -1390,6 +1613,22 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         second_markup = self.mock_send_text.await_args_list[1].kwargs["reply_markup"]
         self.assertTrue(first_markup["is_persistent"])
         self.assertIn("inline_keyboard", second_markup)
+        start_text = self.mock_send_text.await_args_list[1].args[1]
+        for expected in (
+            "Telegram ထဲ တိုက်ရိုက်ပို့တဲ့",
+            "RedNote link",
+            "၂ မိနစ်စီ",
+            "၃ နာရီ = ၉၀ ပိုင်း",
+            "တစ်ပိုင်းချင်း",
+            "ဇာတ်ကောင်နာမည်တွေ",
+            "ကျွန်တော်/ကျွန်မ",
+            "အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်",
+            "လက်ရှိ Feature ၂၀",
+            "မူရင်းပိုင်းချိန်",
+            "2 မိနစ်",
+        ):
+            self.assertIn(expected, start_text)
+        self.assertLessEqual(len(start_text), 4096)
 
         self.mock_send_text.reset_mock()
         await bot.process_admin_update(
@@ -1404,7 +1643,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.mock_send_text.reset_mock()
         await bot.process_admin_update(message_update(bot.PERSISTENT_BUTTON_RECAP))
         recap_text = self.mock_send_text.await_args.args[1]
-        self.assertIn("90%", recap_text)
+        self.assertIn("Telegram video file", recap_text)
+        self.assertIn("၂ မိနစ်စီ", recap_text)
         self.assertEqual(
             self.mock_send_text.await_args.kwargs["reply_markup"],
             bot.main_menu_keyboard(chat_id),
@@ -1424,6 +1664,109 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.mock_send_text.await_args.kwargs["reply_markup"]["is_persistent"]
         )
         fake_link_job.assert_awaited_once()
+
+    async def test_uploaded_video_and_caption_link_use_the_recap_inputs(self):
+        chat_id = int(bot.ADMIN_ID)
+        fake_video_job = AsyncMock(return_value=None)
+        self.start_patch(
+            patch.object(bot, "handle_telegram_video_job", new=fake_video_job)
+        )
+
+        video_update = {
+            "message": {
+                "message_id": 21,
+                "chat": {"id": chat_id},
+                "from": {"id": chat_id},
+                "video": {
+                    "file_id": "uploaded-video",
+                    "file_unique_id": "unique-video",
+                    "duration": 755,
+                    "file_size": 12_345_678,
+                    "mime_type": "video/mp4",
+                },
+            }
+        }
+        bot.PERSISTENT_KEYBOARD_CHATS.clear()
+        self.mock_send_text.reset_mock()
+        await bot.process_admin_update(video_update)
+
+        fake_video_job.assert_awaited_once()
+        self.assertEqual(fake_video_job.await_args.args[2]["file_id"], "uploaded-video")
+        self.mock_send_text.assert_awaited_once()
+        self.assertTrue(
+            self.mock_send_text.await_args.kwargs["reply_markup"]["is_persistent"]
+        )
+
+        # A link supplied as a caption on a photo/media message should use
+        # the same link path instead of being ignored because text is empty.
+        fake_link_job = AsyncMock(return_value=None)
+        self.start_patch(patch.object(bot, "handle_link_job", new=fake_link_job))
+        caption_update = {
+            "message": {
+                "message_id": 22,
+                "chat": {"id": chat_id},
+                "from": {"id": chat_id},
+                "photo": [{"file_id": "cover"}],
+                "caption": "https://www.xiaohongshu.com/discovery/item/example",
+            }
+        }
+        await bot.process_admin_update(caption_update)
+        fake_link_job.assert_awaited_once()
+
+    async def test_pending_uploaded_video_starts_from_confirm_callback(self):
+        chat_id = int(bot.ADMIN_ID)
+        self.start_patch(
+            patch.object(
+                bot,
+                "get_user_settings",
+                side_effect=lambda _chat: {
+                    **bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+                    "auto_start": False,
+                },
+            )
+        )
+        self.mock_send_text.reset_mock()
+        await bot.process_admin_update(
+            {
+                "message": {
+                    "message_id": 31,
+                    "chat": {"id": chat_id},
+                    "from": {"id": chat_id},
+                    "document": {
+                        "file_id": "pending-doc-video",
+                        "file_name": "episode.mp4",
+                        "mime_type": "video/mp4",
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(
+            bot.PENDING_INPUTS[chat_id]["file_id"], "pending-doc-video"
+        )
+        confirm_markup = self.mock_send_text.await_args.kwargs["reply_markup"]
+        self.assertEqual(confirm_markup, bot.confirm_keyboard())
+
+        fake_video_job = AsyncMock(return_value=None)
+        self.start_patch(
+            patch.object(bot, "handle_telegram_video_job", new=fake_video_job)
+        )
+        await bot.process_admin_update(
+            {
+                "callback_query": {
+                    "id": "cb-video-start",
+                    "data": "job:start",
+                    "from": {"id": chat_id},
+                    "message": {"message_id": 32, "chat": {"id": chat_id}},
+                }
+            }
+        )
+        # Callback-spawned jobs run in the event loop; give their retained
+        # task one loop turn before checking the mocked job.
+        await asyncio.sleep(0)
+        fake_video_job.assert_awaited_once()
+        self.assertEqual(fake_video_job.await_args.args[2]["file_id"], "pending-doc-video")
+        self.assertNotIn(chat_id, bot.PENDING_INPUTS)
 
     async def test_progress_buttons_stay_attached_and_cancel_worker_job(self):
         chat_id = int(bot.ADMIN_ID)
@@ -1595,6 +1938,15 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["first_person_enforcement"], "per_scene_validated"
             )
+            self.assertEqual(health.json()["source_segment_seconds"], 120)
+            self.assertEqual(
+                health.json()["segment_pipeline"],
+                "download_split_120s_recap_each_concat_send",
+            )
+            self.assertEqual(
+                health.json()["input_types"],
+                ["telegram_video", "telegram_document_video", "video_link"],
+            )
             self.assertEqual(
                 health.json()["telegram_buttons"], "inline_persistent_and_menu"
             )
@@ -1617,6 +1969,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(root.status_code, 200)
             self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
             self.assertEqual(root.json()["target_final_duration_percent"], 90)
+            self.assertEqual(root.json()["source_segment_seconds"], 120)
+            self.assertEqual(
+                root.json()["segment_pipeline"],
+                "download_split_120s_recap_each_concat_send",
+            )
             self.assertTrue(root.json()["worker_api_configured"])
 
             missing_auth = await client.get("/api/v1/jobs/nope")
@@ -1834,6 +2191,194 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         state = bot._load_worker_job("job-api-cancel-running")
         self.assertEqual(state["stages"]["download"]["status"], "cancelled")
         self.assertNotIn(13003, bot.ACTIVE_JOBS)
+
+    async def test_telegram_source_is_recapped_part_by_part_then_joined_and_sent(self):
+        build_calls = []
+        prepare_calls = []
+        concat_calls = []
+
+        async def fake_telegram_download(file_id, output_path, tracker=None):
+            self.assertEqual(file_id, "uploaded-source")
+            Path(output_path).write_bytes(b"x" * 10001)
+            return 250.0
+
+        async def fake_prepare(source_path, work_dir, total_duration, segment_seconds):
+            prepare_calls.append((source_path, work_dir, total_duration, segment_seconds))
+            segment_dir = Path(work_dir) / "source_segments"
+            segment_dir.mkdir(parents=True, exist_ok=True)
+            segments = []
+            for index, start, end in ((1, 0, 120), (2, 120, 240), (3, 240, 250)):
+                path = segment_dir / f"source_part_{index:04d}.mp4"
+                path.write_bytes(b"s" * 100)
+                segments.append(
+                    {
+                        "index": index,
+                        "path": str(path),
+                        "start": float(start),
+                        "end": float(end),
+                        "duration": float(end - start),
+                    }
+                )
+            return segments
+
+        async def fake_build(
+            chunk_path,
+            actual_dur,
+            start,
+            end,
+            story_context,
+            part_num,
+            tracker,
+            settings,
+        ):
+            build_calls.append(
+                {
+                    "path": chunk_path,
+                    "duration": actual_dur,
+                    "start": start,
+                    "end": end,
+                    "context": dict(story_context),
+                    "part": part_num,
+                    "settings": dict(settings),
+                }
+            )
+            output = Path(chunk_path).parents[1] / f"recap_part_{part_num:04d}.mp4"
+            output.write_bytes(b"r" * 100)
+            return str(output), {
+                "characters": ["Hero", "Mina"],
+                "summary": f"after part {part_num}",
+                "last_scene": f"scene ending {part_num}",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            }
+
+        def fake_concat(parts, output_path, concat_path):
+            concat_calls.append(list(parts))
+            Path(concat_path).write_text("\n".join(parts), encoding="utf-8")
+            Path(output_path).write_bytes(b"joined" * 100)
+            return True
+
+        def fake_probe(path):
+            name = Path(path).name
+            if name == "final_recap.mp4":
+                return (225.0, 64, 64)
+            if name.endswith("0003.mp4"):
+                return (10.0, 64, 64)
+            return (120.0, 64, 64)
+
+        self.start_patch(
+            patch.object(bot, "download_telegram_file", new=fake_telegram_download)
+        )
+        self.start_patch(
+            patch.object(bot, "_prepare_source_segments", new=fake_prepare)
+        )
+        self.start_patch(patch.object(bot, "build_chunk_recap", new=fake_build))
+        self.start_patch(patch.object(bot, "_concat_video_parts", new=fake_concat))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.start_patch(
+            patch.object(
+                bot,
+                "split_for_telegram",
+                new=AsyncMock(side_effect=lambda path, _work_dir: [path]),
+            )
+        )
+        self.mock_tg_upload.reset_mock()
+
+        await bot.handle_telegram_video_job(
+            15001,
+            88,
+            {
+                "file_id": "uploaded-source",
+                "file_name": "movie.mp4",
+                "mime_type": "video/mp4",
+                "duration": 250,
+                "file_size": 10001,
+            },
+        )
+
+        self.assertEqual(len(prepare_calls), 1)
+        self.assertEqual(prepare_calls[0][2:], (250.0, 120))
+        self.assertEqual([call["part"] for call in build_calls], [1, 2, 3])
+        self.assertEqual(
+            [(call["start"], call["end"]) for call in build_calls],
+            [(0.0, 120.0), (120.0, 240.0), (240.0, 250.0)],
+        )
+        self.assertTrue(
+            all(call["settings"]["chunk"] == 120 for call in build_calls)
+        )
+        self.assertEqual(build_calls[1]["context"]["summary"], "after part 1")
+        self.assertEqual(build_calls[2]["context"]["summary"], "after part 2")
+        self.assertEqual(build_calls[2]["context"]["protagonist"], "Hero")
+        self.assertEqual(build_calls[2]["context"]["characters"], ["Hero", "Mina"])
+        self.assertEqual(len(concat_calls), 1)
+        self.assertEqual(
+            [Path(path).name for path in concat_calls[0]],
+            ["recap_part_0001.mp4", "recap_part_0002.mp4", "recap_part_0003.mp4"],
+        )
+        self.mock_tg_upload.assert_awaited_once()
+        self.assertEqual(self.mock_tg_upload.await_args.args[0], "sendVideo")
+        self.assertEqual(Path(self.mock_tg_upload.await_args.args[4]).name, "final_recap.mp4")
+        self.assertNotIn(15001, bot.ACTIVE_JOBS)
+
+    async def test_failed_final_join_never_sends_a_partial_video(self):
+        async def fake_telegram_download(_file_id, output_path, _tracker=None):
+            Path(output_path).write_bytes(b"x" * 10001)
+            return 60.0
+
+        async def fake_prepare(_source_path, work_dir, _duration, _seconds):
+            path = Path(work_dir) / "source_part_0001.mp4"
+            path.write_bytes(b"s" * 100)
+            return [
+                {
+                    "index": 1,
+                    "path": str(path),
+                    "start": 0.0,
+                    "end": 60.0,
+                    "duration": 60.0,
+                }
+            ]
+
+        async def fake_build(chunk_path, *_args):
+            output = Path(chunk_path).parent / "recap_part_0001.mp4"
+            output.write_bytes(b"r" * 100)
+            return str(output), {
+                "characters": ["Hero"],
+                "summary": "done",
+                "last_scene": "end",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            }
+
+        self.start_patch(
+            patch.object(bot, "download_telegram_file", new=fake_telegram_download)
+        )
+        self.start_patch(
+            patch.object(bot, "_prepare_source_segments", new=fake_prepare)
+        )
+        self.start_patch(patch.object(bot, "build_chunk_recap", new=fake_build))
+        self.start_patch(
+            patch.object(bot, "_concat_video_parts", new=Mock(return_value=False))
+        )
+        self.start_patch(
+            patch.object(bot, "probe_video_info", new=lambda _path: (60.0, 64, 64))
+        )
+        self.mock_tg_upload.reset_mock()
+        self.mock_edit_text.reset_mock()
+
+        await bot.handle_telegram_video_job(
+            15002,
+            89,
+            {"file_id": "uploaded-source", "mime_type": "video/mp4"},
+        )
+
+        self.mock_tg_upload.assert_not_awaited()
+        self.assertTrue(
+            any(
+                "final video တစ်ခုအဖြစ်" in str(call.args[2])
+                for call in self.mock_edit_text.await_args_list
+            )
+        )
+        self.assertNotIn(15002, bot.ACTIVE_JOBS)
 
     async def test_n8n_forwarding_failure_falls_back_to_direct_pipeline(self):
         self.start_patch(patch.object(bot, "PIPELINE_MODE", "n8n"))
