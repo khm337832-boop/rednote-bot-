@@ -131,8 +131,11 @@ button to **commands**, and re-registers its webhook with
 `allowed_updates=["message", "edited_message", "callback_query"]` so inline
 button callbacks cannot remain disabled by an older webhook setting. The
 webhook base is resolved in this order: explicit `WEBHOOK_BASE_URL` /
-`PUBLIC_BASE_URL`, Render's actual `RENDER_EXTERNAL_HOSTNAME`, then
-`RENDER_EXTERNAL_URL`. Setup is verified with `getMe` and
+`PUBLIC_BASE_URL` (custom domains only — a stale value pointing at a
+*different* `*.onrender.com` host is ignored), Render's actual
+`RENDER_EXTERNAL_HOSTNAME`, then `RENDER_EXTERNAL_URL`. This guarantees a
+freshly deployed instance always re-registers Telegram's webhook to
+*itself*, never back to an older service. Setup is verified with `getMe` and
 `getWebhookInfo` and retried with backoff.
 
 A deployment is **not** verified until the live service reports the new
@@ -147,7 +150,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v3.6-two-minute-segment-recap"`,
+URLs must show `"version":"v3.7-live-deploy-webhook-fix"`,
 `"source_segment_seconds":120`,
 `"segment_pipeline":"download_split_120s_recap_each_concat_send"`,
 `"telegram_buttons":"inline_persistent_and_menu"`, the service's real

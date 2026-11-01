@@ -4,6 +4,7 @@ services:
   - type: web
     name: rednote-bot
     runtime: docker
+    plan: free
     branch: main            # ⬅️ အမြဲ main branch (code အသစ် ရှိတဲ့ နေရာ)
     autoDeploy: true        # ⬅️ main ထဲ push/merge တိုင်း အလိုအလျောက် deploy
     dockerfilePath: ./Dockerfile
