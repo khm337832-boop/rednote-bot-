@@ -1858,6 +1858,25 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 bot._resolve_public_base_url(), "https://bot.example.com"
             )
 
+        # A stale env copied from an older Render service must never make
+        # this freshly deployed instance register Telegram's webhook back
+        # to that old service; the platform hostname of *this* instance
+        # wins over any different *.onrender.com value.
+        for env_key in ("WEBHOOK_BASE_URL", "PUBLIC_BASE_URL"):
+            with patch.dict(
+                os.environ,
+                {
+                    env_key: "https://rednote-bot-gzd0.onrender.com/",
+                    "RENDER_EXTERNAL_HOSTNAME": "actual-service.onrender.com",
+                    "RENDER_EXTERNAL_URL": "https://rednote-bot-gzd0.onrender.com",
+                },
+                clear=True,
+            ):
+                self.assertEqual(
+                    bot._resolve_public_base_url(),
+                    "https://actual-service.onrender.com",
+                )
+
     async def test_telegram_setup_registers_menu_and_callback_webhook(self):
         calls = []
         expected_url = "https://actual-service.onrender.com/webhook"

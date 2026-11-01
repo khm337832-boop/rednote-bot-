@@ -66,26 +66,43 @@ def _clean_public_base_url(value: str) -> str:
 def _resolve_public_base_url() -> str:
     """Resolve this service's real public URL for Telegram webhook setup.
 
-    Priority matters.  A stale, manually copied ``RENDER_EXTERNAL_URL`` can
-    otherwise make a freshly deployed bot re-register Telegram's webhook to
-    an older service, leaving the user talking to obsolete code.  Render's
-    platform-provided hostname describes the instance that is actually
-    running this process, so prefer it over the generic URL variable.  An
-    explicit ``WEBHOOK_BASE_URL`` remains available for custom domains.
+    Priority matters.  A stale, manually copied ``WEBHOOK_BASE_URL`` /
+    ``PUBLIC_BASE_URL`` / ``RENDER_EXTERNAL_URL`` can otherwise make a
+    freshly deployed bot re-register Telegram's webhook to an older
+    service, leaving the user talking to obsolete code even though the
+    new deploy is healthy.  Render's platform-provided hostname describes
+    the instance that is actually running this process, so when an
+    explicit value points at a *different* ``*.onrender.com`` host it is
+    stale by definition and is ignored in favour of the real hostname.
+    An explicit non-Render custom domain is still respected.
     """
+    hostname = str(os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
+    hostname = hostname.replace("https://", "").replace("http://", "")
+    hostname = hostname.strip("/").split("/")[0].strip()
+    actual_render_url = f"https://{hostname}" if hostname else ""
+
     explicit = _clean_public_base_url(
         os.environ.get("WEBHOOK_BASE_URL")
         or os.environ.get("PUBLIC_BASE_URL")
         or ""
     )
     if explicit:
+        explicit_host = urlparse(explicit).netloc.lower()
+        if (
+            actual_render_url
+            and explicit_host.endswith(".onrender.com")
+            and explicit_host != hostname.lower()
+        ):
+            logger.warning(
+                "Ignoring stale public URL %s; this instance is %s",
+                explicit,
+                actual_render_url,
+            )
+            return actual_render_url
         return explicit
 
-    hostname = str(os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
-    hostname = hostname.replace("https://", "").replace("http://", "")
-    hostname = hostname.strip("/").split("/")[0].strip()
-    if hostname:
-        return f"https://{hostname}"
+    if actual_render_url:
+        return actual_render_url
 
     render_url = _clean_public_base_url(os.environ.get("RENDER_EXTERNAL_URL"))
     if render_url:
@@ -5918,7 +5935,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.6-two-minute-segment-recap"
+BUILD_VERSION = "v3.7-live-deploy-webhook-fix"
 BUILD_FEATURES = 20
 
 
