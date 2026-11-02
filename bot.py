@@ -333,22 +333,30 @@ GEMINI_UPLOAD_TIMEOUT_SECONDS = max(
     60, _parse_int_env("GEMINI_UPLOAD_TIMEOUT_SECONDS", 600)
 )
 GEMINI_HEARTBEAT_SECONDS = 20.0
-# Staggered hedging for script generation: if the current model has
-# not answered within this delay, the next model is started *in
-# parallel* and the first successful response wins.  A single slow
-# or queued request (observed running 100+ seconds on one model
-# while others were idle) must not block the whole cascade.
+# Fastest-answer script generation (user priority: minimal waiting).
+# For calls that include the video itself, the first
+# GEMINI_HEDGE_INITIAL_PARALLEL models are launched *at the same
+# time* and the first successful response wins; any model still
+# unanswered after GEMINI_HEDGE_DELAY_SECONDS gets another model
+# started in parallel (staggered hedging).  Text-only calls (repairs,
+# summaries -- already fast) start with one model to save quota and
+# only hedge after the delay.  A single slow or queued request
+# (observed running 100+ seconds on one model while others were
+# idle) must never block the whole cascade.
 GEMINI_HEDGE_DELAY_SECONDS = max(
-    1, _parse_int_env("GEMINI_HEDGE_DELAY_SECONDS", 45)
+    1, _parse_int_env("GEMINI_HEDGE_DELAY_SECONDS", 15)
+)
+GEMINI_HEDGE_INITIAL_PARALLEL = max(
+    1, _parse_int_env("GEMINI_HEDGE_INITIAL_PARALLEL", 2)
 )
 # Gemini "503 high demand" / 429 spikes usually clear within minutes.
-# Burning every model within seconds (the old behaviour) turned those
-# temporary spikes into failed jobs, so overload-class failures get
-# extra whole rounds with short, gently growing backoff inside this
-# total budget -- probing often (every ~10-30s) so the job resumes
-# almost as soon as capacity returns instead of sleeping past it.
+# Overload-class failures get extra whole rounds with very short
+# backoff inside this total budget -- probing every ~6-10s so the job
+# resumes almost as soon as capacity returns -- but the budget stays
+# small on purpose: failing clearly after ~2 minutes beats making
+# the user stare at a spinner for five.
 GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS = max(
-    0, _parse_int_env("GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS", 300)
+    0, _parse_int_env("GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS", 120)
 )
 GEMINI_OVERLOAD_MAX_ROUNDS = max(
     1, _parse_int_env("GEMINI_OVERLOAD_MAX_ROUNDS", 12)
@@ -3498,15 +3506,19 @@ async def _generate_direct_gemini_json(
 
     Within a round, models are launched with staggered hedging: the
     next model starts as soon as the previous one *fails*, or after
-    ``GEMINI_HEDGE_DELAY_SECONDS`` if it is still running, and the
-    first successfully parsed response wins.  A single slow/queued
-    request (observed running 100+ seconds on one model while others
-    were idle) therefore no longer blocks the whole cascade; losing
-    attempts are abandoned and die via the client HTTP timeout.
-    Ordinary failures stop after one round.  Overload-class failures
-    (429 / 503 "high demand") run extra rounds with short backoff
-    inside ``GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS`` (probing every
-    ~12-30s so the job resumes almost as soon as capacity returns).
+    ``GEMINI_HEDGE_DELAY_SECONDS`` if it is still running; on calls
+    that carry the video itself, the first
+    ``GEMINI_HEDGE_INITIAL_PARALLEL`` models are raced from t=0.
+    The first successfully parsed response wins.  A single
+    slow/queued request (observed running 100+ seconds on one model
+    while others were idle) therefore no longer blocks the whole
+    cascade; losing attempts are abandoned and die via the client
+    HTTP timeout.  Ordinary failures stop after one round.
+    Overload-class failures (429 / 503 "high demand") run extra
+    rounds with very short backoff inside
+    ``GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS`` (probing every ~6-10s so
+    the job resumes almost as soon as capacity returns, but giving
+    up clearly after ~2 minutes instead of making the user wait).
     """
     attempts_per_model = max(1, int(attempts_per_model or 1))
     models = _live_gemini_models(PREFERRED_MODELS)
@@ -3522,18 +3534,37 @@ async def _generate_direct_gemini_json(
         GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS or 0
     )
     max_rounds = max(1, int(GEMINI_OVERLOAD_MAX_ROUNDS or 1))
-    hedge_delay = max(0.05, float(GEMINI_HEDGE_DELAY_SECONDS or 45.0))
+    hedge_delay = max(0.05, float(GEMINI_HEDGE_DELAY_SECONDS or 15.0))
+    # Race several models from t=0 on the slow calls (video attached);
+    # text-only calls start single and rely on the hedge timer.
+    has_media = isinstance(contents, (list, tuple)) and any(
+        not isinstance(part, str) for part in contents
+    )
+    initial_parallel = (
+        max(1, int(GEMINI_HEDGE_INITIAL_PARALLEL or 1)) if has_media else 1
+    )
     attempt_timeout = max(
         0.05, float(GEMINI_GENERATE_TIMEOUT_SECONDS or 240)
     )
     heartbeat_interval = max(0.05, float(GEMINI_HEARTBEAT_SECONDS or 20.0))
 
-    def _abandon(task) -> None:
+    def _abandon(task, model=None) -> None:
         def _swallow(done_task) -> None:
+            if done_task.cancelled():
+                return
             try:
-                done_task.exception()
+                exc = done_task.exception()
             except Exception:
-                pass
+                return
+            # Even a losing/abandoned attempt can teach us that a
+            # model was retired -- remember it so it is never
+            # launched again in this process.
+            if (
+                exc is not None
+                and model
+                and _gemini_error_is_model_gone(exc)
+            ):
+                _DEAD_GEMINI_MODELS.add(model)
 
         task.add_done_callback(_swallow)
 
@@ -3575,6 +3606,9 @@ async def _generate_direct_gemini_json(
             last_launch_at = time.monotonic()
 
         try:
+            # Fastest-answer race: launch the initial batch together.
+            while next_index < min(initial_parallel, len(sequence)):
+                _launch_next()
             while pending or next_index < len(sequence):
                 # Launch immediately when idle, or hedge once the
                 # latest attempt has been running for hedge_delay.
@@ -3631,6 +3665,12 @@ async def _generate_direct_gemini_json(
                             last_error,
                         )
                         continue
+                    if winner is not None:
+                        # A sibling attempt already won this batch;
+                        # failures above were still recorded (404 /
+                        # overload bookkeeping), extra successes are
+                        # simply ignored.
+                        continue
                     raw, diagnostics = _gemini_response_text_and_diagnostics(
                         response
                     )
@@ -3665,7 +3705,8 @@ async def _generate_direct_gemini_json(
                         len(str(raw or "")),
                         f"; {diagnostics}" if diagnostics else "",
                     )
-                    break
+                    # Do not break yet: finish recording any sibling
+                    # failures from this completed batch first.
                 if winner is not None:
                     break
 
@@ -3675,7 +3716,7 @@ async def _generate_direct_gemini_json(
                 ):
                     if now - launched_at >= attempt_timeout:
                         del pending[task]
-                        _abandon(task)
+                        _abandon(task, model)
                         last_error = (
                             f"{model}: Gemini call timeout after "
                             f"{attempt_timeout:.0f}s"
@@ -3714,8 +3755,8 @@ async def _generate_direct_gemini_json(
                     except Exception:
                         pass
         finally:
-            for leftover in list(pending):
-                _abandon(leftover)
+            for leftover, (leftover_model, _s, _l) in list(pending.items()):
+                _abandon(leftover, leftover_model)
             pending.clear()
 
         if winner is not None:
@@ -3724,10 +3765,10 @@ async def _generate_direct_gemini_json(
         # One full round over every model finished without success.
         if not saw_overload or overload_round >= max_rounds:
             break
-        # Probe again soon (12s, 16s, 20s ... capped at 30s): the goal
-        # is to resume almost immediately when capacity returns, not
-        # to sleep through the end of the spike.
-        backoff = min(30.0, 8.0 + 4.0 * overload_round)
+        # Probe again almost immediately (6s, 8s, then every 10s):
+        # resume the moment capacity returns, never sleep through
+        # the end of the spike.
+        backoff = min(10.0, 4.0 + 2.0 * overload_round)
         remaining_budget = overload_deadline - time.monotonic()
         if remaining_budget <= 0:
             break
@@ -6998,7 +7039,7 @@ async def _worker_gemini_json(prompt: str, client=None):
                 logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
         if not saw_overload or round_no >= max_rounds:
             break
-        backoff = min(30.0, 8.0 + 4.0 * round_no)
+        backoff = min(10.0, 4.0 + 2.0 * round_no)
         remaining_budget = overload_deadline - time.monotonic()
         if remaining_budget <= 0:
             break
@@ -12904,7 +12945,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.5-hedged-script"
+BUILD_VERSION = "v5.6-fastest-answer"
 BUILD_FEATURES = 20
 
 
@@ -12939,6 +12980,7 @@ async def root():
         "gemini_overload_retry_budget_seconds": GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
         "gemini_overload_max_rounds": GEMINI_OVERLOAD_MAX_ROUNDS,
         "gemini_hedge_delay_seconds": GEMINI_HEDGE_DELAY_SECONDS,
+        "gemini_hedge_initial_parallel": GEMINI_HEDGE_INITIAL_PARALLEL,
         "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
@@ -13012,6 +13054,7 @@ async def health():
         "gemini_overload_retry_budget_seconds": GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
         "gemini_overload_max_rounds": GEMINI_OVERLOAD_MAX_ROUNDS,
         "gemini_hedge_delay_seconds": GEMINI_HEDGE_DELAY_SECONDS,
+        "gemini_hedge_initial_parallel": GEMINI_HEDGE_INITIAL_PARALLEL,
         "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),

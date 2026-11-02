@@ -1067,6 +1067,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         "ffmpeg is not available",
     )
     async def test_direct_recap_repairs_first_person_and_renders_90_percent(self):
+        # This test counts generate calls to verify the recap logic;
+        # pin racing off (covered separately) for a deterministic 1:1
+        # call mapping.
+        self.start_patch(
+            patch.object(bot, "GEMINI_HEDGE_INITIAL_PARALLEL", 1)
+        )
         chunk_path = self.tmp_path / "direct_chunk.mp4"
         result = subprocess.run(
             [
@@ -2222,6 +2228,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 bot.GEMINI_HEDGE_DELAY_SECONDS,
             )
             self.assertEqual(
+                health.json()["gemini_hedge_initial_parallel"],
+                bot.GEMINI_HEDGE_INITIAL_PARALLEL,
+            )
+            self.assertEqual(
                 health.json()["unavailable_gemini_models"],
                 sorted(bot._DEAD_GEMINI_MODELS),
             )
@@ -3088,6 +3098,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         fake_tts.assert_not_awaited()
 
     async def test_generate_chunk_script_retries_full_script_when_scenes_empty(self):
+        # Counts prompts to verify the retry flow; pin racing off
+        # (covered separately) for a deterministic call mapping.
+        self.start_patch(
+            patch.object(bot, "GEMINI_HEDGE_INITIAL_PARALLEL", 1)
+        )
         video_file = SimpleNamespace(
             state=SimpleNamespace(name="ACTIVE"),
             name="files/script-empty-retry",
@@ -5088,6 +5103,88 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed, 1.0)
         self.assertEqual(calls[0], "m1")
         self.assertIn("m2", calls)
+
+    async def test_direct_gemini_json_races_models_immediately_for_video(self):
+        # Fastest-answer mode: when the call carries the video, the
+        # first models start *together* -- the user must not wait for
+        # a slow first model while others sit idle.  The hedge delay
+        # is patched huge so only the initial race can explain the
+        # fast model winning immediately.
+        payload_slow = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "slow"}]}
+        payload_fast = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "fast"}]}
+        calls = []
+
+        def gen(model, contents, config):
+            calls.append(model)
+            if model == "m1":
+                time.sleep(1.2)
+                return SimpleNamespace(
+                    text=json.dumps(payload_slow, ensure_ascii=False)
+                )
+            return SimpleNamespace(
+                text=json.dumps(payload_fast, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self.start_patch(patch.object(bot, "GEMINI_HEDGE_DELAY_SECONDS", 60))
+        self.start_patch(
+            patch.object(bot, "GEMINI_HEDGE_INITIAL_PARALLEL", 2)
+        )
+        self.start_patch(
+            patch.object(bot, "GEMINI_GENERATE_TIMEOUT_SECONDS", 5)
+        )
+        self._patch_gemini_json_types()
+
+        started = time.monotonic()
+        data = await bot._generate_direct_gemini_json(
+            fake_client,
+            [SimpleNamespace(name="fake-uploaded-video"), "prompt"],
+            purpose="test script",
+            tracker=None,
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(data, payload_fast)
+        self.assertLess(elapsed, 1.0)
+        self.assertIn("m2", calls)
+
+    async def test_direct_gemini_json_text_only_call_does_not_race(self):
+        # Text-only calls (repairs/summaries) stay quota-lean: one
+        # model at a time, hedged only after the delay.  With the
+        # hedge delay patched huge, the slow first model must win
+        # and the second must never launch.
+        payload_slow = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "slow"}]}
+        calls = []
+
+        def gen(model, contents, config):
+            calls.append(model)
+            time.sleep(0.3)
+            return SimpleNamespace(
+                text=json.dumps(payload_slow, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self.start_patch(patch.object(bot, "GEMINI_HEDGE_DELAY_SECONDS", 60))
+        self.start_patch(
+            patch.object(bot, "GEMINI_HEDGE_INITIAL_PARALLEL", 2)
+        )
+        self.start_patch(
+            patch.object(bot, "GEMINI_GENERATE_TIMEOUT_SECONDS", 5)
+        )
+        self._patch_gemini_json_types()
+
+        data = await bot._generate_direct_gemini_json(
+            fake_client, ["prompt only"], purpose="test script", tracker=None
+        )
+
+        self.assertEqual(data, payload_slow)
+        self.assertEqual(calls, ["m1"])
 
     async def test_direct_gemini_json_remembers_unavailable_models(self):
         # Regression: Google retired gemini-2.5-flash-lite for this API
