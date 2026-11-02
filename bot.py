@@ -747,10 +747,10 @@ def start_features_text(chat_id=None) -> str:
         "• Telegram ထဲ တိုက်ရိုက်ပို့တဲ့ <b>video file</b> "
         "(Telegram Bot download ကန့်သတ်ချက် <b>20MB အောက်</b>)\n"
         "• Document အဖြစ် ပို့တဲ့ video file\n"
-        "• <b>RedNote link</b>၊ share စာသားထဲက link နှင့် အခြား video link\n\n"
+        "• <b>RedNote link</b>၊ share စာသားထဲက link၊ အခြား video link နှင့် Telegram public post link (t.me/name/123)\n\n"
         "<b>⚙️ Bot လုပ်မယ့် အစီအစဉ်</b>\n"
         "1️⃣ Source video အပြည့်အစုံကို အရင် download လုပ်မယ်။ "
-        "20MB ထက်ကြီးသော file ကို link အနေနဲ့ ပို့ပါ။\n"
+        "20MB ထက်ကြီးသော file ကို link အနေနဲ့ ပို့ပါ။ Telegram group/channel profile link တစ်ခုတည်းက video မဟုတ်ပါ — video ကိုယ်တိုင်ကို forward/send လုပ်ပါ။\n"
         "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ အပိုင်းချိန် Plan</b> ဆောက်မယ်။ "
         "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။ "
         "<b>အပိုင်းအားလုံးကို ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ။</b>\n"
@@ -781,7 +781,7 @@ HELP_TEXT = (
     "❓ <b>အသုံးပြုနည်း</b>\n"
     "━━━━━━━━━━━━━━━\n"
     "1️⃣ Telegram video file (20MB အောက်)၊ document video သို့မဟုတ် "
-    "RedNote/video link ပို့ပါ\n"
+    "RedNote/video link သို့မဟုတ် Telegram public post link (t.me/name/123) ပို့ပါ။ Telegram group/channel profile link တစ်ခုတည်းဆိုလျှင် video ကိုယ်တိုင်ကို forward/send လုပ်ပါ\n"
     "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက် → "
     "ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပြီး 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
     "3️⃣ လက်ရှိအပိုင်းအောက်က ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် "
@@ -1149,6 +1149,141 @@ def _is_direct_media_url(url: str) -> bool:
         or host.endswith("googlevideo.com")
         or "sns-video" in host
     )
+
+
+_TELEGRAM_LINK_HOSTS = {"t.me", "telegram.me", "telegram.dog"}
+_TELEGRAM_RESERVED_FIRST_SEGMENTS = {
+    "addemoji",
+    "addstickers",
+    "addtheme",
+    "auth",
+    "blog",
+    "confirmphone",
+    "contact",
+    "download",
+    "faq",
+    "features",
+    "iv",
+    "joinchat",
+    "login",
+    "premium",
+    "proxy",
+    "setlanguage",
+    "share",
+    "socks",
+    "stickers",
+    "themes",
+}
+
+
+def _telegram_link_info(url: str) -> dict | None:
+    """Classify a Telegram web link without making a network request.
+
+    A bare ``https://t.me/<name>`` URL identifies a bot/group/channel,
+    not a downloadable message.  Only a public URL with a numeric final
+    message ID (``https://t.me/<name>/<id>``) can be treated as a
+    candidate video post.  Invite and ``/c/...`` links identify private
+    material that a Bot API bot cannot fetch from the link alone.
+    """
+    clean = _extract_first_url(url) or str(url or "").strip()
+    try:
+        parsed = urlparse(clean)
+    except Exception:
+        return None
+    host = (parsed.hostname or "").lower().strip()
+    if not host:
+        return None
+    is_telegram_host = host in _TELEGRAM_LINK_HOSTS or any(
+        host.endswith(f".{candidate}") for candidate in _TELEGRAM_LINK_HOSTS
+    )
+    if not is_telegram_host:
+        return None
+
+    segments = [
+        segment.strip()
+        for segment in (parsed.path or "").split("/")
+        if segment.strip()
+    ]
+    info = {
+        "kind": "profile",
+        "username": "",
+        "message_id": "",
+        "segments": segments,
+        "url": clean,
+    }
+    if not segments:
+        return info
+
+    first = segments[0]
+    lowered_first = first.lower()
+    if first.startswith("+") or lowered_first == "joinchat":
+        info["kind"] = "invite"
+        return info
+    if lowered_first == "c":
+        info["kind"] = "private_post" if len(segments) >= 3 else "private"
+        if segments[-1].isdigit():
+            info["message_id"] = segments[-1]
+        return info
+    if lowered_first == "s":
+        if len(segments) >= 3 and segments[-1].isdigit():
+            info.update(
+                {
+                    "kind": "public_post",
+                    "username": segments[1],
+                    "message_id": segments[-1],
+                }
+            )
+        elif len(segments) >= 2:
+            info["username"] = segments[1]
+        return info
+    if lowered_first in _TELEGRAM_RESERVED_FIRST_SEGMENTS:
+        info["kind"] = "service"
+        return info
+
+    info["username"] = first
+    if len(segments) >= 2 and segments[-1].isdigit():
+        info.update({"kind": "public_post", "message_id": segments[-1]})
+    return info
+
+
+def _is_telegram_url(url: str) -> bool:
+    return _telegram_link_info(url) is not None
+
+
+def _telegram_link_error(url: str, info: dict | None = None) -> SourceDownloadError:
+    clean = _extract_first_url(url) or str(url or "").strip()
+    info = info or _telegram_link_info(clean) or {}
+    kind = str(info.get("kind") or "profile")
+    if kind in ("invite", "private", "private_post"):
+        user_message = (
+            "ဒီ Telegram link က private group/channel သို့မဟုတ် invite link ဖြစ်လို့ "
+            "bot က link တစ်ခုတည်းနဲ့ video ကို ဝင်ယူလို့မရပါ။ "
+            "Video ကိုယ်တိုင်ကို ဒီ bot ထဲ forward သို့မဟုတ် တိုက်ရိုက် send လုပ်ပါ။"
+        )
+        detail = f"Telegram {kind} URL cannot be fetched by a Bot API bot from the link alone"
+    elif kind == "public_post":
+        user_message = (
+            "ဒီ Telegram post မှာ download လုပ်လို့ရတဲ့ public video မတွေ့ပါ။ "
+            "Video ကိုယ်တိုင်ကို ဒီ bot ထဲ forward သို့မဟုတ် တိုက်ရိုက် send လုပ်ပါ။"
+        )
+        detail = "Telegram public post contains no downloadable public video URL"
+    elif kind == "service":
+        user_message = (
+            "ဒီ Telegram link က video post link မဟုတ်ပါ။ "
+            "Video ကိုယ်တိုင်ကို ဒီ bot ထဲ forward/send လုပ်ပါ၊ သို့မဟုတ် "
+            "public video post link (ဥပမာ https://t.me/name/123) ကို ပို့ပါ။"
+        )
+        detail = "Telegram service URL has no downloadable video message"
+    else:
+        user_message = (
+            "ဒီ link က Telegram bot/group/channel ရဲ့ profile link ပါ။ "
+            "Video post link မဟုတ်ပါ။ အဲဒီ group/channel ထဲက video ကိုယ်တိုင်ကို "
+            "ဒီ bot ထဲ forward သို့မဟုတ် တိုက်ရိုက် send လုပ်ပါ၊ သို့မဟုတ် "
+            "video post link (ဥပမာ https://t.me/name/123) ကို ပို့ပါ။"
+        )
+        detail = "Telegram profile URL has no message/video identifier"
+    return SourceDownloadError(user_message, detail=detail, user_message=user_message)
+
 
 
 def _configured_cookie_file_path() -> str:
@@ -1559,6 +1694,17 @@ def _download_error_from_detail(detail: str, url: str = "") -> SourceDownloadErr
     concise = (error_lines[-1] if error_lines else (raw_lines[-1] if raw_lines else "unknown download error"))
     concise = re.sub(r"^ERROR:\s*", "", concise, flags=re.IGNORECASE).strip()
     lowered = concise.lower()
+    telegram_info = _telegram_link_info(url) if url else None
+    if telegram_info and (
+        telegram_info.get("kind") != "public_post"
+        or "unsupported url" in lowered
+        or "no suitable extractor" in lowered
+    ):
+        telegram_error = _telegram_link_error(url, telegram_info)
+        telegram_error.detail = _safe_error_text(
+            f"{telegram_error.detail}; extractor rejected the Telegram URL", 2000
+        )
+        return telegram_error
     if "unsupported url" in lowered or "no suitable extractor" in lowered:
         user_message = (
             "ဒီ link ကို download extractor က မဖတ်နိုင်ပါ။ "
@@ -1736,6 +1882,129 @@ async def _extract_rednote_direct_urls(url: str) -> list[str]:
             _safe_error_text(e),
         )
         return []
+
+
+
+def _extract_telegram_video_urls_from_html(text: str, base_url: str = "") -> list[str]:
+    """Find direct video URLs in a Telegram public-post web preview."""
+    candidates: list[str] = []
+
+    def add(value: str):
+        clean = html.unescape(str(value or "")).strip().strip("\"'")
+        clean = clean.replace("\\/", "/")
+        clean = re.sub(r"\\u002[fF]", "/", clean)
+        clean = re.sub(r"\\u0026", "&", clean)
+        if not clean:
+            return
+        clean = urljoin(base_url or "", clean)
+        if not clean.startswith(("http://", "https://")):
+            return
+        path = (urlparse(clean).path or "").lower()
+        if path.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg")):
+            return
+        if clean not in candidates:
+            candidates.append(clean)
+
+    raw = html.unescape(str(text or ""))
+    attribute_patterns = (
+        # <video src="..."> and <source src="..."> in t.me embeds.
+        r"<video\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']",
+        r"<source\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']",
+        # Open Graph / Twitter player metadata; attributes may be reversed.
+        r"<meta\b[^>]*(?:property|name)\s*=\s*[\"'](?:og:video(?::secure_url)?|twitter:player:stream)[\"'][^>]*\bcontent\s*=\s*[\"']([^\"']+)[\"']",
+        r"<meta\b[^>]*\bcontent\s*=\s*[\"']([^\"']+)[\"'][^>]*(?:property|name)\s*=\s*[\"'](?:og:video(?::secure_url)?|twitter:player:stream)[\"']",
+        # Telegram widget variants sometimes carry the media in data attrs.
+        r"\bdata-(?:video|src|url)\s*=\s*[\"']([^\"']+)[\"']",
+    )
+    for pattern in attribute_patterns:
+        for match in re.finditer(pattern, raw, re.IGNORECASE):
+            add(match.group(1))
+
+    # Reuse the generic JSON/direct-media scanner for escaped CDN URLs and
+    # .m3u8/.mp4 values embedded in inline scripts.
+    for candidate in _extract_direct_video_urls_from_text(raw, base_url):
+        add(candidate)
+    return candidates[:10]
+
+
+def _telegram_public_post_page_urls(url: str, info: dict | None = None) -> list[str]:
+    clean = _extract_first_url(url) or str(url or "").strip()
+    info = info or _telegram_link_info(clean) or {}
+    if info.get("kind") != "public_post":
+        return []
+    parsed = urlparse(clean)
+    pages: list[str] = []
+
+    def add(value: str):
+        if value and value not in pages:
+            pages.append(value)
+
+    add(clean)
+    add(parsed._replace(query="embed=1&mode=tme", fragment="").geturl())
+    segments = [str(item) for item in (info.get("segments") or []) if str(item)]
+    if segments and segments[0].lower() != "s":
+        add("https://t.me/s/" + "/".join(segments))
+    return pages
+
+
+async def _extract_telegram_direct_urls(url: str) -> list[str]:
+    info = _telegram_link_info(url)
+    if not info or info.get("kind") != "public_post":
+        return []
+    candidates: list[str] = []
+    try:
+        async with httpx.AsyncClient(
+            timeout=60.0,
+            follow_redirects=True,
+            headers=_source_browser_headers(url),
+        ) as client:
+            for page_url in _telegram_public_post_page_urls(url, info):
+                try:
+                    async with client.stream("GET", page_url) as response:
+                        if int(getattr(response, "status_code", 0) or 0) >= 400:
+                            logger.warning(
+                                "Telegram public post fallback HTTP %s",
+                                response.status_code,
+                            )
+                            continue
+                        final_url = str(response.url or page_url)
+                        content_type = str(
+                            response.headers.get("content-type") or ""
+                        ).lower()
+                        if content_type.startswith("video/"):
+                            if final_url not in candidates:
+                                candidates.append(final_url)
+                            continue
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in response.aiter_bytes(1024 * 256):
+                            if not chunk:
+                                continue
+                            chunks.append(chunk)
+                            total += len(chunk)
+                            if total >= 4 * 1024 * 1024:
+                                break
+                    text = b"".join(chunks).decode(errors="ignore")
+                    for candidate in _extract_telegram_video_urls_from_html(
+                        text, final_url
+                    ):
+                        if candidate not in candidates:
+                            candidates.append(candidate)
+                    if candidates:
+                        break
+                except Exception as e:
+                    logger.warning(
+                        "Telegram public post page extraction failed: %s",
+                        _safe_error_text(e),
+                    )
+                    continue
+    except Exception as e:
+        logger.warning(
+            "Telegram direct URL extraction failed: %s",
+            _safe_error_text(e),
+        )
+        return []
+    return candidates[:10]
 
 
 async def _download_direct_media(
@@ -1928,6 +2197,18 @@ async def get_source_duration(url: str, *, raise_on_error: bool = False) -> floa
         )
         if raise_on_error:
             raise error
+        return 0.0
+    telegram_info = _telegram_link_info(original)
+    if telegram_info:
+        if telegram_info.get("kind") != "public_post":
+            error = _telegram_link_error(original, telegram_info)
+            logger.warning(
+                "get_source_duration skipped Telegram %s URL: %s",
+                telegram_info.get("kind"),
+                error.detail,
+            )
+            if raise_on_error:
+                raise error
         return 0.0
     resolved = await _resolve_source_url(original)
     candidates = _source_url_candidates(original, resolved)
@@ -2171,6 +2452,74 @@ async def download_full(
             "Video link မမှန်ပါ။ http/https link အပြည့်အစုံ ပို့ပါ။",
             detail="source URL is empty or not http/https",
         )
+        if raise_on_error:
+            raise error
+        return 0.0
+
+    telegram_info = _telegram_link_info(original)
+    if telegram_info:
+        if telegram_info.get("kind") != "public_post":
+            error = _telegram_link_error(original, telegram_info)
+            logger.warning(
+                "download_full rejected Telegram %s URL: %s",
+                telegram_info.get("kind"),
+                error.detail,
+            )
+            if raise_on_error:
+                raise error
+            return 0.0
+
+        telegram_errors: list[SourceDownloadError] = []
+        direct_urls = await _extract_telegram_direct_urls(original)
+        for direct_url in direct_urls[:5]:
+            try:
+                direct_path = (urlparse(direct_url).path or "").lower()
+                if direct_path.endswith(".m3u8"):
+                    return await _download_with_ytdlp_once(
+                        direct_url,
+                        out_path,
+                        tracker,
+                        total_dur,
+                        format_selector="best",
+                    )
+                return await _download_direct_media(
+                    direct_url,
+                    out_path,
+                    tracker,
+                    total_dur,
+                    referer=original,
+                )
+            except SourceDownloadError as e:
+                telegram_errors.append(e)
+                logger.warning(
+                    "Telegram public post direct fallback failed host=%s: %s",
+                    _url_hostname(direct_url),
+                    e.detail,
+                )
+
+        # One best-effort yt-dlp attempt keeps this useful if a future
+        # extractor/webpage change makes the post downloadable there.
+        try:
+            return await _download_with_ytdlp_once(
+                original,
+                out_path,
+                tracker,
+                total_dur,
+                format_selector="best",
+            )
+        except SourceDownloadError as e:
+            telegram_errors.append(e)
+            logger.warning(
+                "Telegram public post yt-dlp fallback failed: %s", e.detail
+            )
+
+        error = _telegram_link_error(original, telegram_info)
+        if telegram_errors:
+            error.detail = _safe_error_text(
+                f"{error.detail}; fallback detail: {telegram_errors[0].detail}",
+                2000,
+            )
+        logger.warning("download_full failed for Telegram public post: %s", error.detail)
         if raise_on_error:
             raise error
         return 0.0
@@ -10115,7 +10464,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v4.0-sequential-one-part-flow"
+BUILD_VERSION = "v4.1-telegram-link-fix"
 BUILD_FEATURES = 20
 
 
@@ -10142,7 +10491,8 @@ async def root():
             else "download_split_120s_recap_each_concat_send"
         ),
         "input_types": ["telegram_video", "telegram_document_video", "video_link"],
-        "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_and_rednote_fallbacks",
+        "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_rednote_and_telegram_fallbacks",
+        "telegram_link_handling": "profile_rejected_public_post_web_fallback",
         "telegram_file_download_limit_mb": 20,
         "yt_dlp_version": _installed_yt_dlp_version(),
         "yt_dlp_impersonation_available": _yt_dlp_impersonation_available(),
@@ -10188,7 +10538,8 @@ async def health():
             else "download_split_120s_recap_each_concat_send"
         ),
         "input_types": ["telegram_video", "telegram_document_video", "video_link"],
-        "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_and_rednote_fallbacks",
+        "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_rednote_and_telegram_fallbacks",
+        "telegram_link_handling": "profile_rejected_public_post_web_fallback",
         "telegram_file_download_limit_mb": 20,
         "yt_dlp_version": _installed_yt_dlp_version(),
         "yt_dlp_impersonation_available": _yt_dlp_impersonation_available(),
