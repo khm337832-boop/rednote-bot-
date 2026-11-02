@@ -321,6 +321,11 @@ WORKER_STAGE_SEMAPHORE = asyncio.Semaphore(1)
 
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 45 * 1024 * 1024
+# The public Bot API can download at most 20MB per file.  Original parts
+# sent to Telegram are therefore capped just below that limit so the bot
+# can always re-download its own part message when a session has to be
+# rebuilt after the ephemeral disk is wiped.
+MANUAL_RECOVERABLE_SEND_BYTES = 19 * 1024 * 1024
 # Product rule: download the complete source first and split it into
 # two-minute parts (last part may be shorter).  In the default Telegram
 # flow the whole script is then written, original parts are sent back with
@@ -5160,12 +5165,19 @@ async def _acquire_source_file(
     return source_path, float(duration or 0)
 
 
-def _make_telegram_preview_copy(source_path: str, output_path: str) -> bool:
-    """Create a <=45MB preview for an original segment Telegram cannot accept."""
+def _make_telegram_preview_copy(
+    source_path: str,
+    output_path: str,
+    target_bytes: int = None,
+) -> bool:
+    """Create a size-capped preview copy of an original segment."""
     duration, src_w, src_h = probe_video_info(source_path)
     if duration <= 0:
         return False
-    target_bytes = int(MAX_TG_BYTES * 0.92)
+    if not target_bytes or int(target_bytes) <= 0:
+        target_bytes = int(MAX_TG_BYTES * 0.92)
+    else:
+        target_bytes = int(target_bytes)
     total_bps = int(target_bytes * 8 / max(1.0, duration))
     audio_bps = 96_000 if total_bps > 320_000 else 64_000
     video_bps = max(180_000, total_bps - audio_bps)
@@ -5207,10 +5219,11 @@ def _make_telegram_preview_copy(source_path: str, output_path: str) -> bool:
         ],
         1200,
     )
+    size_limit = min(MAX_TG_BYTES, int(target_bytes * 1.08))
     return bool(
         result.returncode == 0
         and os.path.exists(output_path)
-        and 0 < os.path.getsize(output_path) <= MAX_TG_BYTES
+        and 0 < os.path.getsize(output_path) <= size_limit
     )
 
 
@@ -8588,6 +8601,11 @@ def _manual_counts(state: dict) -> dict:
 MANUAL_RECOVERY_MARKER = "RNB1."
 
 
+def _telegram_text_units(text) -> int:
+    """Length as Telegram counts it (UTF-16 code units)."""
+    return len(str(text or "").encode("utf-16-le")) // 2
+
+
 def _manual_recovery_encode(payload: dict) -> str:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     compressed = zlib.compress(raw, 9)
@@ -9180,13 +9198,24 @@ async def _rebuild_manual_session_from_legacy_message(
             "♻️ Session ပြန်ဆယ်နေပါသည် — ဒီအပိုင်းရဲ့ မူရင်းဗီဒီယိုကို Telegram က ပြန်ယူနေပါသည်...",
             force=True,
         )
-    downloaded_duration = await download_telegram_file(
-        str(info.get("file_id") or ""),
-        segment_path,
-        tracker,
-        expected_size=int(info.get("file_size") or 0),
-        raise_on_error=True,
-    )
+    downloaded_duration = 0.0
+    for download_attempt in range(2):
+        try:
+            downloaded_duration = await download_telegram_file(
+                str(info.get("file_id") or ""),
+                segment_path,
+                tracker,
+                expected_size=int(info.get("file_size") or 0),
+                raise_on_error=True,
+            )
+            break
+        except SourceDownloadError:
+            # A hard limit (e.g. >20MB) will not change on retry.
+            raise
+        except Exception:
+            if download_attempt >= 1:
+                raise
+            await asyncio.sleep(2)
     actual_duration = float(probe_video_info(segment_path)[0] or 0) or float(
         downloaded_duration or 0
     )
@@ -9337,11 +9366,25 @@ async def _run_manual_session_recovery(
             _delete_manual_session(session_id)
         except Exception:
             pass
-        failure_text = (
-            "⌛ <b>Session ကို အလိုအလျောက် ပြန်ဆယ်လို့ မရပါ။</b>\n"
-            f"အသေးစိတ်: {_user_error_text(exc)}\n\n"
-            "Video/Link ကို ပြန်ပို့ကြည့်ပါ။"
-        )
+        detail = _user_error_text(exc)
+        if "20MB" in detail:
+            # Pre-token part messages could exceed the Bot API's 20MB
+            # download limit, so this one old part cannot be pulled back
+            # from Telegram.  New sessions send <=19MB parts and carry
+            # recovery tokens, so this cannot recur for them.
+            failure_text = (
+                "⌛ <b>ဒီအပိုင်းဟောင်းရဲ့ ဖိုင်က 20MB ထက်ကြီးလို့ Telegram က "
+                "Bot ကို ပြန်ဒေါင်းခွင့် မပေးပါ။</b>\n"
+                "ဒီတစ်ကြိမ်အတွက်သာ မူရင်း Video/Link ကို ပြန်ပို့ပေးပါ — "
+                "နောက်ပိုင်းစတဲ့ session တွေမှာ ဒီပြဿနာ ထပ်မဖြစ်အောင် "
+                "ပြင်ထားပြီးပါပြီ။"
+            )
+        else:
+            failure_text = (
+                "⌛ <b>Session ကို အလိုအလျောက် ပြန်ဆယ်လို့ မရပါ။</b>\n"
+                f"အသေးစိတ်: {detail}\n\n"
+                "ခလုတ်ကို ထပ်နှိပ်ကြည့်ပါ။ မရရင် Video/Link ကို ပြန်ပို့ကြည့်ပါ။"
+            )
         if progress_id:
             await edit_text(
                 chat_id,
@@ -9386,7 +9429,14 @@ def _manual_status_text(state: dict) -> str:
             waiting_indexes.append(index)
 
     def fmt_indexes(values: list[int]) -> str:
-        return ", ".join(str(v) for v in values) if values else "မရှိ"
+        if not values:
+            return "မရှိ"
+        # A 3-hour source has 90 parts; listing every index in several
+        # categories could push the message past Telegram's 4096 limit.
+        if len(values) > 40:
+            shown = ", ".join(str(v) for v in values[:40])
+            return f"{shown} … (+{len(values) - 40})"
+        return ", ".join(str(v) for v in values)
 
     current_part = _manual_first_unfinished_part(state)
     current_label = (
@@ -9418,8 +9468,13 @@ def _manual_status_text(state: dict) -> str:
         "နောက်အပိုင်းမရောက်ရင် <b>▶️ နောက်အပိုင်းပို့မယ်</b> ကို နှိပ်ပါ။ "
         "အပိုင်းတိုင်းပြီးမှ 🔗 ပြန်ဆက်နိုင်ပါမယ်။"
     )
-    recovery_line = _manual_recovery_line(state, max_token_chars=2400)
-    if recovery_line:
+    recovery_budget = max(0, 3900 - _telegram_text_units(text))
+    recovery_line = _manual_recovery_line(
+        state, max_token_chars=recovery_budget
+    )
+    if recovery_line and _telegram_text_units(
+        text + "\n" + recovery_line
+    ) <= 4096:
         text += f"\n{recovery_line}"
     return text
 
@@ -9724,14 +9779,33 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
     preview_path = ""
     files_to_send: list[str] = []
     try:
-        if os.path.getsize(send_path) > MAX_TG_BYTES:
+        # Always send a Bot-API-downloadable (<=19MB) copy.  The retained
+        # full-quality segment stays on disk for rendering; the sent copy
+        # is what session recovery re-downloads after a disk wipe, and
+        # the public Bot API refuses downloads over 20MB.
+        if os.path.getsize(send_path) > MANUAL_RECOVERABLE_SEND_BYTES:
             preview_relative = f"previews/source_part_{index:04d}_preview.mp4"
             preview_path = _manual_path(state, preview_relative)
             preview_ok = await asyncio.to_thread(
-                _make_telegram_preview_copy, source_path, preview_path
+                _make_telegram_preview_copy,
+                source_path,
+                preview_path,
+                int(MANUAL_RECOVERABLE_SEND_BYTES * 0.94),
             )
-            if preview_ok:
+            if (
+                preview_ok
+                and os.path.exists(preview_path)
+                and 0 < os.path.getsize(preview_path) <= MANUAL_RECOVERABLE_SEND_BYTES
+            ):
                 send_path = preview_path
+                part["sent_preview"] = True
+            elif os.path.getsize(send_path) > MAX_TG_BYTES:
+                preview_ok = await asyncio.to_thread(
+                    _make_telegram_preview_copy, source_path, preview_path
+                )
+                if preview_ok:
+                    send_path = preview_path
+                    part["sent_preview"] = True
 
         files_to_send = [send_path]
         if os.path.getsize(send_path) > MAX_TG_BYTES:
@@ -9749,7 +9823,9 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
         # The button lives on the last upload file; embed the session
         # recovery token in that caption so this exact button can rebuild
         # the session after a deploy/restart wipes the ephemeral disk.
-        recovery_budget = max(0, 1000 - len(base_caption) - 110)
+        recovery_budget = max(
+            0, 1000 - _telegram_text_units(base_caption) - 110
+        )
         recovery_token = _build_manual_recovery_token(
             state, anchor_index=index, max_token_chars=recovery_budget
         )
@@ -9767,7 +9843,11 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
                 if file_index < len(files_to_send):
                     caption += " — Recap ခလုတ်ကို နောက်ဆုံး upload အောက်မှာ ထားပါတယ်။"
             if file_index == len(files_to_send) and recovery_token:
-                caption += f"\n♻️ {MANUAL_RECOVERY_MARKER}{recovery_token}"
+                recovery_line = f"\n♻️ {MANUAL_RECOVERY_MARKER}{recovery_token}"
+                # Telegram rejects captions over 1024 UTF-16 units; never
+                # let the recovery token break the upload itself.
+                if _telegram_text_units(caption + recovery_line) <= 1024:
+                    caption += recovery_line
             payload = {"chat_id": str(chat_id), "caption": caption}
             if file_index == len(files_to_send):
                 payload["reply_markup"] = json.dumps(
@@ -11964,7 +12044,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v4.3-session-recovery-fix"
+BUILD_VERSION = "v4.4-error-hardening"
 BUILD_FEATURES = 20
 
 
@@ -11976,6 +12056,8 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
+        "telegram_update_guard": "friendly_retry_on_error",
+        "manual_part_send_cap_bytes": MANUAL_RECOVERABLE_SEND_BYTES,
         "manual_session_recovery": "telegram_message_payload_v1_with_legacy_caption_fallback",
         "direct_script_generation": "multi_model_retry_robust_json_empty_scene_recovery",
         "direct_script_models": PREFERRED_MODELS,
@@ -12028,6 +12110,8 @@ async def health():
         "app": "rednote-bot",
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
+        "telegram_update_guard": "friendly_retry_on_error",
+        "manual_part_send_cap_bytes": MANUAL_RECOVERABLE_SEND_BYTES,
         "manual_session_recovery": "telegram_message_payload_v1_with_legacy_caption_fallback",
         "direct_script_generation": "multi_model_retry_robust_json_empty_scene_recovery",
         "direct_script_models": PREFERRED_MODELS,
@@ -12514,11 +12598,56 @@ async def _setup_bot():
     )
 
 
+async def _process_admin_update_guarded(update: dict) -> None:
+    """Run one Telegram update; never let an error look like a dead bot.
+
+    Unexpected exceptions used to be swallowed by the background-task
+    logger, so the user tapped a button and simply saw nothing happen.
+    Now the callback spinner is answered and the user gets an explicit,
+    retryable message (the underlying job/session state stays intact).
+    """
+    try:
+        await process_admin_update(update)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Telegram update handling failed")
+        callback_id = None
+        chat_id = None
+        try:
+            callback = (update or {}).get("callback_query") or {}
+            callback_id = callback.get("id")
+            message = callback.get("message") or (update or {}).get("message") or {}
+            chat_id = (
+                (message.get("chat") or {}).get("id")
+                or (callback.get("from") or {}).get("id")
+                or ((update or {}).get("message") or {}).get("from", {}).get("id")
+            )
+        except Exception:
+            chat_id = None
+        if callback_id:
+            await answer_callback(
+                callback_id, "⚠️ ယာယီအမှားဖြစ်သွားပါတယ် — ထပ်နှိပ်ကြည့်ပါ"
+            )
+        if chat_id:
+            try:
+                await send_text(
+                    int(chat_id),
+                    "⚠️ <b>ယာယီအမှား ဖြစ်သွားပါတယ်။</b>\n"
+                    "ခလုတ်ကို ထပ်နှိပ်ကြည့်ပါ။ အကြိမ်ကြိမ် ဖြစ်နေရင် /start "
+                    "နှိပ်ပြီး ပြန်စမ်းပါ — session နဲ့ လုပ်ပြီးသားအပိုင်းတွေ "
+                    "မပျက်ပါဘူး။",
+                    reply_markup=main_menu_keyboard(int(chat_id)),
+                )
+            except Exception:
+                pass
+
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
     _spawn_background(
-        process_admin_update(update), name="telegram-update"
+        _process_admin_update_guarded(update), name="telegram-update"
     )
     return JSONResponse({"ok": True})
 

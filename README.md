@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v4.3-session-recovery-fix` downloads the complete source,
+Version `v4.4-error-hardening` downloads the complete source,
 plans fixed **2-minute windows**, physically extracts and sends only the
 first/current window with a **🎬 Recap လုပ်မယ်** button, and waits for the
 user. Clicking that button writes the script and renders only that one
@@ -81,9 +81,15 @@ the full source and already-delivered recaps — and then continues the
 tapped action; part messages sent by older versions are recovered from
 their caption plus the part video itself when possible. If only the
 TTL passed but the files survived, tapping a session button revives
-the session instead of expiring it. `WORK_ROOT` may be set to a mounted
-persistent disk path to keep session files on disk across deploys as
-well. Discarding a session removes its retained files.
+the session instead of expiring it. Original parts are always sent as
+Bot-API-downloadable copies (≤19MB; the retained full-quality segment
+is still used for rendering) so message-based recovery can never be
+blocked by Telegram's 20MB download limit, and every Telegram update
+runs behind a guard that answers the button and sends a retryable
+message instead of silently doing nothing on an unexpected error.
+`WORK_ROOT` may be set to a mounted persistent disk path to keep
+session files on disk across deploys as well. Discarding a session
+removes its retained files.
 
 `RECAP_FLOW=auto` retains the v3.6 compatibility behaviour: automatic
 per-part recap and automatic join, including the optional n8n handoff
@@ -209,7 +215,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v4.3-session-recovery-fix"`,
+URLs must show `"version":"v4.4-error-hardening"`,
 `"recap_flow":"manual_sequential_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
 `"segment_pipeline":"download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"`,
