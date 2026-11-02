@@ -2993,6 +2993,441 @@ def _first_person_metrics(texts: list, pronoun: str = "") -> dict:
     }
 
 
+DIRECT_SCENE_TEXT_KEYS = (
+    "burmese",
+    "text",
+    "narration",
+    "narration_text",
+    "myanmar",
+    "myanmar_text",
+    "script",
+    "content",
+    "description",
+)
+DIRECT_SCENE_LIST_KEYS = (
+    "scenes",
+    "segments",
+    "parts",
+    "chunks",
+    "script_scenes",
+    "scene_list",
+    "script",
+    "data",
+    "result",
+    "output",
+)
+
+
+def _scene_text_from_mapping(item) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, dict):
+        return ""
+    for key in DIRECT_SCENE_TEXT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _salvage_json_scene_objects(raw: str) -> list:
+    """Recover complete scene objects from a truncated JSON response."""
+    decoder = json.JSONDecoder()
+    scenes = []
+    seen = set()
+    for match in re.finditer(r"\{", raw or ""):
+        start = match.start()
+        try:
+            value, end = decoder.raw_decode(raw, start)
+        except Exception:
+            continue
+        if not isinstance(value, dict) or not _scene_text_from_mapping(value):
+            continue
+        marker = (start, end, _scene_text_from_mapping(value))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        scenes.append(value)
+    return scenes
+
+
+def _parse_gemini_json_text(raw, *, _depth: int = 0):
+    """Parse Gemini JSON even when it is fenced, wrapped, or truncated."""
+    if isinstance(raw, (dict, list)):
+        return raw
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("Gemini returned empty text")
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+
+    try:
+        value = json.loads(text)
+        if isinstance(value, str) and _depth < 3:
+            return _parse_gemini_json_text(value, _depth=_depth + 1)
+        if isinstance(value, (dict, list)):
+            return value
+        raise ValueError("Gemini JSON was not an object/list")
+    except Exception as first_error:
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"[\{\[]", text):
+            try:
+                value, _end = decoder.raw_decode(text, match.start())
+            except Exception:
+                continue
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                # A lone complete scene inside a truncated parent object is
+                # only a fragment.  Keep scanning so the salvage step below
+                # can recover every complete scene, not just the first one.
+                if _scene_text_from_mapping(value) and not any(
+                    isinstance(value.get(key), list)
+                    for key in DIRECT_SCENE_LIST_KEYS
+                ):
+                    continue
+                return value
+        salvaged = _salvage_json_scene_objects(text)
+        if salvaged:
+            return {"scenes": salvaged, "cuts": []}
+        raise ValueError(
+            f"Gemini returned invalid JSON ({len(text)} chars): {first_error}"
+        ) from first_error
+
+
+def _gemini_response_text_and_diagnostics(response) -> tuple[str, str]:
+    """Return response text plus safe finish/block/token diagnostics."""
+    diagnostics = []
+    text = ""
+    try:
+        text = str(getattr(response, "text", "") or "")
+    except Exception as e:
+        diagnostics.append(f"text_error={_safe_error_text(e, 180)}")
+
+    candidates = list(getattr(response, "candidates", None) or [])
+    if not text and candidates:
+        pieces = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            for part in list(getattr(content, "parts", None) or []):
+                part_text = getattr(part, "text", "")
+                if isinstance(part_text, str) and part_text:
+                    pieces.append(part_text)
+        text = "".join(pieces)
+
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+        if finish_reason:
+            diagnostics.append(f"finish_reason={finish_reason}")
+        safety = []
+        for rating in list(getattr(candidates[0], "safety_ratings", None) or []):
+            if getattr(rating, "blocked", False):
+                safety.append(
+                    f"{getattr(rating, 'category', 'safety')}="
+                    f"{getattr(rating, 'probability', 'blocked')}"
+                )
+        if safety:
+            diagnostics.append("safety_blocked=" + ",".join(safety[:4]))
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    if prompt_feedback is not None:
+        block_reason = getattr(prompt_feedback, "block_reason", None)
+        if block_reason:
+            diagnostics.append(f"block_reason={block_reason}")
+        block_message = getattr(prompt_feedback, "block_reason_message", "")
+        if block_message:
+            diagnostics.append(
+                "block_message=" + _safe_error_text(block_message, 180)
+            )
+
+    usage = getattr(response, "usage_metadata", None)
+    if usage is not None:
+        output_tokens = getattr(usage, "candidates_token_count", None)
+        total_tokens = getattr(usage, "total_token_count", None)
+        if output_tokens is not None or total_tokens is not None:
+            diagnostics.append(
+                f"output_tokens={output_tokens},total_tokens={total_tokens}"
+            )
+    return text, "; ".join(str(item) for item in diagnostics if str(item).strip())
+
+
+def _direct_gemini_json_config(max_output_tokens: int = 8192):
+    kwargs = {
+        "response_mime_type": "application/json",
+        "temperature": 0.25,
+        "max_output_tokens": int(max_output_tokens),
+    }
+    try:
+        safety_setting = getattr(types, "SafetySetting", None)
+        harm_category = getattr(types, "HarmCategory", None)
+        harm_threshold = getattr(types, "HarmBlockThreshold", None)
+        if safety_setting and harm_category and harm_threshold:
+            threshold = getattr(harm_threshold, "BLOCK_ONLY_HIGH", None)
+            categories = [
+                getattr(harm_category, name, None)
+                for name in (
+                    "HARM_CATEGORY_HARASSMENT",
+                    "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT",
+                )
+            ]
+            settings = [
+                safety_setting(category=category, threshold=threshold)
+                for category in categories
+                if category is not None and threshold is not None
+            ]
+            if settings:
+                kwargs["safety_settings"] = settings
+    except Exception:
+        kwargs.pop("safety_settings", None)
+    return types.GenerateContentConfig(**kwargs)
+
+
+async def _generate_direct_gemini_json(
+    client,
+    contents,
+    *,
+    purpose: str,
+    tracker=None,
+    attempts_per_model: int = 1,
+    max_output_tokens: int = 8192,
+):
+    """Generate JSON with model fallback instead of silently using no scenes."""
+    attempts_per_model = max(1, int(attempts_per_model or 1))
+    total_attempts = len(PREFERRED_MODELS) * attempts_per_model
+    attempt_number = 0
+    last_error = "unknown Gemini error"
+
+    for model in PREFERRED_MODELS:
+        for _attempt in range(attempts_per_model):
+            attempt_number += 1
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=_direct_gemini_json_config(max_output_tokens),
+                )
+                raw, diagnostics = _gemini_response_text_and_diagnostics(response)
+                if not str(raw or "").strip():
+                    detail = f" ({diagnostics})" if diagnostics else ""
+                    raise ValueError(f"Gemini returned empty text{detail}")
+                data = _parse_gemini_json_text(raw)
+                logger.info(
+                    "Direct Gemini %s succeeded with %s on attempt %s/%s "
+                    "(%s chars%s)",
+                    purpose,
+                    model,
+                    attempt_number,
+                    total_attempts,
+                    len(str(raw or "")),
+                    f"; {diagnostics}" if diagnostics else "",
+                )
+                return data
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_error = f"{model}: {_safe_error_text(e, 700)}"
+                logger.warning(
+                    "Direct Gemini %s failed attempt %s/%s: %s",
+                    purpose,
+                    attempt_number,
+                    total_attempts,
+                    last_error,
+                )
+                if attempt_number >= total_attempts:
+                    break
+                error_text = str(e).lower()
+                if any(
+                    token in error_text
+                    for token in ("429", "resource_exhausted", "quota", "rate limit")
+                ):
+                    delay = 8.0
+                elif any(
+                    token in error_text
+                    for token in ("500", "503", "timeout", "temporar", "unavailable")
+                ):
+                    delay = 4.0
+                else:
+                    delay = 1.5
+                if tracker is not None:
+                    try:
+                        await tracker.update(
+                            "♻️ Gemini က Script မပြန်သေးလို့ နောက်တစ်ကြိမ်/"
+                            f"နောက် model ဖြင့် ပြန်ကြိုးစားနေပါသည်... "
+                            f"({attempt_number + 1}/{total_attempts})",
+                            force=True,
+                        )
+                    except Exception:
+                        pass
+                await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"Gemini {purpose} failed after {total_attempts} attempts: {last_error}"
+    )
+
+
+def _find_direct_scene_list(data, *, _depth: int = 0) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, str) and _depth < 3:
+        try:
+            return _find_direct_scene_list(
+                _parse_gemini_json_text(data), _depth=_depth + 1
+            )
+        except Exception:
+            return []
+    if not isinstance(data, dict) or _depth > 5:
+        return []
+
+    if _scene_text_from_mapping(data) and not any(
+        isinstance(data.get(key), list) for key in DIRECT_SCENE_LIST_KEYS
+    ):
+        return [data]
+
+    for key in DIRECT_SCENE_LIST_KEYS:
+        value = data.get(key)
+        if isinstance(value, list) and value:
+            return value
+        if isinstance(value, (dict, str)):
+            nested = _find_direct_scene_list(value, _depth=_depth + 1)
+            if nested:
+                return nested
+    for value in data.values():
+        if isinstance(value, (dict, list, str)):
+            nested = _find_direct_scene_list(value, _depth=_depth + 1)
+            if nested:
+                return nested
+    # Preserve an explicitly empty scenes list so callers can distinguish it
+    # from unrelated metadata, while the searches above prefer usable data.
+    return data.get("scenes") if isinstance(data.get("scenes"), list) else []
+
+
+def _find_direct_payload_value(data, keys: tuple, *, _depth: int = 0):
+    if isinstance(data, str) and _depth < 3:
+        try:
+            return _find_direct_payload_value(
+                _parse_gemini_json_text(data), keys, _depth=_depth + 1
+            )
+        except Exception:
+            return None
+    if isinstance(data, list) and _depth < 5:
+        for item in data:
+            value = _find_direct_payload_value(item, keys, _depth=_depth + 1)
+            if value not in (None, "", []):
+                return value
+        return None
+    if not isinstance(data, dict) or _depth > 5:
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, "", []):
+            return value
+    for value in data.values():
+        if isinstance(value, (dict, list, str)):
+            nested = _find_direct_payload_value(value, keys, _depth=_depth + 1)
+            if nested not in (None, "", []):
+                return nested
+    return None
+
+
+def _direct_float_or_none(value):
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> dict:
+    """Normalize Gemini scene aliases/timings into the renderer's contract."""
+    if isinstance(data, str):
+        try:
+            data = _parse_gemini_json_text(data)
+        except Exception:
+            data = {}
+
+    raw_scenes = _find_direct_scene_list(data)
+    scenes = []
+    for item in raw_scenes or []:
+        text = _scene_text_from_mapping(item)
+        if not text:
+            continue
+        scene = dict(item) if isinstance(item, dict) else {}
+        start = _direct_float_or_none(
+            scene.get("start", scene.get("start_time", scene.get("start_seconds")))
+        )
+        end = _direct_float_or_none(
+            scene.get("end", scene.get("end_time", scene.get("end_seconds")))
+        )
+        scene.update({"start": start, "end": end, "burmese": text})
+        scenes.append(scene)
+
+    duration = max(0.0, float(chunk_duration or 0))
+    if scenes:
+        step = duration / len(scenes) if duration > 0 else 1.0
+        for index, scene in enumerate(scenes):
+            start = scene.get("start")
+            end = scene.get("end")
+            if start is None:
+                start = step * index if duration > 0 else float(index)
+            # Preserve model-provided timings here; sort_scenes() puts them
+            # in chronological order immediately after normalization.
+            start = max(0.0, float(start))
+            if duration > 0:
+                start = min(start, max(0.0, duration - 0.01))
+            if end is None or float(end) <= start:
+                end = min(duration, start + step) if duration > 0 else start + 1.0
+            if duration > 0:
+                end = min(duration, float(end))
+            if float(end) <= start:
+                end = min(duration, start + 0.01) if duration > 0 else start + 0.01
+            scene["start"] = round(float(start), 3)
+            scene["end"] = round(float(end), 3)
+
+    raw_cuts = _find_direct_payload_value(data, ("cuts", "cut_scenes")) or []
+    cuts = []
+    if isinstance(raw_cuts, list):
+        for item in raw_cuts:
+            if not isinstance(item, dict):
+                continue
+            start = _direct_float_or_none(
+                item.get("start", item.get("start_time", item.get("start_seconds")))
+            )
+            end = _direct_float_or_none(
+                item.get("end", item.get("end_time", item.get("end_seconds")))
+            )
+            if start is None or end is None or float(end) <= float(start):
+                continue
+            cut = dict(item)
+            cut.update({"start": float(start), "end": float(end)})
+            cuts.append(cut)
+
+    protagonist_value = _find_direct_payload_value(
+        data, ("protagonist", "main_character", "hero", "heroine")
+    )
+    if isinstance(protagonist_value, dict):
+        protagonist = str(
+            protagonist_value.get("name")
+            or protagonist_value.get("protagonist")
+            or ""
+        ).strip()
+    else:
+        protagonist = str(protagonist_value or "").strip()
+    pronoun_value = str(
+        _find_direct_payload_value(data, ("pronoun", "first_person_pronoun")) or ""
+    ).strip()
+    return {
+        "scenes": scenes,
+        "cuts": cuts,
+        "protagonist": protagonist,
+        "pronoun": pronoun_value if pronoun_value in FIRST_PERSON_PRONOUNS else "",
+    }
+
+
 async def extract_story_summary(scenes: list, client) -> dict:
     if not scenes:
         return {"summary": "", "characters": [], "last_scene": "", "protagonist": "", "pronoun": ""}
@@ -3009,13 +3444,12 @@ Return JSON:
 {{"characters": ["နာမည်1"], "protagonist": "အဓိကဇာတ်ကောင် (ပြောနေသူ ကိုယ်တိုင်)", "pronoun": "ပြောနေသူ သုံးထားသည့် နာမ်စား — ကျွန်တော် သို့မဟုတ် ကျွန်မ", "summary": "အဓိကအကြောင်းအရာ ၂-၃ ကြောင်း", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
     """.strip()
     try:
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model=PREFERRED_MODELS[0],
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        data = await _generate_direct_gemini_json(
+            client,
+            prompt,
+            purpose="story summary",
+            max_output_tokens=4096,
         )
-        data = json.loads(resp.text.strip())
         if not isinstance(data, dict):
             raise ValueError("summary JSON is not an object")
         # စာသားထဲမှ တိုက်ရိုက် ရှာတွေ့သည့် နာမ်စား ကို model အဖြေထက် ပို ယုံကြည်သည်။
@@ -3318,20 +3752,19 @@ JSON ကိုသာ ပြန်ပေးပါ:
 
 def _parse_direct_scene_replacements(data, allowed_indexes) -> dict:
     allowed = {int(i) for i in (allowed_indexes or [])}
-    raw_scenes = []
-    if isinstance(data, dict) and isinstance(data.get("scenes"), list):
-        raw_scenes = data["scenes"]
-    elif isinstance(data, list):
-        raw_scenes = data
+    raw_scenes = _normalize_direct_script_payload(data).get("scenes") or []
     replacements = {}
     for item in raw_scenes:
         if not isinstance(item, dict):
             continue
+        raw_index = item.get(
+            "scene_index", item.get("index", item.get("id", item.get("scene_id")))
+        )
         try:
-            index = int(item.get("scene_index"))
+            index = int(raw_index)
         except (TypeError, ValueError):
             continue
-        text = str(item.get("burmese") or item.get("text") or "").strip()
+        text = str(item.get("burmese") or "").strip()
         if index in allowed and text:
             replacements[index] = text
     return replacements
@@ -3393,8 +3826,13 @@ async def build_chunk_recap(
     # Output script must equal coverage% (default 90%) of the input chunk.
     target_chars = script_target_chars(chunk_dur, st)
     target_seconds = chunk_dur * coverage_ratio
-    scene_count = max(15, int(target_seconds / 8))
-    chars_per_scene = max(80, target_chars // scene_count)
+    # Keep the requested scene count and per-scene length mathematically
+    # consistent.  The old values required at least 15 x 80 chars even for
+    # a 120s part whose full 90% target is only about 702 chars.
+    scene_count = max(1, min(15, int(round(float(chunk_dur or 0) / 12.0)) or 1))
+    chars_per_scene = int(
+        math.ceil(float(target_chars or 0) / max(1, scene_count))
+    )
     # 👤 ရေးဟန် = ပထမလူ အမြဲတမ်း (fixed) — အဓိကဇာတ်ကောင် ကိုယ်တိုင်
     # «ကျွန်တော်/ကျွန်မ» အနေနှင့် ပြန်ပြောပြသလို ရေးသည်။ အရင်သိမ်းထားသော
     # narrator ဆက်တင် အဟောင်းရှိလျှင်လည်း ပထမလူပင် ဖြစ်ရမည်။
@@ -3476,7 +3914,7 @@ async def build_chunk_recap(
 ## ကြာချိန်နှင့် ဗီဒီယိုတည်းဖြတ်ရန် အချိန်မှတ်ချက်များ
 - နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်းအပိုင်း၏ {st['coverage']}% ဖြစ်ရမည်။ စာလုံးပမာဏသည် အဲဒီကြာချိန်ကို ရအောင်တွက်ထားသော ပမာဏဖြစ်ပြီး အကျဉ်းချုပ်၍ မရပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
-- အနည်းဆုံး ခန်း {scene_count} ခန်း ရေးပါ။ ခန်းတစ်ခန်းလျှင် အနည်းဆုံး {chars_per_scene} လုံး ပါဝင်ပါ။
+- ခန်း {scene_count} ခန်းခန့် ရေးပါ။ ခန်းတစ်ခန်းလျှင် ပျမ်းမျှ {chars_per_scene} လုံးခန့်ဖြင့် စုစုပေါင်း {target_chars} လုံးခန့် ပြည့်ရမည်။
 - အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။
 - ပထမခန်း၏ "start" သည် အပိုင်းအစ (0.0 ပတ်ဝန်းကျင်) မှ စပြီး နောက်ဆုံးခန်း၏ "end" သည် အပိုင်းဆုံး ({chunk_dur:.0f} စက္ကန့် ပတ်လည်) အထိ ရောက်ရမည်။ အလယ်တွင် ဇာတ်လမ်းနှင့် ဆိုင်သည့် အချိန်ကွက် တစ်ခုမှ မလွတ်ရပါ။
 - အရေးမကြီးသောအပိုင်းကို ဖြတ်သင့်ပါက ၎င်း၏ မူရင်းစတင်ချိန်နှင့် ဆုံးချိန်ကို "cuts" စာရင်းတွင် ထည့်ပြီး ဖြတ်ရသည့်အကြောင်းကို တိုတိုရေးပါ။
@@ -3513,22 +3951,30 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     cuts = []
     new_protagonist = protagonist
     new_pronoun = pronoun
+    last_script_error = ""
 
     if has_prepared_script:
         # Manual per-part flow: the script was already generated and stored
         # before the original part was sent.  Rendering starts from those
         # exact scenes; Gemini is only asked for more text later if the
         # measured TTS duration proves the stored script is too short.
-        scenes = json.loads(
-            json.dumps(prepared_script.get("scenes") or [], ensure_ascii=False)
+        prepared_payload = _normalize_direct_script_payload(
+            json.loads(json.dumps(prepared_script or {}, ensure_ascii=False)),
+            chunk_duration=chunk_dur,
         )
-        cuts = json.loads(
-            json.dumps(prepared_script.get("cuts") or [], ensure_ascii=False)
-        )
+        scenes = prepared_payload.get("scenes") or []
+        cuts = prepared_payload.get("cuts") or []
         new_protagonist = str(
-            prepared_script.get("protagonist") or protagonist or ""
+            prepared_payload.get("protagonist")
+            or prepared_script.get("protagonist")
+            or protagonist
+            or ""
         )
-        prepared_pronoun = str(prepared_script.get("pronoun") or "")
+        prepared_pronoun = str(
+            prepared_payload.get("pronoun")
+            or prepared_script.get("pronoun")
+            or ""
+        )
         if prepared_pronoun in ("ကျွန်တော်", "ကျွန်မ"):
             new_pronoun = prepared_pronoun
         await tracker.update(
@@ -3539,24 +3985,105 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         await tracker.update("🎧 Gemini ဆီ ဗီဒီယိုတင်ပြီး ဇာတ်လမ်းစာသား ရေးနေပါသည်...", force=True)
         video_file = await _upload_video_to_gemini(client, chunk_path)
         try:
-            resp = await asyncio.to_thread(
-                client.models.generate_content,
-                model=PREFERRED_MODELS[0],
-                contents=[video_file, prompt],
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            parsed = await _generate_direct_gemini_json(
+                client,
+                [video_file, prompt],
+                purpose="initial script",
+                tracker=tracker,
             )
-            parsed = json.loads(resp.text.strip())
-            if isinstance(parsed, dict):
-                scenes = parsed.get("scenes", [])
-                cuts = parsed.get("cuts", [])
-                if not protagonist:
-                    new_protagonist = parsed.get("protagonist", "") or protagonist
-                if parsed.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
-                    new_pronoun = parsed["pronoun"]
-            elif isinstance(parsed, list):
-                scenes = parsed
+            payload = _normalize_direct_script_payload(
+                parsed, chunk_duration=chunk_dur
+            )
+            scenes = payload.get("scenes") or []
+            cuts = payload.get("cuts") or []
+            if not protagonist:
+                new_protagonist = payload.get("protagonist") or protagonist
+            if payload.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
+                new_pronoun = payload["pronoun"]
+            if not scenes:
+                last_script_error = (
+                    "initial Gemini response contained no usable Burmese scenes"
+                )
+                logger.warning(
+                    "Chunk %s initial Gemini response had no usable scenes",
+                    chunk_index,
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.error(f"AI script error: {e}")
+            last_script_error = _safe_error_text(e, 900)
+            logger.error(f"AI script error: {last_script_error}")
+
+        if not scenes:
+            # A gap-fill/top-up prompt against an empty previous script is
+            # not a useful recovery.  Ask again with a shorter, unambiguous
+            # full-script prompt and the same multi-model fallback.
+            await tracker.update(
+                "♻️ Gemini က scene မပြန်သေးလို့ Script အသစ်ကို ပုံစံတိတိကျကျဖြင့် "
+                "ထပ်တောင်းနေပါသည်...",
+                force=True,
+            )
+            retry_prompt = f"""
+ယခင်ကြိုးစားမှုက သုံးနိုင်သော scene မရခဲ့ပါ။ ဤဗီဒီယိုအပိုင်း ({start_fmt} မှ {end_fmt}) ကို အစကအဆုံး ပြန်ကြည့်ပြီး မြန်မာ Script အသစ် ရေးပါ။
+
+{context_section}
+- နာမ်စား: {pronoun_line}
+- လေသံ: {tone_line}
+- "scenes" ကို ဘယ်တော့မှ ကွက်လပ်မထားရ။ အပိုင်းအစ၏ 0.0 မှ {chunk_dur:.1f} စက္ကန့်အထိကို ခန်း {scene_count} ခန်းခန့် ဆက်တိုက်ခွဲပါ။
+- စုစုပေါင်း မြန်မာစာသား {target_chars} လုံးခန့် (ခန်းပျမ်းမျှ {chars_per_scene} လုံး) ရေးပါ။
+- အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် ရွေးထားသော နာမ်စား ပါရမည်။
+- ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
+- JSON key များမှာ "protagonist", "pronoun", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
+
+{{
+  "protagonist": "အဓိကဇာတ်ကောင်နာမည် သို့မဟုတ် ကွက်လပ်",
+  "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ",
+  "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ပထမလူမြန်မာစာသား"}}],
+  "cuts": []
+}}
+""".strip()
+            try:
+                parsed = await _generate_direct_gemini_json(
+                    client,
+                    [video_file, retry_prompt],
+                    purpose="initial script retry",
+                    tracker=tracker,
+                )
+                payload = _normalize_direct_script_payload(
+                    parsed, chunk_duration=chunk_dur
+                )
+                scenes = payload.get("scenes") or []
+                cuts = payload.get("cuts") or []
+                if not protagonist:
+                    new_protagonist = payload.get("protagonist") or protagonist
+                if payload.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
+                    new_pronoun = payload["pronoun"]
+                if scenes:
+                    last_script_error = ""
+                else:
+                    last_script_error = (
+                        "Gemini retry response also contained no usable "
+                        "Burmese scenes"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                detail = _safe_error_text(e, 900)
+                last_script_error = (
+                    f"{last_script_error}; retry: {detail}"
+                    if last_script_error
+                    else detail
+                )
+                logger.error(f"AI script retry error: {detail}")
+
+        if not scenes:
+            await _delete_gemini_file(client, video_file)
+            raise RuntimeError(
+                "Gemini က ဒီအပိုင်းအတွက် Script scene ထုတ်မပေးနိုင်ပါ။ "
+                "Model fallback များနှင့် Script အသစ်ထပ်တောင်းပြီးသော်လည်း "
+                "သုံးနိုင်သော scene မရပါ။ ခေတ္တစောင့်ပြီး ဒီ Part ကို ပြန်နှိပ်ပေးပါ။ "
+                f"အကြောင်းအသေးစိတ်: {last_script_error or 'empty Gemini response'}"
+            )
 
     scenes = sort_scenes(scenes)
     new_pronoun = _choose_first_person_pronoun(
@@ -3576,9 +4103,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # and the remaining video played with silent narration gaps.)
     # A prepared/manual script was already topped up when it was written;
     # measured-TTS calibration below is the only stage allowed to add more.
+    topup_no_progress = 0
     for attempt in range(0 if has_prepared_script else SCRIPT_TOPUP_ATTEMPTS):
         if total_chars >= target_chars:
             break
+        previous_total_chars = total_chars
         missing = target_chars - total_chars
         await tracker.update(
             f"⚠️ Script {total_chars / max(1, target_chars) * 100:.0f}% ပဲရှိသေးသည် (ပစ်မှတ် {st['coverage']}%)။ "
@@ -3600,27 +4129,69 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {{"pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ", "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
         """.strip()
         try:
-            resp2 = await asyncio.to_thread(
-                client.models.generate_content,
-                model=PREFERRED_MODELS[0],
-                contents=[video_file, extra_prompt],
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            extra = await _generate_direct_gemini_json(
+                client,
+                [video_file, extra_prompt],
+                purpose=f"script top-up {attempt + 1}",
+                tracker=tracker,
             )
-            extra = json.loads(resp2.text.strip())
-            if isinstance(extra, dict):
-                scenes.extend(extra.get("scenes", []))
-                cuts.extend(extra.get("cuts", []))
-                if not new_protagonist:
-                    new_protagonist = extra.get("protagonist", "") or new_protagonist
-                if not new_pronoun and extra.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
-                    new_pronoun = extra["pronoun"]
-            elif isinstance(extra, list):
-                scenes.extend(extra)
+            extra_payload = _normalize_direct_script_payload(
+                extra, chunk_duration=chunk_dur
+            )
+            existing_signatures = {
+                (
+                    round(float(scene.get("start") or 0), 3),
+                    round(float(scene.get("end") or 0), 3),
+                    _normalize_burmese_text(scene.get("burmese") or ""),
+                )
+                for scene in scenes
+                if isinstance(scene, dict)
+            }
+            accepted_extra_scenes = []
+            for scene in extra_payload.get("scenes") or []:
+                signature = (
+                    round(float(scene.get("start") or 0), 3),
+                    round(float(scene.get("end") or 0), 3),
+                    _normalize_burmese_text(scene.get("burmese") or ""),
+                )
+                if signature not in existing_signatures:
+                    accepted_extra_scenes.append(scene)
+                    existing_signatures.add(signature)
+            scenes.extend(accepted_extra_scenes)
+            cuts.extend(extra_payload.get("cuts") or [])
+            if not new_protagonist:
+                new_protagonist = extra_payload.get("protagonist") or new_protagonist
+            if not new_pronoun and extra_payload.get("pronoun") in (
+                "ကျွန်တော်",
+                "ကျွန်မ",
+            ):
+                new_pronoun = extra_payload["pronoun"]
+            if not accepted_extra_scenes:
+                last_script_error = (
+                    f"script top-up {attempt + 1} returned no new usable scenes"
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.warning(f"Extra script error (attempt {attempt + 1}): {e}")
+            last_script_error = _safe_error_text(e, 900)
+            logger.warning(
+                f"Extra script error (attempt {attempt + 1}): {last_script_error}"
+            )
         scenes = sort_scenes(scenes)
         total_chars = script_total_chars(scenes)
         logger.info(f"Chunk {chunk_index} top-up {attempt + 1}: {total_chars}/{target_chars} chars")
+        if total_chars <= previous_total_chars:
+            topup_no_progress += 1
+            if topup_no_progress >= 2:
+                logger.warning(
+                    "Chunk %s script top-ups made no progress twice; stopping "
+                    "before validation",
+                    chunk_index,
+                )
+                break
+        else:
+            topup_no_progress = 0
+            last_script_error = ""
 
     # Cap an initially over-long script proportionally so the ending is not
     # simply deleted.  Actual duration is corrected again after TTS below.
@@ -3652,15 +4223,20 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 scenes, batch_indexes, new_pronoun, new_protagonist
             )
             try:
-                repair_resp = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=PREFERRED_MODELS[0],
-                    contents=[video_file, repair_prompt],
-                    config=types.GenerateContentConfig(response_mime_type="application/json"),
+                repair_data = await _generate_direct_gemini_json(
+                    client,
+                    [video_file, repair_prompt],
+                    purpose="first-person repair",
+                    tracker=tracker,
+                    max_output_tokens=8192,
                 )
-                repair_data = json.loads(repair_resp.text.strip())
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                logger.warning(f"Direct first-person repair failed: {e}")
+                last_script_error = _safe_error_text(e, 900)
+                logger.warning(
+                    f"Direct first-person repair failed: {last_script_error}"
+                )
                 continue
             replacements = _parse_direct_scene_replacements(
                 repair_data, batch_indexes
@@ -3697,6 +4273,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     bad_first_person = first_person_metrics.get("bad_scene_indexes") or []
     if not scenes or total_chars < minimum_chars or bad_first_person:
         await _delete_gemini_file(client, video_file)
+        error_detail = (
+            f"; last Gemini error: {last_script_error}" if last_script_error else ""
+        )
         raise RuntimeError(
             "Script failed duration/first-person validation after repairs: "
             f"{total_chars}/{target_chars} chars "
@@ -3704,6 +4283,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             f"target {float(st.get('coverage') or 90):.0f}%), "
             f"third-person scene indexes={bad_first_person}; "
             "refusing to render a shortened or third-person recap"
+            f"{error_detail}"
         )
 
     await tracker.update(
@@ -3834,22 +4414,26 @@ JSON ကိုသာပြန်ပေးပါ:
                 try:
                     if video_file is None:
                         video_file = await _upload_video_to_gemini(client, chunk_path)
-                    resp2 = await asyncio.to_thread(
-                        client.models.generate_content,
-                        model=PREFERRED_MODELS[0],
-                        contents=[video_file, extra_prompt],
-                        config=types.GenerateContentConfig(response_mime_type="application/json"),
+                    extra = await _generate_direct_gemini_json(
+                        client,
+                        [video_file, extra_prompt],
+                        purpose="duration calibration top-up",
+                        tracker=tracker,
                     )
-                    extra = json.loads(resp2.text.strip())
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
-                    logger.warning(f"Direct duration calibration top-up failed: {e}")
+                    last_script_error = _safe_error_text(e, 900)
+                    logger.warning(
+                        "Direct duration calibration top-up failed: "
+                        f"{last_script_error}"
+                    )
                     break
-                raw_extra_scenes = []
-                if isinstance(extra, dict):
-                    raw_extra_scenes = extra.get("scenes", [])
-                    cuts.extend(extra.get("cuts", []))
-                elif isinstance(extra, list):
-                    raw_extra_scenes = extra
+                extra_payload = _normalize_direct_script_payload(
+                    extra, chunk_duration=chunk_dur
+                )
+                raw_extra_scenes = extra_payload.get("scenes") or []
+                cuts.extend(extra_payload.get("cuts") or [])
                 accepted_scenes = [
                     scene for scene in raw_extra_scenes
                     if isinstance(scene, dict)
@@ -10464,7 +11048,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v4.1-telegram-link-fix"
+BUILD_VERSION = "v4.2-script-generation-fix"
 BUILD_FEATURES = 20
 
 
@@ -10476,6 +11060,8 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
+        "direct_script_generation": "multi_model_retry_robust_json_empty_scene_recovery",
+        "direct_script_models": PREFERRED_MODELS,
         "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -10525,6 +11111,8 @@ async def health():
         "app": "rednote-bot",
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
+        "direct_script_generation": "multi_model_retry_robust_json_empty_scene_recovery",
+        "direct_script_models": PREFERRED_MODELS,
         "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,

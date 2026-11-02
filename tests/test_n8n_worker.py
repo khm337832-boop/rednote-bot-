@@ -850,6 +850,60 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["bad_scene_indexes"], [1])
         self.assertFalse(metrics["all_scenes_first_person"])
 
+    def test_direct_gemini_json_parser_recovers_wrapped_and_truncated_scenes(self):
+        fenced = "```json\n" + json.dumps(
+            {
+                "scenes": [
+                    {
+                        "start": 0,
+                        "end": 120,
+                        "burmese": first_person_text(702),
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ) + "\n```"
+        parsed_fenced = bot._parse_gemini_json_text(fenced)
+        self.assertEqual(len(parsed_fenced["scenes"]), 1)
+
+        truncated = (
+            '{"scenes": ['
+            + json.dumps(
+                {"start": 0, "end": 60, "burmese": first_person_text(351)},
+                ensure_ascii=False,
+            )
+            + ", "
+            + json.dumps(
+                {"start": 60, "end": 120, "burmese": first_person_text(351)},
+                ensure_ascii=False,
+            )
+            + ', {"start": 120, "burmese": "unfinished'
+        )
+        parsed_truncated = bot._parse_gemini_json_text(truncated)
+        self.assertEqual(len(parsed_truncated["scenes"]), 2)
+
+        normalized = bot._normalize_direct_script_payload(
+            {
+                "result": {
+                    "main_character": {"name": "Hero"},
+                    "first_person_pronoun": MALE_PRONOUN,
+                    "segments": [
+                        {
+                            "start_time": "0",
+                            "end_time": "120",
+                            "text": first_person_text(702),
+                        }
+                    ],
+                }
+            },
+            chunk_duration=120,
+        )
+        self.assertEqual(normalized["protagonist"], "Hero")
+        self.assertEqual(normalized["pronoun"], MALE_PRONOUN)
+        self.assertEqual(normalized["scenes"][0]["start"], 0.0)
+        self.assertEqual(normalized["scenes"][0]["end"], 120.0)
+        self.assertEqual(len(normalized["scenes"][0]["burmese"]), 702)
+
     async def test_worker_first_person_repair_rewrites_third_person_scene(self):
         groups = [
             {
@@ -2058,6 +2112,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             health = await client.get("/health")
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json()["version"], bot.BUILD_VERSION)
+            self.assertEqual(
+                health.json()["direct_script_generation"],
+                "multi_model_retry_robust_json_empty_scene_recovery",
+            )
+            self.assertEqual(
+                health.json()["direct_script_models"], bot.PREFERRED_MODELS
+            )
             self.assertEqual(health.json()["minimum_script_coverage_percent"], 90)
             self.assertEqual(health.json()["target_final_duration_percent"], 90)
             self.assertEqual(
@@ -2108,6 +2169,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
             root = await client.get("/")
             self.assertEqual(root.status_code, 200)
+            self.assertEqual(
+                root.json()["direct_script_generation"],
+                "multi_model_retry_robust_json_empty_scene_recovery",
+            )
             self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
             self.assertEqual(root.json()["target_final_duration_percent"], 90)
             self.assertEqual(root.json()["source_segment_seconds"], 120)
@@ -2844,6 +2909,253 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(script["pronoun"], MALE_PRONOUN)
         self.assertEqual(script["story_context_after"]["summary"], "opening")
         self.assertEqual(script["metrics"]["actual_chars"], 27)
+        fake_tts.assert_not_awaited()
+
+    async def test_generate_chunk_script_falls_back_to_next_model_and_alias_json(self):
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/script-fallback",
+        )
+        payload = {
+            "main_character": {"name": "Hero"},
+            "first_person_pronoun": MALE_PRONOUN,
+            "segments": [
+                {
+                    "start_time": "0",
+                    "end_time": "3",
+                    "text": first_person_text(27),
+                }
+            ],
+            "cuts": [],
+        }
+        model_calls = []
+
+        def fake_generate(model, contents, config):
+            model_calls.append(model)
+            if model == bot.PREFERRED_MODELS[0]:
+                return SimpleNamespace(
+                    text="",
+                    candidates=[
+                        SimpleNamespace(
+                            finish_reason="MAX_TOKENS",
+                            safety_ratings=[],
+                            content=SimpleNamespace(parts=[]),
+                        )
+                    ],
+                    prompt_feedback=SimpleNamespace(block_reason="OTHER"),
+                    usage_metadata=SimpleNamespace(
+                        candidates_token_count=0,
+                        total_token_count=123,
+                    ),
+                )
+            return SimpleNamespace(
+                text="```json\n"
+                + json.dumps(payload, ensure_ascii=False)
+                + "\n```"
+            )
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=fake_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(
+                    return_value={
+                        "characters": ["Hero"],
+                        "summary": "opening",
+                        "last_scene": "door",
+                        "protagonist": "Hero",
+                        "pronoun": MALE_PRONOUN,
+                    }
+                ),
+            )
+        )
+        fake_tts = AsyncMock(side_effect=AssertionError("TTS must not run"))
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        script = await bot.generate_chunk_script(
+            str(self.tmp_path / "chunk.mp4"),
+            3,
+            0,
+            3,
+            {},
+            1,
+            tracker,
+            settings={"coverage": 90, "rate": 10.0, "pause": 0},
+        )
+
+        self.assertEqual(model_calls[:2], bot.PREFERRED_MODELS[:2])
+        self.assertEqual(script["protagonist"], "Hero")
+        self.assertEqual(script["metrics"]["actual_chars"], 27)
+        fake_tts.assert_not_awaited()
+
+    async def test_generate_chunk_script_retries_full_script_when_scenes_empty(self):
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/script-empty-retry",
+        )
+        prompts = []
+
+        def fake_generate(model, contents, config):
+            prompt = str(contents[1]) if len(contents) > 1 else ""
+            prompts.append(prompt)
+            if "သုံးနိုင်သော scene မရခဲ့ပါ" in prompt:
+                payload = {
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                    "scenes": [
+                        {
+                            "start": 0,
+                            "end": 3,
+                            "burmese": first_person_text(27),
+                        }
+                    ],
+                    "cuts": [],
+                }
+            else:
+                payload = {"protagonist": "", "pronoun": "", "scenes": []}
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=fake_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(
+                    return_value={
+                        "characters": ["Hero"],
+                        "summary": "opening",
+                        "last_scene": "door",
+                        "protagonist": "Hero",
+                        "pronoun": MALE_PRONOUN,
+                    }
+                ),
+            )
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        script = await bot.generate_chunk_script(
+            str(self.tmp_path / "chunk.mp4"),
+            3,
+            0,
+            3,
+            {},
+            1,
+            tracker,
+            settings={"coverage": 90, "rate": 10.0, "pause": 0},
+        )
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('"scenes" ကို ဘယ်တော့မှ ကွက်လပ်မထားရ', prompts[1])
+        self.assertEqual(script["metrics"]["actual_chars"], 27)
+
+    async def test_generate_chunk_script_all_model_failures_report_no_scenes(self):
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/script-all-fail",
+        )
+        model_calls = []
+
+        def fake_generate(model, contents, config):
+            model_calls.append(model)
+            raise RuntimeError("synthetic empty Gemini response")
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=fake_generate),
+        )
+        self.start_patch(
+            patch.object(bot, "PREFERRED_MODELS", ["model-a", "model-b"])
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        fake_tts = AsyncMock(side_effect=AssertionError("TTS must not run"))
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        with self.assertRaises(RuntimeError) as raised:
+            await bot.generate_chunk_script(
+                str(self.tmp_path / "chunk.mp4"),
+                120,
+                0,
+                120,
+                {},
+                1,
+                tracker,
+                settings={"coverage": 90, "rate": 6.5, "pause": 0},
+            )
+
+        self.assertEqual(len(model_calls), 4)
+        self.assertIn("Script scene ထုတ်မပေးနိုင်ပါ", str(raised.exception))
+        self.assertIn("synthetic empty Gemini response", str(raised.exception))
+        self.assertNotIn("0/702 chars", str(raised.exception))
         fake_tts.assert_not_awaited()
 
     async def test_manual_flow_sends_only_first_part_without_scripting_rest(self):
