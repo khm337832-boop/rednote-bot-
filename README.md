@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v3.8-manual-parts-download-fix` downloads the complete source,
+Version `v3.9-split-progress-fix` downloads the complete source,
 splits it into fixed **2-minute parts**, writes and stores the script for
 the whole source first, sends the original parts back one by one with a
 **🎬 Recap လုပ်မယ်** button under each part, and renders only the part the
@@ -45,7 +45,11 @@ source duration is, Telegram intake follows this exact order:
    Telegram-uploaded file is still subject to Telegram's Bot API **20MB
    download limit**; larger material must be sent as a link.
 2. Split the downloaded source into 2-minute video files. A 3-hour
-   source becomes 90 parts; only the last part may be shorter.
+   source becomes 90 parts; only the last part may be shorter. The
+   Telegram progress message updates during this stage with files/MB
+   written, percent, elapsed time, and—when sparse keyframes require the
+   accurate re-encode fallback—part X/N plus an ETA, so a long split is
+   visibly progressing rather than looking stuck.
 3. Before sending any part back, write the script for **all parts in
    order** and save it under the durable manual session. Character names,
    protagonist/pronoun, prior-events summary, and last scene are carried
@@ -178,7 +182,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v3.8-manual-parts-download-fix"`,
+URLs must show `"version":"v3.9-split-progress-fix"`,
 `"recap_flow":"manual_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
 `"segment_pipeline":"download_split_120s_script_first_send_originals_click_recap_explicit_join"`,

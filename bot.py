@@ -3797,7 +3797,7 @@ def _extract_source_segment_file(
             "-map", "0:v:0",
             "-map", "0:a:0?",
             "-c:v", "libx264",
-            "-preset", "veryfast",
+            "-preset", "superfast",
             "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
@@ -3807,11 +3807,95 @@ def _extract_source_segment_file(
         ],
         1200,
     )
-    return bool(
+    ok = bool(
         result.returncode == 0
         and os.path.exists(output_path)
         and os.path.getsize(output_path) > 0
     )
+    if not ok:
+        logger.warning(
+            "Accurate source segment extraction failed start=%.3f duration=%.3f rc=%s: %s",
+            float(start),
+            float(duration),
+            result.returncode,
+            _safe_error_text((result.stderr or b"").decode(errors="ignore")[-1000:]),
+        )
+    return ok
+
+
+def _mp4_directory_stats(directory: str) -> tuple[int, int]:
+    """Return (mp4_file_count, total_bytes) for split-progress polling."""
+    count = 0
+    total = 0
+    try:
+        names = os.listdir(directory)
+    except Exception:
+        return 0, 0
+    for name in names:
+        if not name.lower().endswith(".mp4"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            size = os.path.getsize(path)
+        except Exception:
+            continue
+        count += 1
+        total += int(size)
+    return count, total
+
+
+def _single_file_stats(path: str) -> tuple[int, int]:
+    try:
+        return 1, int(os.path.getsize(path))
+    except Exception:
+        return 0, 0
+
+
+async def _report_segment_progress(tracker, text: str) -> None:
+    if tracker is None:
+        return
+    try:
+        await asyncio.wait_for(tracker.update(text, force=True), timeout=15.0)
+    except Exception:
+        pass
+
+
+async def _await_thread_with_progress(
+    func,
+    args: tuple,
+    *,
+    tracker,
+    stats_func,
+    make_text,
+    progress_interval: float = 10.0,
+):
+    """Run a blocking split step in a thread while reporting file growth.
+
+    FFmpeg segmentation is executed through ``asyncio.to_thread`` so the
+    event loop can poll the output directory/file.  For a long source this
+    turns a previously silent multi-minute operation into visible Telegram
+    progress: files started, MB written, percent, and elapsed time.
+    """
+    started = time.monotonic()
+    task = asyncio.create_task(asyncio.to_thread(func, *args))
+    interval = max(0.05, float(progress_interval or 10.0))
+    last_stats = None
+    last_report_elapsed = -20.0
+    while True:
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=interval)
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - started
+            try:
+                stats = stats_func()
+            except Exception:
+                stats = last_stats
+            if tracker is not None and (
+                stats != last_stats or elapsed - last_report_elapsed >= 20.0
+            ):
+                last_stats = stats
+                last_report_elapsed = elapsed
+                await _report_segment_progress(tracker, make_text(stats, elapsed))
 
 
 async def _prepare_source_segments(
@@ -3819,6 +3903,8 @@ async def _prepare_source_segments(
     work_dir: str,
     total_duration: float,
     segment_seconds: float = SOURCE_SEGMENT_SECONDS,
+    tracker=None,
+    progress_interval: float = 10.0,
 ) -> list[dict]:
     """Physically split a downloaded source into two-minute video files.
 
@@ -3833,10 +3919,55 @@ async def _prepare_source_segments(
         return []
     segment_dir = os.path.join(work_dir, "source_segments")
     os.makedirs(segment_dir, exist_ok=True)
-
-    candidates = await asyncio.to_thread(
-        _split_video_once, source_path, segment_dir, float(segment_seconds)
+    split_started = time.monotonic()
+    split_mode = "stream_copy"
+    try:
+        source_size = int(os.path.getsize(source_path))
+    except Exception:
+        source_size = 0
+    logger.info(
+        "Splitting source into %s segments of %ss (duration=%.1fs, size=%.1fMB)",
+        len(plan),
+        float(segment_seconds),
+        float(total_duration or 0),
+        source_size / (1024 * 1024),
     )
+
+    def one_pass_progress_text(stats, elapsed: float) -> str:
+        count, total_bytes = stats if isinstance(stats, tuple) else (0, 0)
+        if source_size > 0:
+            pct = int(total_bytes * 100 / source_size)
+        elif plan:
+            pct = int(count * 100 / len(plan))
+        else:
+            pct = 0
+        pct = max(0, min(99, pct))
+        return (
+            f"✂️ ၂ မိနစ်စီခွဲနေဆဲ — file {min(int(count), len(plan))}/{len(plan)} "
+            f"စတင်ပြီးပြီ · {int(total_bytes) / (1024 * 1024):.0f}MB ရေးပြီးပြီ · "
+            f"⏱ {fmt_time(elapsed)}\n"
+            f"📊 {fmt_progress_bar(pct)}"
+        )
+
+    candidates = await _await_thread_with_progress(
+        _split_video_once,
+        (source_path, segment_dir, float(segment_seconds)),
+        tracker=tracker,
+        stats_func=lambda: _mp4_directory_stats(segment_dir),
+        make_text=one_pass_progress_text,
+        progress_interval=progress_interval,
+    )
+    logger.info(
+        "One-pass source split returned %s files in %.1fs",
+        len(candidates or []),
+        time.monotonic() - split_started,
+    )
+    if tracker is not None and candidates:
+        await _report_segment_progress(
+            tracker,
+            f"🔎 ခွဲထားတဲ့ {len(candidates)} ပိုင်းကို duration စစ်နေပါသည် · "
+            f"⏱ {fmt_time(time.monotonic() - split_started)}",
+        )
     prepared: list[dict] = []
     cursor = 0.0
     for index, path in enumerate(candidates, start=1):
@@ -3854,6 +3985,14 @@ async def _prepare_source_segments(
             }
         )
         cursor += float(duration)
+        if tracker is not None and (
+            index == 1 or index % 8 == 0 or index == len(candidates)
+        ):
+            await _report_segment_progress(
+                tracker,
+                f"🔎 အပိုင်း duration စစ်နေ — {index}/{len(candidates)} · "
+                f"⏱ {fmt_time(time.monotonic() - split_started)}",
+            )
 
     total_tolerance = max(2.0, float(total_duration) * 0.02)
     max_candidate_duration = max(
@@ -3876,20 +4015,70 @@ async def _prepare_source_segments(
         and abs(cursor - float(total_duration)) <= total_tolerance
         and max_candidate_duration <= float(segment_seconds) + boundary_tolerance
     )
+    logger.info(
+        "Source split validation: candidates=%s plan=%s cursor=%.1fs "
+        "max_part=%.1fs boundaries_ok=%s one_pass_ok=%s elapsed=%.1fs",
+        len(prepared),
+        len(plan),
+        cursor,
+        max_candidate_duration,
+        boundaries_ok,
+        one_pass_ok,
+        time.monotonic() - split_started,
+    )
     if not one_pass_ok:
+        split_mode = "accurate_reencode"
+        logger.warning(
+            "Stream-copy source segments are not within %.1fs of the planned "
+            "boundaries; falling back to accurate per-part extraction",
+            boundary_tolerance,
+        )
+        await _report_segment_progress(
+            tracker,
+            "⚠️ Keyframe နေရာတွေကြောင့် stream-copy က ၂ မိနစ် အတိအကျ မကျလို့ "
+            "တိကျစွာ ပြန်ခွဲနေပါသည်။ ရှည်တဲ့ video မှာ ဒီအဆင့် ကြာနိုင်ပေမယ့် "
+            "အပိုင်းအလိုက် progress ကို ဆက်ပြပါမယ် · "
+            f"⏱ {fmt_time(time.monotonic() - split_started)}",
+        )
         shutil.rmtree(segment_dir, ignore_errors=True)
         os.makedirs(segment_dir, exist_ok=True)
         prepared = []
+        fallback_started = time.monotonic()
         for item in plan:
+            part_index = int(item["index"])
             output_path = os.path.join(
-                segment_dir, f"source_part_{int(item['index']):04d}.mp4"
+                segment_dir, f"source_part_{part_index:04d}.mp4"
             )
-            ok = await asyncio.to_thread(
+            part_started = time.monotonic()
+            await _report_segment_progress(
+                tracker,
+                f"✂️ တိကျစွာ ခွဲနေသည် — အပိုင်း {part_index}/{len(plan)} "
+                f"({fmt_time(float(item['start']))}–{fmt_time(float(item['end']))})\n"
+                f"📊 {fmt_progress_bar(int((part_index - 1) * 100 / len(plan)))} · "
+                f"⏱ စုစုပေါင်း {fmt_time(time.monotonic() - split_started)}",
+            )
+
+            def extract_progress_text(stats, elapsed: float, idx=part_index) -> str:
+                _count, total_bytes = stats if isinstance(stats, tuple) else (0, 0)
+                return (
+                    f"✂️ တိကျစွာ ခွဲနေဆဲ — အပိုင်း {idx}/{len(plan)} · "
+                    f"{int(total_bytes) / (1024 * 1024):.1f}MB ရေးပြီးပြီ · "
+                    f"ဒီအပိုင်း ⏱ {fmt_time(elapsed)} / "
+                    f"စုစုပေါင်း {fmt_time(time.monotonic() - split_started)}"
+                )
+
+            ok = await _await_thread_with_progress(
                 _extract_source_segment_file,
-                source_path,
-                output_path,
-                float(item["start"]),
-                float(item["duration"]),
+                (
+                    source_path,
+                    output_path,
+                    float(item["start"]),
+                    float(item["duration"]),
+                ),
+                tracker=tracker,
+                stats_func=lambda p=output_path: _single_file_stats(p),
+                make_text=extract_progress_text,
+                progress_interval=progress_interval,
             )
             actual_duration = probe_video_info(output_path)[0] if ok else 0.0
             if not ok or actual_duration <= 0:
@@ -3904,6 +4093,26 @@ async def _prepare_source_segments(
                     "end": round(float(item["start"]) + float(actual_duration), 3),
                 }
             )
+            logger.info(
+                "Accurate source segment %s/%s done in %.1fs (%.1fMB)",
+                part_index,
+                len(plan),
+                time.monotonic() - part_started,
+                _single_file_stats(output_path)[1] / (1024 * 1024),
+            )
+            fallback_elapsed = time.monotonic() - fallback_started
+            eta_seconds = (
+                fallback_elapsed / part_index * (len(plan) - part_index)
+                if part_index > 0
+                else 0.0
+            )
+            await _report_segment_progress(
+                tracker,
+                f"✅ ခွဲပြီး အပိုင်း {part_index}/{len(plan)} · "
+                f"⏱ စုစုပေါင်း {fmt_time(time.monotonic() - split_started)} · "
+                f"⏳ ခန့်မှန်း ကျန်ချိန် {fmt_time(eta_seconds)}\n"
+                f"📊 {fmt_progress_bar(int(part_index * 100 / len(plan)))}",
+            )
 
     manifest_path = os.path.join(work_dir, "source_segments.json")
     try:
@@ -3912,6 +4121,10 @@ async def _prepare_source_segments(
                 {
                     "source_segment_seconds": float(segment_seconds),
                     "source_duration_seconds": round(float(total_duration), 3),
+                    "split_mode": split_mode,
+                    "split_elapsed_seconds": round(
+                        time.monotonic() - split_started, 3
+                    ),
                     "segments": [
                         {
                             "index": int(item["index"]),
@@ -3929,6 +4142,12 @@ async def _prepare_source_segments(
             )
     except Exception as e:
         logger.warning(f"source segment manifest write failed: {e}")
+    logger.info(
+        "Prepared %s source segments via %s in %.1fs",
+        len(prepared),
+        split_mode,
+        time.monotonic() - split_started,
+    )
     return prepared
 
 
@@ -4093,6 +4312,12 @@ def _split_video_once(path: str, out_dir: str, segment_seconds: float) -> list[s
         pattern,
     ], 1200)
     if result.returncode != 0:
+        logger.warning(
+            "One-pass stream-copy split failed rc=%s segment_time=%.3f: %s",
+            result.returncode,
+            float(segment_seconds),
+            _safe_error_text((result.stderr or b"").decode(errors="ignore")[-1000:]),
+        )
         return []
     return sorted(
         os.path.join(out_dir, f)
@@ -7599,7 +7824,11 @@ async def _handle_manual_source_job(
             force=True,
         )
         source_segments = await _prepare_source_segments(
-            source_path, session_dir, total_dur, SOURCE_SEGMENT_SECONDS
+            source_path,
+            session_dir,
+            total_dur,
+            SOURCE_SEGMENT_SECONDS,
+            tracker=tracker,
         )
         if not source_segments:
             raise RuntimeError("မူရင်းဗီဒီယိုကို ၂ မိနစ်ပိုင်းများ ခွဲ၍မရပါ။")
@@ -8726,7 +8955,11 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         )
 
         source_segments = await _prepare_source_segments(
-            source_path, work_dir, total_dur, segment_seconds
+            source_path,
+            work_dir,
+            total_dur,
+            segment_seconds,
+            tracker=tracker,
         )
         if not source_segments:
             raise RuntimeError("မူရင်းဗီဒီယိုကို ၂ မိနစ်ပိုင်းများ ခွဲ၍မရပါ။")
@@ -9186,7 +9419,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.8-manual-parts-download-fix"
+BUILD_VERSION = "v3.9-split-progress-fix"
 BUILD_FEATURES = 20
 
 

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -681,6 +682,91 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["index"] for item in segments], [1, 2, 3])
         self.assertTrue(all(item["duration"] <= 2.25 for item in segments))
         self.assertAlmostEqual(sum(item["duration"] for item in segments), 5, delta=0.4)
+
+    async def test_prepare_source_segments_reports_progress_while_splitting(self):
+        work_dir = self.tmp_path / "segment-progress"
+        work_dir.mkdir()
+        updates = []
+
+        async def fake_update(text, force=False):
+            updates.append(text)
+
+        tracker = SimpleNamespace(update=fake_update)
+
+        def fake_split(_path, out_dir, _segment_seconds):
+            out = Path(out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            results = []
+            for index in range(3):
+                part = out / f"part_{index:04d}.mp4"
+                part.write_bytes(b"x" * 100)
+                results.append(str(part))
+                time.sleep(0.05)
+            return results
+
+        def fake_probe(path):
+            return (1.0 if str(path).endswith("part_0002.mp4") else 2.0, 64, 64)
+
+        self.start_patch(patch.object(bot, "_split_video_once", new=fake_split))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+
+        segments = await bot._prepare_source_segments(
+            str(self.tmp_path / "source.mp4"),
+            str(work_dir),
+            5,
+            segment_seconds=2,
+            tracker=tracker,
+            progress_interval=0.01,
+        )
+
+        self.assertEqual([item["index"] for item in segments], [1, 2, 3])
+        self.assertTrue(any("ခွဲနေဆဲ" in text and "file" in text for text in updates))
+        self.assertTrue(any("duration စစ်နေ" in text for text in updates))
+        manifest = json.loads((work_dir / "source_segments.json").read_text())
+        self.assertEqual(manifest["split_mode"], "stream_copy")
+
+    async def test_prepare_source_segments_reports_fallback_progress(self):
+        work_dir = self.tmp_path / "segment-fallback-progress"
+        work_dir.mkdir()
+        updates = []
+
+        async def fake_update(text, force=False):
+            updates.append(text)
+
+        tracker = SimpleNamespace(update=fake_update)
+
+        def fake_extract(_source, output_path, _start, _duration):
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * 50)
+            time.sleep(0.03)
+            with path.open("ab") as fh:
+                fh.write(b"x" * 50)
+            return True
+
+        def fake_probe(path):
+            return (1.0 if str(path).endswith("0003.mp4") else 2.0, 64, 64)
+
+        self.start_patch(patch.object(bot, "_split_video_once", return_value=[]))
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
+        )
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+
+        segments = await bot._prepare_source_segments(
+            str(self.tmp_path / "source.mp4"),
+            str(work_dir),
+            5,
+            segment_seconds=2,
+            tracker=tracker,
+            progress_interval=0.01,
+        )
+
+        self.assertEqual([item["index"] for item in segments], [1, 2, 3])
+        self.assertTrue(any("တိကျစွာ ခွဲနေသည်" in text for text in updates))
+        self.assertTrue(any("ခွဲပြီး အပိုင်း 3/3" in text for text in updates))
+        manifest = json.loads((work_dir / "source_segments.json").read_text())
+        self.assertEqual(manifest["split_mode"], "accurate_reencode")
 
     @unittest.skipUnless(
         os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
@@ -2253,7 +2339,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             Path(output_path).write_bytes(b"x" * 10001)
             return 250.0
 
-        async def fake_prepare(source_path, work_dir, total_duration, segment_seconds):
+        async def fake_prepare(source_path, work_dir, total_duration, segment_seconds, tracker=None, **_kwargs):
             prepare_calls.append((source_path, work_dir, total_duration, segment_seconds))
             segment_dir = Path(work_dir) / "source_segments"
             segment_dir.mkdir(parents=True, exist_ok=True)
@@ -2378,7 +2464,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             Path(output_path).write_bytes(b"x" * 10001)
             return 60.0
 
-        async def fake_prepare(_source_path, work_dir, _duration, _seconds):
+        async def fake_prepare(_source_path, work_dir, _duration, _seconds, tracker=None, **_kwargs):
             path = Path(work_dir) / "source_part_0001.mp4"
             path.write_bytes(b"s" * 100)
             return [
@@ -2676,7 +2762,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             Path(output_path).write_bytes(b"x" * 10001)
             return 250.0
 
-        async def fake_prepare(_source_path, work_dir, _duration, _seconds):
+        async def fake_prepare(_source_path, work_dir, _duration, _seconds, tracker=None, **_kwargs):
             segment_dir = Path(work_dir) / "source_segments"
             segment_dir.mkdir(parents=True, exist_ok=True)
             segments = []
