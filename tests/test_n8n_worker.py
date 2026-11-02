@@ -735,7 +735,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         tracker = SimpleNamespace(update=fake_update)
 
-        def fake_extract(_source, output_path, _start, _duration):
+        def fake_extract(_source, output_path, _start, _duration, **_kwargs):
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x" * 50)
@@ -2179,6 +2179,14 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["auto_retry"]["partial_final_delivery"],
                 "rejected_as_failed",
+            )
+            self.assertEqual(
+                health.json()["source_split_acceptance"],
+                "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
+            )
+            self.assertEqual(
+                health.json()["render_keepalive"],
+                "self_ping_public_healthz_while_jobs_active",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
@@ -4502,6 +4510,146 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((16001, "failed"), bumped)
         self.assertNotIn((16001, "done"), bumped)
         self.assertNotIn(16001, bot.ACTIVE_JOBS)
+
+    async def test_prepare_source_segments_accepts_keyframe_snapped_boundaries(self):
+        # Real files almost never have keyframes exactly on 120s marks.
+        # Snapped boundaries (each part <= 1.5x the window, full coverage)
+        # must be accepted from the one-pass stream copy instead of
+        # forcing a full re-encode extraction (the "frozen at precisely
+        # splitting part 3/4" bug).
+        work_dir = self.tmp_path / "segment-snapped"
+        work_dir.mkdir()
+
+        def fake_split(_path, out_dir, _segment_seconds):
+            out = Path(out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            results = []
+            for index in range(3):
+                part = out / f"part_{index:04d}.mp4"
+                part.write_bytes(b"x" * 100)
+                results.append(str(part))
+            return results
+
+        durations = {
+            "part_0000.mp4": 2.6,
+            "part_0001.mp4": 1.5,
+            "part_0002.mp4": 0.9,
+        }
+
+        def fake_probe(path):
+            return (durations[Path(path).name], 64, 64)
+
+        extract = Mock(side_effect=AssertionError("extract must not run"))
+        self.start_patch(patch.object(bot, "_split_video_once", new=fake_split))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=extract)
+        )
+
+        segments = await bot._prepare_source_segments(
+            str(self.tmp_path / "source.mp4"),
+            str(work_dir),
+            5,
+            segment_seconds=2,
+            progress_interval=0.01,
+        )
+
+        self.assertEqual([item["duration"] for item in segments], [2.6, 1.5, 0.9])
+        self.assertEqual([item["start"] for item in segments], [0.0, 2.6, 4.1])
+        self.assertEqual([item["end"] for item in segments], [2.6, 4.1, 5.0])
+        extract.assert_not_called()
+        manifest = json.loads((work_dir / "source_segments.json").read_text())
+        self.assertEqual(manifest["split_mode"], "stream_copy")
+
+    async def test_prepare_source_segments_falls_back_when_part_exceeds_1p5x(self):
+        work_dir = self.tmp_path / "segment-oversized"
+        work_dir.mkdir()
+        extract_calls = []
+
+        def fake_split(_path, out_dir, _segment_seconds):
+            out = Path(out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            results = []
+            for index in range(2):
+                part = out / f"part_{index:04d}.mp4"
+                part.write_bytes(b"x" * 100)
+                results.append(str(part))
+            return results
+
+        def fake_extract(_source, output_path, start, duration, **kwargs):
+            extract_calls.append((start, duration, kwargs))
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * 100)
+            return True
+
+        def fake_probe(path):
+            name = Path(path).name
+            if name.startswith("source_part"):
+                return (1.0 if name.endswith("0003.mp4") else 2.0, 64, 64)
+            return (3.5 if name == "part_0000.mp4" else 1.5, 64, 64)
+
+        self.start_patch(patch.object(bot, "_split_video_once", new=fake_split))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
+        )
+
+        segments = await bot._prepare_source_segments(
+            str(self.tmp_path / "source.mp4"),
+            str(work_dir),
+            5,
+            segment_seconds=2,
+            progress_interval=0.01,
+        )
+
+        self.assertEqual([item["index"] for item in segments], [1, 2, 3])
+        self.assertEqual(len(extract_calls), 3)
+        # The fallback must use the bounded cheap profile, not full-res.
+        for _start, _duration, kwargs in extract_calls:
+            self.assertEqual(kwargs.get("max_height"), 720)
+            self.assertEqual(kwargs.get("preset"), "ultrafast")
+        manifest = json.loads((work_dir / "source_segments.json").read_text())
+        self.assertEqual(manifest["split_mode"], "accurate_reencode")
+
+    async def test_keep_awake_pings_public_healthz_only_while_busy(self):
+        calls = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, params=None):
+                calls.append(url)
+                return SimpleNamespace(status_code=200)
+
+        self.start_patch(
+            patch.object(bot, "PUBLIC_BASE_URL", "https://example.test/")
+        )
+        self.start_patch(
+            patch.object(bot.httpx, "AsyncClient", new=FakeAsyncClient)
+        )
+
+        # Idle: no ping.
+        task = asyncio.create_task(bot._keep_awake_while_working())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(calls, [])
+
+        # Busy: pings the public /healthz URL once per interval.
+        self.active_jobs[111] = "job-x"
+        task = asyncio.create_task(bot._keep_awake_while_working())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(calls, ["https://example.test/healthz"])
 
 
 if __name__ == "__main__":

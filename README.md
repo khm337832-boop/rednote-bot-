@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.0-auto-recap` is a **one-shot automatic flow**: the user
+Version `v5.1-fast-split` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -15,7 +15,15 @@ the finished final video — **no per-part clicking**. Transient failures
 are retried automatically at every stage (source download, script, TTS,
 per-window render, join, and final upload), and a job is only reported
 as done after every final piece has actually been delivered. The final
-video is split only when Telegram's upload size requires it. It
+video is split only when Telegram's upload size requires it. Splitting
+uses stream-copy at keyframe-snapped ~2-minute boundaries (accepted
+when the parts cover the full source and none exceeds 1.5× the window;
+only sparse-keyframe sources fall back to a bounded 720p/ultrafast
+accurate extraction), so the split stage takes seconds instead of
+re-encoding the whole source. While any job runs, the service also
+self-pings its public `/healthz` URL every few minutes so Render's
+free-plan 15-minute idle spin-down cannot kill a long job mid-render.
+It
 installs the persistent bottom buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
 process**. `/start` and `/menu` always force-install them again, explain the
@@ -230,10 +238,12 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.0-auto-recap"`,
+URLs must show `"version":"v5.1-fast-split"`,
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,
 `"source_segment_seconds":120`,
+`"source_split_acceptance":"stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback"`,
+`"render_keepalive":"self_ping_public_healthz_while_jobs_active"`,
 `"segment_pipeline":"download_split_120s_recap_each_concat_send"`,
 `"telegram_buttons":"inline_persistent_menu_auto_one_shot_manual_opt_in"`,
 `"telegram_link_handling":"profile_rejected_public_post_web_fallback"`, a current

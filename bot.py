@@ -4816,27 +4816,44 @@ def _extract_source_segment_file(
     output_path: str,
     start: float,
     duration: float,
+    *,
+    max_height: int = 0,
+    preset: str = "superfast",
 ) -> bool:
-    """Accurately extract one planned source window as a standalone MP4."""
-    result = run_cmd(
-        [
-            FFMPEG_BIN, "-y",
-            "-ss", f"{max(0.0, float(start)):.3f}",
-            "-i", source_path,
-            "-t", f"{max(0.01, float(duration)):.3f}",
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c:v", "libx264",
-            "-preset", "superfast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            output_path,
-        ],
-        1200,
-    )
+    """Accurately extract one planned source window as a standalone MP4.
+
+    ``max_height`` optionally downscales (never upscales) while
+    extracting.  The automatic split fallback uses it with the
+    ``ultrafast`` preset: re-encoding a full-resolution source window by
+    window on a small free-tier CPU takes many minutes per part and
+    large x264 lookahead buffers can exhaust the instance memory, so
+    the fallback encodes a bounded 720p intermediate instead (the
+    render stage re-encodes to the user's resolution setting anyway).
+    """
+    cmd = [
+        FFMPEG_BIN, "-y",
+        "-ss", f"{max(0.0, float(start)):.3f}",
+        "-i", source_path,
+        "-t", f"{max(0.01, float(duration)):.3f}",
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+    ]
+    if int(max_height or 0) > 0:
+        cmd += [
+            "-vf",
+            f"scale=-2:trunc(min({int(max_height)}\\,ih)/2)*2",
+        ]
+    cmd += [
+        "-c:v", "libx264",
+        "-preset", str(preset or "superfast"),
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    result = run_cmd(cmd, 1200)
     ok = bool(
         result.returncode == 0
         and os.path.exists(output_path)
@@ -4936,13 +4953,16 @@ async def _prepare_source_segments(
     tracker=None,
     progress_interval: float = 10.0,
 ) -> list[dict]:
-    """Physically split a downloaded source into two-minute video files.
+    """Physically split a downloaded source into ~two-minute video files.
 
-    Prefer FFmpeg's one-pass segment muxer: it partitions the source with
-    no overlaps/gaps.  If keyframes/container make that unusable or the
-    count is not the planned two-minute count, accurately extract every
-    planned window instead.  A JSON manifest is retained in the job dir
-    while the job runs so progress/logs can identify each part.
+    Prefer FFmpeg's one-pass segment muxer: it partitions the source
+    with no overlaps/gaps at keyframe-snapped boundaries (accepted
+    when it covers the full source and no part exceeds 1.5x the target
+    window).  Only if that is unusable (sparse keyframes/container)
+    are the planned windows accurately extracted with a bounded
+    720p/ultrafast re-encode instead.  A JSON manifest is retained in
+    the job dir while the job runs so progress/logs can identify each
+    part.
     """
     plan = build_source_segment_plan(total_duration, segment_seconds)
     if not plan:
@@ -5028,40 +5048,50 @@ async def _prepare_source_segments(
     max_candidate_duration = max(
         (float(item["duration"]) for item in prepared), default=0.0
     )
-    # Stream-copy segmentation can only cut at keyframes.  Accept it only
-    # when its boundaries are still the requested two-minute boundaries;
-    # otherwise use the accurate extraction fallback below rather than
-    # silently recapping, for example, a 170-second part as "2 minutes".
-    boundary_tolerance = 2.0
-    boundaries_ok = len(prepared) == len(plan) and all(
-        abs(float(candidate["start"]) - float(planned["start"]))
-        <= boundary_tolerance
-        and abs(float(candidate["end"]) - float(planned["end"]))
-        <= boundary_tolerance
-        for candidate, planned in zip(prepared, plan)
+    # Stream-copy segmentation can only cut at keyframes, so requiring
+    # boundaries within a couple of seconds of exact 120s marks forced
+    # nearly every real source into the accurate re-encode fallback --
+    # which re-encodes the whole video window by window and takes many
+    # minutes per part on a small free-tier CPU (jobs appeared frozen
+    # at "precisely splitting part x/y").  Accept the one-pass result
+    # whenever it contiguously covers the full source and no part
+    # exceeds 1.5x the target window.  The actual keyframe-snapped
+    # boundaries then become the windows: downstream already targets a
+    # percentage of each part's *measured* duration and re-checks the
+    # joined final against the full source duration, so a 126s window
+    # is recapped correctly as 126s, not mislabeled as 120s.  Only
+    # genuinely sparse-keyframe sources (some part > 1.5x the window)
+    # still use the accurate extraction fallback below.
+    max_ok_duration = float(segment_seconds) * 1.5
+    coverage_ok = bool(prepared) and (
+        abs(cursor - float(total_duration)) <= total_tolerance
     )
     one_pass_ok = bool(
-        boundaries_ok
-        and abs(cursor - float(total_duration)) <= total_tolerance
-        and max_candidate_duration <= float(segment_seconds) + boundary_tolerance
+        coverage_ok and max_candidate_duration <= max_ok_duration
     )
+    if one_pass_ok and len(prepared) != len(plan):
+        split_mode = "stream_copy_snapped"
     logger.info(
         "Source split validation: candidates=%s plan=%s cursor=%.1fs "
-        "max_part=%.1fs boundaries_ok=%s one_pass_ok=%s elapsed=%.1fs",
+        "max_part=%.1fs max_ok=%.1fs coverage_ok=%s one_pass_ok=%s elapsed=%.1fs",
         len(prepared),
         len(plan),
         cursor,
         max_candidate_duration,
-        boundaries_ok,
+        max_ok_duration,
+        coverage_ok,
         one_pass_ok,
         time.monotonic() - split_started,
     )
     if not one_pass_ok:
         split_mode = "accurate_reencode"
         logger.warning(
-            "Stream-copy source segments are not within %.1fs of the planned "
-            "boundaries; falling back to accurate per-part extraction",
-            boundary_tolerance,
+            "Stream-copy source segments are unusable (coverage_ok=%s "
+            "max_part=%.1fs max_ok=%.1fs); falling back to accurate "
+            "per-part extraction",
+            coverage_ok,
+            max_candidate_duration,
+            max_ok_duration,
         )
         await _report_segment_progress(
             tracker,
@@ -5097,14 +5127,27 @@ async def _prepare_source_segments(
                     f"စုစုပေါင်း {fmt_time(time.monotonic() - split_started)}"
                 )
 
+            def _extract_cheap(
+                _src=source_path,
+                _out=output_path,
+                _start=float(item["start"]),
+                _dur=float(item["duration"]),
+            ):
+                # Bounded 720p/ultrafast intermediate: full-resolution
+                # re-encode of every window is what made this fallback
+                # take many minutes per part on a small CPU.
+                return _extract_source_segment_file(
+                    _src,
+                    _out,
+                    _start,
+                    _dur,
+                    max_height=720,
+                    preset="ultrafast",
+                )
+
             ok = await _await_thread_with_progress(
-                _extract_source_segment_file,
-                (
-                    source_path,
-                    output_path,
-                    float(item["start"]),
-                    float(item["duration"]),
-                ),
+                _extract_cheap,
+                (),
                 tracker=tracker,
                 stats_func=lambda p=output_path: _single_file_stats(p),
                 make_text=extract_progress_text,
@@ -12320,6 +12363,38 @@ async def process_admin_update(update: dict):
         )
 
 
+async def _keep_awake_while_working():
+    """Self-ping the public URL while any job is running.
+
+    Render's free plan spins a web service down after roughly 15
+    minutes without inbound HTTP.  A long recap job only makes
+    *outbound* Telegram calls, so without this the instance is killed
+    mid-render and the Telegram progress message simply freezes
+    (observed stuck at total elapsed ~14-15 minutes).  While work is
+    active we request our own public ``/healthz`` URL every few
+    minutes; that arrives through the load balancer as real inbound
+    HTTP and resets the idle timer.  Idle periods still spin down
+    normally.
+    """
+    while True:
+        try:
+            busy = bool(ACTIVE_JOBS or WORKER_TASKS or MANUAL_RENDER_TASKS)
+        except Exception:
+            busy = False
+        if busy and PUBLIC_BASE_URL:
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    await client.get(
+                        f"{str(PUBLIC_BASE_URL).rstrip('/')}/healthz",
+                        params={"keepalive": "1"},
+                    )
+            except Exception:
+                pass
+            await asyncio.sleep(240.0)
+        else:
+            await asyncio.sleep(30.0)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     version = globals().get("BUILD_VERSION", "")
@@ -12350,20 +12425,24 @@ async def lifespan(_app: FastAPI):
         "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto",
     )
     setup_task = _spawn_background(_setup_bot(), name="telegram-setup")
+    keepalive_task = _spawn_background(
+        _keep_awake_while_working(), name="keepalive"
+    )
     try:
         yield
     finally:
-        setup_task.cancel()
-        try:
-            await setup_task
-        except asyncio.CancelledError:
-            pass
+        for _task in (setup_task, keepalive_task):
+            _task.cancel()
+            try:
+                await _task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.0-auto-recap"
+BUILD_VERSION = "v5.1-fast-split"
 BUILD_FEATURES = 20
 
 
@@ -12390,6 +12469,8 @@ async def root():
             "final_upload_attempts_per_part": 3,
             "partial_final_delivery": "rejected_as_failed",
         },
+        "source_split_acceptance": "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
+        "render_keepalive": "self_ping_public_healthz_while_jobs_active",
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -12452,6 +12533,8 @@ async def health():
             "final_upload_attempts_per_part": 3,
             "partial_final_delivery": "rejected_as_failed",
         },
+        "source_split_acceptance": "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
+        "render_keepalive": "self_ping_public_healthz_while_jobs_active",
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
