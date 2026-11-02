@@ -19,6 +19,7 @@ os.environ["GEMINI_API_KEY"] = "test-gemini-key"
 os.environ["WORKER_API_KEY"] = "test-worker-key"
 os.environ["WHISPER_API_KEY"] = "test-whisper-key"
 os.environ["PIPELINE_MODE"] = "direct"
+os.environ["RECAP_FLOW"] = "manual"
 os.environ["N8N_WEBHOOK_URL"] = ""
 os.environ["N8N_WEBHOOK_SECRET"] = ""
 os.environ["RENDER_EXTERNAL_URL"] = "https://worker.example"
@@ -61,6 +62,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         start(patch.object(bot, "WHISPER_API_KEY", "test-whisper-key"))
         start(patch.object(bot, "WORKER_API_KEY", "test-worker-key"))
         start(patch.object(bot, "PIPELINE_MODE", "direct"))
+        start(patch.object(bot, "RECAP_FLOW", "manual"))
+        start(patch.object(bot, "MANUAL_PARTS_ENABLED", True))
         start(patch.object(bot, "N8N_WEBHOOK_URL", ""))
         start(patch.object(bot, "N8N_WEBHOOK_SECRET", ""))
 
@@ -68,6 +71,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.pending_links = start(patch.object(bot, "PENDING_LINKS", {}))
         self.pending_inputs = start(patch.object(bot, "PENDING_INPUTS", {}))
         self.worker_tasks = start(patch.object(bot, "WORKER_TASKS", {}))
+        self.manual_sessions_by_chat = start(
+            patch.object(bot, "MANUAL_SESSIONS_BY_CHAT", {})
+        )
+        self.manual_render_tasks = start(
+            patch.object(bot, "MANUAL_RENDER_TASKS", {})
+        )
+        start(patch.object(bot, "MANUAL_SESSION_LOCK", asyncio.Lock()))
         self.cancelled_jobs = start(patch.object(bot, "CANCELLED_JOBS", set()))
         self.background_tasks = start(
             patch.object(bot, "BACKGROUND_TASKS", set())
@@ -101,7 +111,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         tasks = [
             task
-            for task in list(bot.WORKER_TASKS.values()) + list(bot.BACKGROUND_TASKS)
+            for task in (
+                list(bot.WORKER_TASKS.values())
+                + list(bot.MANUAL_RENDER_TASKS.values())
+                + list(bot.BACKGROUND_TASKS)
+            )
             if not task.done()
         ]
         for task in tasks:
@@ -109,6 +123,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         bot.WORKER_TASKS.clear()
+        bot.MANUAL_RENDER_TASKS.clear()
+        bot.MANUAL_SESSIONS_BY_CHAT.clear()
         bot.ACTIVE_JOBS.clear()
         bot.PENDING_LINKS.clear()
         bot.PENDING_INPUTS.clear()
@@ -1620,6 +1636,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "၂ မိနစ်စီ",
             "၃ နာရီ = ၉၀ ပိုင်း",
             "တစ်ပိုင်းချင်း",
+            "Script ကို အရင်ရေးပြီးသိမ်းမယ်",
+            "🎬 Recap လုပ်မယ်",
+            "Auto မ Run ဘူး",
+            "20MB အောက်",
             "ဇာတ်ကောင်နာမည်တွေ",
             "ကျွန်တော်/ကျွန်မ",
             "အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်",
@@ -1958,16 +1978,24 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 health.json()["first_person_enforcement"], "per_scene_validated"
             )
             self.assertEqual(health.json()["source_segment_seconds"], 120)
+            self.assertEqual(health.json()["recap_flow"], "manual_per_part")
+            self.assertTrue(health.json()["manual_parts_enabled"])
             self.assertEqual(
                 health.json()["segment_pipeline"],
-                "download_split_120s_recap_each_concat_send",
+                "download_split_120s_script_first_send_originals_click_recap_explicit_join",
             )
             self.assertEqual(
                 health.json()["input_types"],
                 ["telegram_video", "telegram_document_video", "video_link"],
             )
+            self.assertEqual(health.json()["telegram_file_download_limit_mb"], 20)
             self.assertEqual(
-                health.json()["telegram_buttons"], "inline_persistent_and_menu"
+                health.json()["source_download_diagnostics"],
+                "redacted_yt_dlp_stderr_with_direct_and_rednote_fallbacks",
+            )
+            self.assertEqual(
+                health.json()["telegram_buttons"],
+                "inline_persistent_menu_and_per_part_recap",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
@@ -1989,9 +2017,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
             self.assertEqual(root.json()["target_final_duration_percent"], 90)
             self.assertEqual(root.json()["source_segment_seconds"], 120)
+            self.assertEqual(root.json()["recap_flow"], "manual_per_part")
             self.assertEqual(
                 root.json()["segment_pipeline"],
-                "download_split_120s_recap_each_concat_send",
+                "download_split_120s_script_first_send_originals_click_recap_explicit_join",
             )
             self.assertTrue(root.json()["worker_api_configured"])
 
@@ -2212,11 +2241,14 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(13003, bot.ACTIVE_JOBS)
 
     async def test_telegram_source_is_recapped_part_by_part_then_joined_and_sent(self):
+        # This is the RECAP_FLOW=auto compatibility path; the default
+        # manual button flow has dedicated tests below.
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
         build_calls = []
         prepare_calls = []
         concat_calls = []
 
-        async def fake_telegram_download(file_id, output_path, tracker=None):
+        async def fake_telegram_download(file_id, output_path, tracker=None, **_kwargs):
             self.assertEqual(file_id, "uploaded-source")
             Path(output_path).write_bytes(b"x" * 10001)
             return 250.0
@@ -2340,7 +2372,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(15001, bot.ACTIVE_JOBS)
 
     async def test_failed_final_join_never_sends_a_partial_video(self):
-        async def fake_telegram_download(_file_id, output_path, _tracker=None):
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
+
+        async def fake_telegram_download(_file_id, output_path, _tracker=None, **_kwargs):
             Path(output_path).write_bytes(b"x" * 10001)
             return 60.0
 
@@ -2399,7 +2433,720 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn(15002, bot.ACTIVE_JOBS)
 
+    def test_source_url_extraction_rednote_candidates_and_secret_redaction(self):
+        shared = "ဒါလေးကြည့် https://xhslink.com/a/AbC123, copy လုပ်ထား"
+        self.assertEqual(
+            bot._extract_first_url(shared), "https://xhslink.com/a/AbC123"
+        )
+        self.assertTrue(bot._is_rednote_url("https://xhslink.cn/a/test"))
+        self.assertTrue(
+            bot._is_rednote_url("https://www.xiaohongshu.com/explore/test")
+        )
+
+        page = (
+            r'{"masterUrl":"https:\/\/sns-video-bd.xhscdn.com\/movie.mp4?sign=1",'
+            r'"originVideoKey":"origin-key-1"}'
+        )
+        candidates = bot._extract_direct_video_urls_from_text(
+            page, "https://www.xiaohongshu.com/explore/test"
+        )
+        self.assertEqual(
+            candidates[0], "https://sns-video-bd.xhscdn.com/movie.mp4?sign=1"
+        )
+        self.assertIn(
+            "https://sns-video-bd.xhscdn.com/origin-key-1", candidates
+        )
+
+        fake_token = "123456" + ":" + ("A" * 35)
+        self.start_patch(patch.object(bot, "BOT_TOKEN", fake_token))
+        redacted = bot._redact_secret_text(
+            f"GET https://api.telegram.org/bot{fake_token}/getMe token={fake_token}"
+        )
+        self.assertNotIn(fake_token, redacted)
+        self.assertIn("[REDACTED]", redacted)
+        self.assertEqual(bot.logging.getLogger("httpx").level, bot.logging.WARNING)
+        self.assertEqual(
+            bot.logging.getLogger("httpcore").level, bot.logging.WARNING
+        )
+        mapped = bot._download_error_from_detail(
+            f"ERROR: HTTP Error 403: Forbidden using {fake_token}"
+        )
+        self.assertIn("403/anti-bot", mapped.user_message)
+        self.assertNotIn(fake_token, mapped.detail)
+
+    def test_rednote_cookies_accept_netscape_and_json(self):
+        self.start_patch(
+            patch.object(bot, "_configured_cookie_file_path", return_value="")
+        )
+        netscape = "xhslink.com\tFALSE\t/\tFALSE\t0\ta1\tcookie-value"
+        self.start_patch(patch.object(bot, "XHS_COOKIE", netscape))
+        self.assertEqual(
+            bot._cookie_records_from_value(netscape),
+            [("a1", "cookie-value", ".xiaohongshu.com", "/")],
+        )
+        generated = Path(bot._yt_dlp_cookies_file())
+        self.assertTrue(generated.is_file())
+        self.assertIn(
+            ".xiaohongshu.com\tTRUE\t/\tFALSE\t0\ta1\tcookie-value",
+            generated.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            bot._cookie_records_from_value(
+                '[{"name":"web_session","value":"abc","domain":".xiaohongshu.com"}]'
+            ),
+            [("web_session", "abc", ".xiaohongshu.com", "/")],
+        )
+        self.assertTrue(
+            bot._is_direct_media_url(
+                "https://sns-video-bd.xhscdn.com/origin-key-without-extension"
+            )
+        )
+
+    async def test_download_telegram_file_over_20mb_gives_clear_error(self):
+        with self.assertRaises(bot.SourceDownloadError) as raised:
+            await bot.download_telegram_file(
+                "too-big-file",
+                str(self.tmp_path / "too-big.mp4"),
+                expected_size=21 * 1024 * 1024,
+                raise_on_error=True,
+            )
+        self.assertIn("20MB", raised.exception.user_message)
+        self.assertIn("link", raised.exception.user_message)
+
+    async def test_ytdlp_stderr_is_captured_instead_of_hidden(self):
+        class FakeStream:
+            def __init__(self, payload=b""):
+                self.payload = payload
+                self.sent = False
+
+            async def read(self, _size):
+                if self.sent:
+                    return b""
+                self.sent = True
+                return self.payload
+
+        class FakeProc:
+            pid = 999999
+            returncode = None
+
+            def __init__(self):
+                self.stdout = FakeStream()
+                self.stderr = FakeStream(b"ERROR: Unsupported URL: example\n")
+
+            async def wait(self):
+                self.returncode = 1
+                return 1
+
+        self.start_patch(
+            patch.object(
+                bot.asyncio,
+                "create_subprocess_exec",
+                new=AsyncMock(return_value=FakeProc()),
+            )
+        )
+        with self.assertRaises(bot.SourceDownloadError) as raised:
+            await bot._download_with_ytdlp_once(
+                "https://videos.example/unsupported",
+                str(self.tmp_path / "source.mp4"),
+            )
+        self.assertIn("Unsupported URL", raised.exception.detail)
+        self.assertIn("extractor", raised.exception.user_message)
+
+    async def test_direct_media_download_streams_file(self):
+        self.start_patch(
+            patch.object(bot, "probe_video_info", new=Mock(return_value=(12.0, 640, 360)))
+        )
+
+        class FakeResponse:
+            status_code = 200
+            headers = {"content-type": "video/mp4", "content-length": "11000"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def aiter_bytes(self, _size):
+                yield b"0123456789" * 1100
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, _url):
+                return FakeResponse()
+
+        self.start_patch(patch.object(bot.httpx, "AsyncClient", FakeClient))
+        output = self.tmp_path / "direct.mp4"
+        duration = await bot._download_direct_media(
+            "https://cdn.example/movie.mp4", str(output)
+        )
+        self.assertEqual(duration, 12.0)
+        self.assertEqual(output.read_bytes(), b"0123456789" * 1100)
+
+    async def test_generate_chunk_script_returns_script_without_tts(self):
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/script-only",
+        )
+        payload = {
+            "protagonist": "Hero",
+            "pronoun": MALE_PRONOUN,
+            "scenes": [
+                {"start": 0, "end": 3, "burmese": first_person_text(27)}
+            ],
+            "cuts": [],
+        }
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(
+                generate_content=lambda model, contents, config: SimpleNamespace(
+                    text=json.dumps(payload, ensure_ascii=False)
+                )
+            ),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(
+                    return_value={
+                        "characters": ["Hero"],
+                        "summary": "opening",
+                        "last_scene": "door",
+                        "protagonist": "Hero",
+                        "pronoun": MALE_PRONOUN,
+                    }
+                ),
+            )
+        )
+        fake_tts = AsyncMock(side_effect=AssertionError("TTS must not run"))
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        script = await bot.generate_chunk_script(
+            str(self.tmp_path / "chunk.mp4"),
+            3,
+            0,
+            3,
+            {},
+            1,
+            tracker,
+            settings={"coverage": 90, "rate": 10.0, "pause": 0},
+        )
+
+        self.assertEqual(script["protagonist"], "Hero")
+        self.assertEqual(script["pronoun"], MALE_PRONOUN)
+        self.assertEqual(script["story_context_after"]["summary"], "opening")
+        self.assertEqual(script["metrics"]["actual_chars"], 27)
+        fake_tts.assert_not_awaited()
+
+    async def test_manual_flow_scripts_first_then_sends_original_parts_with_buttons(self):
+        events = []
+        script_contexts = []
+
+        async def fake_telegram_download(_file_id, output_path, _tracker=None, **_kwargs):
+            Path(output_path).write_bytes(b"x" * 10001)
+            return 250.0
+
+        async def fake_prepare(_source_path, work_dir, _duration, _seconds):
+            segment_dir = Path(work_dir) / "source_segments"
+            segment_dir.mkdir(parents=True, exist_ok=True)
+            segments = []
+            for index, start, end in ((1, 0, 120), (2, 120, 240), (3, 240, 250)):
+                path = segment_dir / f"source_part_{index:04d}.mp4"
+                path.write_bytes(b"s" * 100)
+                segments.append(
+                    {
+                        "index": index,
+                        "path": str(path),
+                        "start": float(start),
+                        "end": float(end),
+                        "duration": float(end - start),
+                    }
+                )
+            return segments
+
+        async def fake_generate_script(
+            _chunk_path,
+            actual_dur,
+            start,
+            end,
+            story_context,
+            part_num,
+            _tracker,
+            _settings,
+        ):
+            events.append(("script", part_num))
+            script_contexts.append(dict(story_context))
+            summary = {
+                "characters": ["Hero", "Mina"],
+                "summary": f"after part {part_num}",
+                "last_scene": f"ending {part_num}",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            }
+            return {
+                "version": 1,
+                "part_index": part_num,
+                "global_start": start,
+                "global_end": end,
+                "duration": actual_dur,
+                "scenes": [
+                    {
+                        "start": 0,
+                        "end": actual_dur,
+                        "burmese": first_person_text(40),
+                    }
+                ],
+                "cuts": [],
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "story_context_before": dict(story_context),
+                "story_context_after": summary,
+                "metrics": {"target_chars": 40, "actual_chars": 40},
+            }
+
+        async def fake_upload(method, payload, _field, file_name, file_path, _mime):
+            events.append(("upload", file_name))
+            return {
+                "ok": True,
+                "result": {"message_id": 1000 + len(events)},
+            }
+
+        def fake_probe(path):
+            if Path(path).name.endswith("0003.mp4"):
+                return (10.0, 64, 64)
+            return (120.0, 64, 64)
+
+        self.start_patch(
+            patch.object(bot, "download_telegram_file", new=fake_telegram_download)
+        )
+        self.start_patch(
+            patch.object(bot, "_prepare_source_segments", new=fake_prepare)
+        )
+        self.start_patch(
+            patch.object(bot, "generate_chunk_script", new=fake_generate_script)
+        )
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.mock_tg_upload.side_effect = fake_upload
+
+        await bot.handle_telegram_video_job(
+            16001,
+            88,
+            {
+                "file_id": "uploaded-source",
+                "file_name": "movie.mp4",
+                "mime_type": "video/mp4",
+                "duration": 250,
+                "file_size": 10001,
+            },
+        )
+
+        self.assertEqual(
+            events,
+            [
+                ("script", 1),
+                ("script", 2),
+                ("script", 3),
+                ("upload", "original_part_0001.mp4"),
+                ("upload", "original_part_0002.mp4"),
+                ("upload", "original_part_0003.mp4"),
+            ],
+        )
+        self.assertEqual(script_contexts[1]["summary"], "after part 1")
+        self.assertEqual(script_contexts[2]["summary"], "after part 2")
+        self.assertEqual(self.mock_tg_upload.await_count, 3)
+
+        state = bot._find_manual_session_for_chat(16001)
+        self.assertIsNotNone(state)
+        session_id = str(state["session_id"])
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(
+            [part["status"] for part in state["parts"]], ["ready"] * 3
+        )
+        for index, call in enumerate(
+            self.mock_tg_upload.await_args_list, start=1
+        ):
+            payload = call.args[1]
+            markup = json.loads(payload["reply_markup"])
+            self.assertEqual(
+                markup,
+                bot.manual_part_keyboard(session_id, index, "ready"),
+            )
+            self.assertEqual(
+                markup["inline_keyboard"][0][0]["callback_data"],
+                f"part:recap:{session_id}:{index}",
+            )
+        full_script = json.loads(
+            (Path(state["session_dir"]) / "full_script.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(len(full_script["parts"]), 3)
+        self.assertEqual(
+            full_script["parts"][1]["scenes"][0]["global_start"], 120.0
+        )
+        self.assertNotIn(16001, bot.ACTIVE_JOBS)
+
+    async def test_manual_click_recaps_only_clicked_part_and_join_is_explicit(self):
+        chat_id = int(bot.ADMIN_ID)
+        session_id = "manual-test-1"
+        state = bot._create_manual_session(
+            session_id=session_id,
+            chat_id=chat_id,
+            reply_msg_id=10,
+            status_message_id=11,
+            source_spec={"kind": "url", "url": "https://videos.example/manual"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        session_dir = Path(state["session_dir"])
+        parts = []
+        for index, start in ((1, 0), (2, 10)):
+            relative = f"source_segments/source_part_{index:04d}.mp4"
+            source_path = session_dir / relative
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_bytes(b"s" * 100)
+            part = {
+                "index": index,
+                "start": float(start),
+                "end": float(start + 10),
+                "duration": 10.0,
+                "source_file": relative,
+                "script_file": "",
+                "status": "ready",
+                "message_id": 500 + index,
+                "recap_file": "",
+                "recap_duration_seconds": 0.0,
+                "attempts": 0,
+                "error": "",
+            }
+            bot._save_manual_script(
+                state,
+                part,
+                {
+                    "version": 1,
+                    "part_index": index,
+                    "scenes": [
+                        {
+                            "start": 0,
+                            "end": 10,
+                            "burmese": first_person_text(30),
+                        }
+                    ],
+                    "cuts": [],
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                    "story_context_before": {},
+                    "story_context_after": {
+                        "characters": ["Hero"],
+                        "summary": f"after {index}",
+                        "last_scene": "scene",
+                        "protagonist": "Hero",
+                        "pronoun": MALE_PRONOUN,
+                    },
+                    "metrics": {"target_chars": 30},
+                },
+            )
+            parts.append(part)
+        state["source_duration_seconds"] = 20.0
+        state["parts"] = parts
+        state["status"] = "ready"
+        bot._save_manual_session(state)
+
+        render_calls = []
+        uploaded = []
+        concat_calls = []
+
+        async def fake_render(
+            _chunk_path,
+            _dur,
+            _start,
+            _end,
+            script,
+            part_num,
+            _tracker,
+            _settings,
+            *,
+            output_path="",
+        ):
+            render_calls.append(part_num)
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"r" * 100)
+            return output_path, script
+
+        async def fake_upload(_method, _payload, _field, file_name, _path, _mime):
+            uploaded.append(file_name)
+            return {"ok": True, "result": {"message_id": 900 + len(uploaded)}}
+
+        def fake_concat(parts_to_join, output_path, concat_path):
+            concat_calls.append(list(parts_to_join))
+            Path(concat_path).write_text("\n".join(parts_to_join), encoding="utf-8")
+            Path(output_path).write_bytes(b"f" * 100)
+            return True
+
+        def fake_probe(path):
+            name = Path(path).name
+            if name == "final_recap.mp4":
+                return (18.0, 64, 64)
+            if name.startswith("recap_part_"):
+                return (9.0, 64, 64)
+            return (10.0, 64, 64)
+
+        self.start_patch(
+            patch.object(bot, "render_chunk_recap_from_script", new=fake_render)
+        )
+        self.start_patch(patch.object(bot, "_concat_video_parts", new=fake_concat))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.mock_tg_upload.side_effect = fake_upload
+
+        def callback_update(data, message_id=600):
+            return {
+                "callback_query": {
+                    "id": f"cb-{data}",
+                    "data": data,
+                    "from": {"id": chat_id},
+                    "message": {
+                        "message_id": message_id,
+                        "chat": {"id": chat_id},
+                    },
+                }
+            }
+
+        await bot.process_admin_update(
+            callback_update(f"part:recap:{session_id}:2", 502)
+        )
+        task = bot.MANUAL_RENDER_TASKS[session_id]
+        await asyncio.wait_for(task, timeout=2)
+
+        self.assertEqual(render_calls, [2])
+        self.assertEqual(uploaded, ["recap_part_0002.mp4"])
+        state = bot._load_manual_session(session_id)
+        self.assertEqual(bot._manual_part(state, 1)["status"], "ready")
+        self.assertEqual(bot._manual_part(state, 2)["status"], "done")
+        self.assertNotIn(chat_id, bot.ACTIVE_JOBS)
+
+        self.mock_send_text.reset_mock()
+        await bot._handle_manual_part_callback(
+            f"part:join:{session_id}", chat_id, 601
+        )
+        self.assertEqual(concat_calls, [])
+        self.assertIn(
+            "မပြီးသေးပါ", self.mock_send_text.await_args.args[1]
+        )
+
+        await bot.process_admin_update(
+            callback_update(f"part:recap:{session_id}:1", 501)
+        )
+        task = bot.MANUAL_RENDER_TASKS[session_id]
+        await asyncio.wait_for(task, timeout=2)
+        self.assertEqual(render_calls, [2, 1])
+        state = bot._load_manual_session(session_id)
+        self.assertEqual(state["status"], "ready_to_join")
+
+        await bot._handle_manual_part_callback(
+            f"part:join:{session_id}", chat_id, 602
+        )
+        task = bot.MANUAL_RENDER_TASKS[session_id]
+        await asyncio.wait_for(task, timeout=2)
+
+        self.assertEqual(
+            [Path(path).name for path in concat_calls[0]],
+            ["recap_part_0001.mp4", "recap_part_0002.mp4"],
+        )
+        self.assertEqual(uploaded[-1], "recap_final_1.mp4")
+        self.assertIsNone(bot._find_manual_session_for_chat(chat_id))
+        self.assertFalse(session_dir.exists())
+        self.mock_bump_stat.assert_called_with(chat_id, "done")
+
+    async def test_share_text_extracts_rednote_url(self):
+        chat_id = int(bot.ADMIN_ID)
+        fake_link_job = AsyncMock(return_value=None)
+        self.start_patch(patch.object(bot, "handle_link_job", new=fake_link_job))
+        await bot.process_admin_update(
+            {
+                "message": {
+                    "message_id": 77,
+                    "chat": {"id": chat_id},
+                    "from": {"id": chat_id},
+                    "text": "ဒီဟာလေး https://xhslink.com/a/example123 ကြည့်ပါ",
+                }
+            }
+        )
+        fake_link_job.assert_awaited_once_with(
+            chat_id, 77, "https://xhslink.com/a/example123"
+        )
+
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    async def test_render_from_prepared_script_does_not_regenerate_script(self):
+        chunk_path = self.tmp_path / "prepared_chunk.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=purple:s=64x64:r=25:d=3",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(chunk_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        def forbidden_upload(file):
+            raise AssertionError("prepared script must not upload for script generation")
+
+        def forbidden_generate(model, contents, config):
+            raise AssertionError("prepared script must not be regenerated")
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=forbidden_upload,
+                get=lambda name: None,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=forbidden_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+
+        async def fake_tts(_scenes, _work_dir, _settings):
+            return [
+                np.full(int(bot.SAMPLE_RATE * 2.7), 0.5, dtype=np.float32)
+            ]
+
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        prepared = {
+            "version": 1,
+            "part_index": 1,
+            "scenes": [
+                {"start": 0, "end": 3, "burmese": first_person_text(27)}
+            ],
+            "cuts": [],
+            "protagonist": "Hero",
+            "pronoun": MALE_PRONOUN,
+            "story_context_before": {},
+            "story_context_after": {
+                "characters": ["Hero"],
+                "summary": "done",
+                "last_scene": "end",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            },
+            "metrics": {"target_chars": 27},
+        }
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+        output_path = self.tmp_path / "prepared_recap.mp4"
+        rendered, updated = await bot.render_chunk_recap_from_script(
+            str(chunk_path),
+            3,
+            0,
+            3,
+            prepared,
+            1,
+            tracker,
+            settings={
+                "coverage": 90,
+                "rate": 10.0,
+                "speed": 1.0,
+                "pause": 0,
+                "voice": "Charon",
+                "resolution": 64,
+                "shield": False,
+                "color": False,
+                "quality": 35,
+                "fast_mode": True,
+            },
+            output_path=str(output_path),
+        )
+
+        self.assertEqual(rendered, str(output_path))
+        self.assertTrue(chunk_path.exists())
+        self.assertAlmostEqual(
+            bot.probe_video_info(rendered)[0], 2.7, delta=0.2
+        )
+        self.assertIn("rendered_duration_seconds", updated["metrics"])
+
+    def test_stale_manual_render_is_reset_after_restart(self):
+        state = bot._create_manual_session(
+            session_id="manual-stale-1",
+            chat_id=18001,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/stale"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        state["parts"] = [
+            {"index": 1, "status": "rendering", "start": 0, "end": 10}
+        ]
+        state["status"] = "rendering"
+        state["active_render_part"] = 1
+        state["cancel_requested"] = True
+        bot.CANCELLED_JOBS.add("manual-stale-1")
+        bot._save_manual_session(state)
+
+        self.assertEqual(bot._reset_stale_manual_sessions_after_restart(), 1)
+        reset = bot._load_manual_session("manual-stale-1")
+        self.assertEqual(reset["status"], "ready")
+        self.assertEqual(reset["parts"][0]["status"], "failed")
+        self.assertFalse(reset["cancel_requested"])
+        self.assertNotIn("manual-stale-1", bot.CANCELLED_JOBS)
+
     async def test_n8n_forwarding_failure_falls_back_to_direct_pipeline(self):
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
         self.start_patch(patch.object(bot, "PIPELINE_MODE", "n8n"))
         self.start_patch(
             patch.object(bot, "N8N_WEBHOOK_URL", "https://n8n.example/webhook")
@@ -2410,7 +3157,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         forward = AsyncMock(return_value=False)
         self.start_patch(patch.object(bot, "_forward_job_to_n8n", new=forward))
         direct_entry = AsyncMock(side_effect=RuntimeError("stop direct test here"))
-        self.start_patch(patch.object(bot, "get_source_duration", new=direct_entry))
+        self.start_patch(patch.object(bot, "_acquire_source_file", new=direct_entry))
 
         await bot.handle_link_job(14001, 55, "https://videos.example/fallback")
 
@@ -2418,7 +3165,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         forwarded_state = forward.await_args.args[0]
         self.assertEqual(forwarded_state["job_id"], "jabc123def0")
         self.assertFalse((self.jobs_dir / "jabc123def0").exists())
-        direct_entry.assert_awaited_once_with("https://videos.example/fallback")
+        direct_entry.assert_awaited_once()
+        self.assertEqual(
+            direct_entry.await_args.args[0],
+            {"kind": "url", "url": "https://videos.example/fallback"},
+        )
         self.assertNotIn(14001, bot.ACTIVE_JOBS)
 
 

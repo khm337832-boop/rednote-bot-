@@ -6,10 +6,13 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v3.6-two-minute-segment-recap` downloads the complete source,
-splits it into fixed **2-minute parts**, recaps those parts **one by one in
-order**, joins all recap parts back into one video, and sends it to the
-user. It installs the persistent bottom buttons from `/start`, `/menu`,
+Version `v3.8-manual-parts-download-fix` downloads the complete source,
+splits it into fixed **2-minute parts**, writes and stores the script for
+the whole source first, sends the original parts back one by one with a
+**🎬 Recap လုပ်မယ်** button under each part, and renders only the part the
+user clicks. After every part is done, the user presses **🔗 ပြန်ဆက်မယ်** to
+join and receive the final video. It installs the persistent bottom
+buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
 process**. `/start` and `/menu` always force-install them again, explain the
 full current workflow, list all 20 currently selected features, and open
@@ -19,7 +22,7 @@ the inline main menu:
 |---|---|
 | 🎬 Recap စတင်မယ် | Send a Telegram video file or video link to start a recap |
 | ⚙️ ဆက်တင်များ (20) | Open the 20-feature settings panel |
-| 📊 အလုပ်အခြေအနေ | Show the running job |
+| 📊 အလုပ်အခြေအနေ | Show the running job or the saved per-part session and its join/discard controls |
 | 🛑 လုပ်နေတာ ရပ်မယ် | Cancel the running job |
 | 📋 ဆက်တင် အကျဉ်း / 📈 စာရင်းချုပ် | Settings summary / job stats |
 | ❓ အသုံးပြုနည်း / 🔄 ဆက်တင် ပြန်ချိန် | Help / reset settings |
@@ -32,22 +35,43 @@ inline buttons attached. While a job is running, Status and Settings open
 in separate messages so progress updates do not overwrite them. Cancel
 persists the request for worker jobs as well as cancelling direct jobs.
 
-## Two-minute segmented recap pipeline
+## Manual two-minute part pipeline (default)
 
-Whatever the source duration is, the direct Telegram intake now follows
-this exact order:
+Set `RECAP_FLOW=manual` (the default in `render.yaml`). Whatever the
+source duration is, Telegram intake follows this exact order:
 
-1. Accept a Telegram video, a document video, or a video link and
-   download the complete source.
+1. Accept a Telegram video/document video or a video link — including a
+   URL inside RedNote share text — and download the complete source. A
+   Telegram-uploaded file is still subject to Telegram's Bot API **20MB
+   download limit**; larger material must be sent as a link.
 2. Split the downloaded source into 2-minute video files. A 3-hour
    source becomes 90 parts; only the last part may be shorter.
-3. Recap one part at a time in source order. Character names, the
-   protagonist/pronoun, the prior-events summary, and the last scene are
-   carried into the next part to preserve chronology.
-4. Verify that the number of completed recap parts equals the number of
-   source parts, join them back in order, verify the final duration, and
-   send the joined video. Only a joined file over Telegram's delivery
-   size limit is split again for sending.
+3. Before sending any part back, write the script for **all parts in
+   order** and save it under the durable manual session. Character names,
+   protagonist/pronoun, prior-events summary, and last scene are carried
+   from one part to the next to preserve chronology.
+4. Send the original 2-minute parts one by one. Each part has a
+   **🎬 Recap လုပ်မယ်** button; nothing renders automatically.
+5. A click renders only that part from its saved script, using the
+   settings snapshot captured when the source was submitted. Only one
+   part renders at a time for a chat. Successful delivery marks the part
+   done and removes its retained source copy.
+6. When every part is done, the user clicks **🔗 ပြန်ဆက်မယ်**. The bot joins
+   the recap files in order, re-checks the whole-source duration target,
+   splits only for Telegram size delivery, sends the final video, and
+   deletes the session.
+
+Sessions are stored below `WORK_ROOT/manual_sessions/` and expire after
+`MANUAL_SESSION_TTL_HOURS` (24 by default). Render's disk is ephemeral;
+the saved state survives an ordinary process restart on the same
+instance but not replacement of the container/filesystem. Discarding a
+session removes its retained files.
+
+`RECAP_FLOW=auto` retains the v3.6 compatibility behaviour: automatic
+per-part recap and automatic join, including the optional n8n handoff
+for URL jobs. In manual mode, Telegram jobs intentionally stay in the
+bot's direct script/render functions so each click is one bounded unit;
+the worker API remains available to n8n independently.
 
 ## Final-duration and first-person guarantees
 
@@ -56,6 +80,10 @@ an estimated number of script characters. At the default 90%, a 10-minute
 source targets a 9-minute final video. The accepted window is the target
 ± max(0.35 seconds, 2% of the source duration), allowing only normal
 media/TTS granularity.
+
+In the manual flow the same rule is enforced **per 2-minute part** (for
+example, each 120-second part targets 108 seconds at 90%), then enforced
+again on the explicitly joined final against the full source duration.
 
 Character counts are only the first estimate. After Gemini TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
@@ -150,17 +178,40 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v3.7-live-deploy-webhook-fix"`,
+URLs must show `"version":"v3.8-manual-parts-download-fix"`,
+`"recap_flow":"manual_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
-`"segment_pipeline":"download_split_120s_recap_each_concat_send"`,
-`"telegram_buttons":"inline_persistent_and_menu"`, the service's real
-`public_host`, and the deployed `render_git_repo_slug`,
-`render_git_commit`, and `render_git_branch`.
+`"segment_pipeline":"download_split_120s_script_first_send_originals_click_recap_explicit_join"`,
+`"telegram_buttons":"inline_persistent_menu_and_per_part_recap"`, a current
+`yt_dlp_version`, the service's real `public_host`, and the deployed
+`render_git_repo_slug`, `render_git_commit`, and `render_git_branch`.
 If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
 URL belongs to a different/older service or that service is not deploying
 this repository's `main`; fixing that Render service's repository, branch,
 root directory, or deploy status is required before Telegram can receive
 the new buttons.
+
+### Source download diagnostics and RedNote access
+
+The downloader no longer sends yt-dlp stderr to `/dev/null`. Logs retain
+only a bounded, redacted tail and the user receives the classified reason
+(403/anti-bot, login/cookie required, geo/private/deleted, unsupported
+extractor, network, or no playable format). The application uses the
+installed `yt-dlp` Python module (with the `curl-cffi` extra), browser
+headers, redirect resolution, RedNote canonical URL candidates, and
+— for RedNote — direct media URLs embedded in the note page as fallbacks.
+
+Most public links need no cookie. If RedNote blocks the server, set
+**one** of these only in Render's Environment/Secret Files UI:
+
+- `XHS_COOKIE`: a Netscape cookie file's contents, a `name=value; ...`
+  cookie header, or a JSON cookie list for `xiaohongshu.com`.
+- `YTDLP_COOKIES_FILE`: path to a mounted Netscape `cookies.txt`.
+
+Never paste a bot token, cookie, API key, deploy hook, or other secret in
+chat, GitHub issues, or source code. The bot sets `httpx`/`httpcore`
+logging to WARNING and redacts bot-token-shaped values and sensitive URL
+parameters to reduce accidental token exposure in application logs.
 
 Network-free regression tests:
 
@@ -170,8 +221,9 @@ python -m unittest discover -s tests -v
 
 ## Optional n8n pipeline
 
-The existing direct bot pipeline remains the default. An optional n8n
-orchestrated pipeline is available in [`n8n-workflow/`](n8n-workflow/):
+The manual direct Telegram flow above is the default. The optional n8n
+orchestrated pipeline remains available in
+[`n8n-workflow/`](n8n-workflow/), and its worker API is unchanged:
 
 ```text
 Telegram bot -> n8n Webhook -> Render worker API
@@ -179,6 +231,9 @@ Telegram bot -> n8n Webhook -> Render worker API
   -> video-only alignment/render -> Telegram delivery -> cleanup
 ```
 
-Set `PIPELINE_MODE=n8n` only after importing and activating the workflow and
-configuring the required worker/Whisper secrets. See
+For Telegram URL jobs to use that older automatic handoff, set both
+`RECAP_FLOW=auto` and `PIPELINE_MODE=n8n` after importing and activating
+the workflow and configuring the required worker/Whisper secrets. With
+the default `RECAP_FLOW=manual`, Telegram does not forward a per-part
+click session to n8n. See
 [`n8n-workflow/README.md`](n8n-workflow/README.md) for setup and safety notes.
