@@ -2212,7 +2212,18 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 bot.GEMINI_OVERLOAD_MAX_ROUNDS,
             )
             self.assertIn(
+                "gemini-3.5-flash-lite", health.json()["direct_script_models"]
+            )
+            self.assertNotIn(
                 "gemini-2.5-flash-lite", health.json()["direct_script_models"]
+            )
+            self.assertEqual(
+                health.json()["gemini_hedge_delay_seconds"],
+                bot.GEMINI_HEDGE_DELAY_SECONDS,
+            )
+            self.assertEqual(
+                health.json()["unavailable_gemini_models"],
+                sorted(bot._DEAD_GEMINI_MODELS),
             )
             self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
@@ -5035,6 +5046,132 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             [1.0] * 8 + [2.0] * 8 + [3.0] * 4,
         )
         self.assertEqual(state["max"], 2)
+
+    async def test_direct_gemini_json_hedges_when_first_model_is_slow(self):
+        # Regression: one model was observed processing a script call
+        # for 100+ seconds while other models sat idle, because
+        # failover only happened after the full per-attempt timeout.
+        # Hedging must start the next model in parallel and take the
+        # first successful answer.
+        payload_slow = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "slow"}]}
+        payload_fast = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "fast"}]}
+        calls = []
+
+        def gen(model, contents, config):
+            calls.append(model)
+            if model == "m1":
+                time.sleep(1.2)
+                return SimpleNamespace(
+                    text=json.dumps(payload_slow, ensure_ascii=False)
+                )
+            return SimpleNamespace(
+                text=json.dumps(payload_fast, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self.start_patch(patch.object(bot, "GEMINI_HEDGE_DELAY_SECONDS", 0.2))
+        self.start_patch(
+            patch.object(bot, "GEMINI_GENERATE_TIMEOUT_SECONDS", 5)
+        )
+        self._patch_gemini_json_types()
+
+        started = time.monotonic()
+        data = await bot._generate_direct_gemini_json(
+            fake_client, ["contents"], purpose="test script", tracker=None
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(data, payload_fast)
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(calls[0], "m1")
+        self.assertIn("m2", calls)
+
+    async def test_direct_gemini_json_remembers_unavailable_models(self):
+        # Regression: Google retired gemini-2.5-flash-lite for this API
+        # key (404 NOT_FOUND "no longer available"), yet every window
+        # kept launching it and its 404 became the reported error.  A
+        # model that 404s must be remembered and never launched again
+        # in this process.
+        payload = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "x"}]}
+        calls = []
+
+        def gen(model, contents, config):
+            calls.append(model)
+            if model == "gone-model-t1":
+                raise RuntimeError(
+                    "404 NOT_FOUND. This model is no longer available"
+                )
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(
+                bot, "PREFERRED_MODELS", ["gone-model-t1", "ok-model-t1"]
+            )
+        )
+        self._patch_gemini_json_types()
+        self.addCleanup(bot._DEAD_GEMINI_MODELS.discard, "gone-model-t1")
+
+        first = await bot._generate_direct_gemini_json(
+            fake_client, ["c"], purpose="test script", tracker=None
+        )
+        self.assertEqual(first, payload)
+        self.assertIn("gone-model-t1", bot._DEAD_GEMINI_MODELS)
+
+        calls.clear()
+        second = await bot._generate_direct_gemini_json(
+            fake_client, ["c"], purpose="test script", tracker=None
+        )
+        self.assertEqual(second, payload)
+        # The dead model is not even launched on later calls.
+        self.assertEqual(calls, ["ok-model-t1"])
+
+    async def test_direct_gemini_json_overload_error_not_masked_by_404(self):
+        # When flash models are overloaded (503) and a trailing model
+        # is retired (404), the final error must report the overload
+        # (the real, transient cause), and later overload rounds must
+        # not relaunch the retired model.
+        calls = []
+
+        def gen(model, contents, config):
+            calls.append(model)
+            if model == "gone-model-t2":
+                raise RuntimeError("404 NOT_FOUND")
+            raise RuntimeError(
+                "503 UNAVAILABLE. This model is currently experiencing "
+                "high demand"
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(
+                bot, "PREFERRED_MODELS", ["busy-model-t2", "gone-model-t2"]
+            )
+        )
+        self.start_patch(patch.object(bot, "GEMINI_OVERLOAD_MAX_ROUNDS", 2))
+        self._patch_gemini_json_types()
+        self.addCleanup(bot._DEAD_GEMINI_MODELS.discard, "gone-model-t2")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await bot._generate_direct_gemini_json(
+                fake_client, ["c"], purpose="test script", tracker=None
+            )
+
+        self.assertIn("503", str(ctx.exception))
+        self.assertNotIn("404", str(ctx.exception))
+        # Round 1: busy + gone.  Round 2: busy only (gone remembered).
+        self.assertEqual(
+            calls, ["busy-model-t2", "gone-model-t2", "busy-model-t2"]
+        )
 
 
 if __name__ == "__main__":

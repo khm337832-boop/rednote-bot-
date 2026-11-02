@@ -333,6 +333,14 @@ GEMINI_UPLOAD_TIMEOUT_SECONDS = max(
     60, _parse_int_env("GEMINI_UPLOAD_TIMEOUT_SECONDS", 600)
 )
 GEMINI_HEARTBEAT_SECONDS = 20.0
+# Staggered hedging for script generation: if the current model has
+# not answered within this delay, the next model is started *in
+# parallel* and the first successful response wins.  A single slow
+# or queued request (observed running 100+ seconds on one model
+# while others were idle) must not block the whole cascade.
+GEMINI_HEDGE_DELAY_SECONDS = max(
+    1, _parse_int_env("GEMINI_HEDGE_DELAY_SECONDS", 45)
+)
 # Gemini "503 high demand" / 429 spikes usually clear within minutes.
 # Burning every model within seconds (the old behaviour) turned those
 # temporary spikes into failed jobs, so overload-class failures get
@@ -361,6 +369,34 @@ _GEMINI_OVERLOAD_ERROR_TOKENS = (
 def _gemini_error_is_overload(exc: Exception) -> bool:
     text = str(exc or "").lower()
     return any(token in text for token in _GEMINI_OVERLOAD_ERROR_TOKENS)
+
+
+# Models that returned 404 NOT_FOUND ("no longer available") in this
+# process.  A retired/renamed model will 404 on every call, so once
+# seen it is skipped everywhere (script generation, worker JSON, TTS)
+# instead of wasting a fallback slot -- and masking the real error --
+# on every window of every job.  Cleared on process restart.
+_DEAD_GEMINI_MODELS: set = set()
+
+_GEMINI_MODEL_GONE_TOKENS = (
+    "404",
+    "not_found",
+    "not found",
+    "no longer available",
+)
+
+
+def _gemini_error_is_model_gone(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(token in text for token in _GEMINI_MODEL_GONE_TOKENS)
+
+
+def _live_gemini_models(models) -> list:
+    """Drop models known to 404; fall back to the full list if all died."""
+    live = [m for m in (models or []) if m not in _DEAD_GEMINI_MODELS]
+    return live or list(models or [])
+
+
 MANUAL_SESSION_TTL_HOURS = max(
     1, min(168, _parse_int_env("MANUAL_SESSION_TTL_HOURS", 24))
 )
@@ -502,11 +538,15 @@ def _spawn_background(coro, *, name: str = ""):
 
 # Last entry is a capacity fallback: lite models often stay available
 # while the main flash models return 503 "high demand".
+# NOTE: gemini-2.5-flash-lite now returns 404 "no longer available to
+# new users" for this API key -- Google's own error message says to
+# use gemini-3.5-flash-lite instead.  Models that 404 are also
+# remembered at runtime (see _DEAD_GEMINI_MODELS) and skipped.
 PREFERRED_MODELS = [
     "gemini-2.5-flash",
     "gemini-3.5-flash",
     "gemini-flash-latest",
-    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash-lite",
 ]
 PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
@@ -2932,7 +2972,7 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
     client = _make_gemini_client()
     joined = "\n\n".join(s_["burmese"] for s_ in batch)
 
-    for model in PREFERRED_TTS_MODELS:
+    for model in _live_gemini_models(PREFERRED_TTS_MODELS):
         for attempt in range(3):
             tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_raw.bin")
             tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}.pcm")
@@ -3000,6 +3040,11 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
             except Exception as e:
                 err = str(e)[:200]
                 logger.warning(f"TTS batch {batch_idx + 1} attempt {attempt + 1} ({model}): {err}")
+                if _gemini_error_is_model_gone(e):
+                    # Retired model: remember it and move straight to
+                    # the next model instead of burning more attempts.
+                    _DEAD_GEMINI_MODELS.add(model)
+                    break
                 if _gemini_error_is_overload(e):
                     # High-demand spikes need real waiting, not seconds.
                     await asyncio.sleep(15 * (attempt + 1))
@@ -3451,127 +3496,230 @@ async def _generate_direct_gemini_json(
 ):
     """Generate JSON with model fallback instead of silently using no scenes.
 
-    Ordinary failures fail over quickly to the next model and stop
-    after one full round.  Overload-class failures (429 / 503
-    "high demand") are different: the spikes are usually temporary,
-    so extra whole rounds run with growing backoff inside a bounded
-    budget (``GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS``, at most
-    ``GEMINI_OVERLOAD_MAX_ROUNDS`` rounds) while the progress message
-    shows the wait.  Burning every model within seconds -- the old
-    behaviour -- turned a few minutes of high demand into a failed
-    job.
+    Within a round, models are launched with staggered hedging: the
+    next model starts as soon as the previous one *fails*, or after
+    ``GEMINI_HEDGE_DELAY_SECONDS`` if it is still running, and the
+    first successfully parsed response wins.  A single slow/queued
+    request (observed running 100+ seconds on one model while others
+    were idle) therefore no longer blocks the whole cascade; losing
+    attempts are abandoned and die via the client HTTP timeout.
+    Ordinary failures stop after one round.  Overload-class failures
+    (429 / 503 "high demand") run extra rounds with short backoff
+    inside ``GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS`` (probing every
+    ~12-30s so the job resumes almost as soon as capacity returns).
     """
     attempts_per_model = max(1, int(attempts_per_model or 1))
-    models = list(PREFERRED_MODELS)
-    total_attempts = len(models) * attempts_per_model
+    models = _live_gemini_models(PREFERRED_MODELS)
+    sequence = [
+        model for model in models for _ in range(attempts_per_model)
+    ]
+    total_attempts = len(sequence)
     attempt_number = 0
     last_error = "unknown Gemini error"
+    last_overload_error = ""
     started = time.monotonic()
     overload_deadline = started + float(
         GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS or 0
     )
     max_rounds = max(1, int(GEMINI_OVERLOAD_MAX_ROUNDS or 1))
+    hedge_delay = max(0.05, float(GEMINI_HEDGE_DELAY_SECONDS or 45.0))
+    attempt_timeout = max(
+        0.05, float(GEMINI_GENERATE_TIMEOUT_SECONDS or 240)
+    )
+    heartbeat_interval = max(0.05, float(GEMINI_HEARTBEAT_SECONDS or 20.0))
+
+    def _abandon(task) -> None:
+        def _swallow(done_task) -> None:
+            try:
+                done_task.exception()
+            except Exception:
+                pass
+
+        task.add_done_callback(_swallow)
 
     overload_round = 0
     while True:
         overload_round += 1
         saw_overload = False
-        for model_index, model in enumerate(models):
-            for attempt_index in range(attempts_per_model):
-                attempt_number += 1
-                is_last_in_round = (
-                    model_index == len(models) - 1
-                    and attempt_index == attempts_per_model - 1
-                )
-                try:
-                    def _heartbeat_text(
-                        elapsed,
-                        _model=model,
-                        _attempt_number=attempt_number,
-                    ):
-                        if _attempt_number <= total_attempts:
-                            label = f"{_attempt_number}/{total_attempts}"
-                        else:
-                            label = str(_attempt_number)
-                        return (
-                            f"⏳ Gemini Script ရေးနေဆဲ... "
-                            f"({_model}, ကြိုးစားမှု {label}) "
-                            f"⏱ {fmt_time(elapsed)}"
-                        )
+        # Rebuild per round: a model that 404'd in an earlier round is
+        # dead for good -- never relaunch it.
+        sequence = [
+            model
+            for model in _live_gemini_models(models)
+            for _ in range(attempts_per_model)
+        ]
+        if not sequence:
+            break
+        total_attempts = len(sequence)
+        pending: dict = {}  # task -> (model, seq_no, launched_at)
+        next_index = 0
+        last_launch_at = 0.0
+        round_started = time.monotonic()
+        last_heartbeat_at = round_started
+        winner = None
 
-                    response = await _await_with_heartbeat(
-                        asyncio.to_thread(
-                            client.models.generate_content,
-                            model=model,
-                            contents=contents,
-                            config=_direct_gemini_json_config(max_output_tokens),
-                        ),
-                        timeout_seconds=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
-                        tracker=tracker,
-                        make_text=_heartbeat_text,
+        def _launch_next() -> None:
+            nonlocal next_index, attempt_number, last_launch_at
+            model = sequence[next_index]
+            next_index += 1
+            attempt_number += 1
+            task = asyncio.ensure_future(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=_direct_gemini_json_config(max_output_tokens),
+                )
+            )
+            pending[task] = (model, attempt_number, time.monotonic())
+            last_launch_at = time.monotonic()
+
+        try:
+            while pending or next_index < len(sequence):
+                # Launch immediately when idle, or hedge once the
+                # latest attempt has been running for hedge_delay.
+                if next_index < len(sequence) and (
+                    not pending
+                    or (time.monotonic() - last_launch_at) >= hedge_delay
+                ):
+                    _launch_next()
+
+                now = time.monotonic()
+                wake_in = heartbeat_interval
+                if next_index < len(sequence) and pending:
+                    wake_in = min(
+                        wake_in,
+                        max(0.05, hedge_delay - (now - last_launch_at)),
                     )
-                    raw, diagnostics = _gemini_response_text_and_diagnostics(response)
-                    if not str(raw or "").strip():
-                        detail = f" ({diagnostics})" if diagnostics else ""
-                        raise ValueError(f"Gemini returned empty text{detail}")
-                    data = _parse_gemini_json_text(raw)
+                for _model, _seq, launched_at in pending.values():
+                    wake_in = min(
+                        wake_in,
+                        max(0.05, attempt_timeout - (now - launched_at)),
+                    )
+                done, _ = await asyncio.wait(
+                    set(pending),
+                    timeout=wake_in,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                now = time.monotonic()
+
+                for task in list(done):
+                    model, seq_no, _launched = pending.pop(task)
+                    try:
+                        response = task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        last_error = f"{model}: {_safe_error_text(e, 700)}"
+                        if _gemini_error_is_overload(e):
+                            saw_overload = True
+                            last_overload_error = last_error
+                        if _gemini_error_is_model_gone(e):
+                            _DEAD_GEMINI_MODELS.add(model)
+                            logger.warning(
+                                "Gemini model %s is unavailable (404); "
+                                "skipping it for the rest of this process",
+                                model,
+                            )
+                        logger.warning(
+                            "Direct Gemini %s failed attempt %s/%s "
+                            "(round %s): %s",
+                            purpose,
+                            seq_no,
+                            total_attempts,
+                            overload_round,
+                            last_error,
+                        )
+                        continue
+                    raw, diagnostics = _gemini_response_text_and_diagnostics(
+                        response
+                    )
+                    try:
+                        if not str(raw or "").strip():
+                            detail = (
+                                f" ({diagnostics})" if diagnostics else ""
+                            )
+                            raise ValueError(
+                                f"Gemini returned empty text{detail}"
+                            )
+                        winner = _parse_gemini_json_text(raw)
+                    except Exception as e:
+                        last_error = f"{model}: {_safe_error_text(e, 700)}"
+                        logger.warning(
+                            "Direct Gemini %s unusable response on "
+                            "attempt %s/%s (round %s): %s",
+                            purpose,
+                            seq_no,
+                            total_attempts,
+                            overload_round,
+                            last_error,
+                        )
+                        continue
                     logger.info(
-                        "Direct Gemini %s succeeded with %s on attempt %s/%s "
-                        "(%s chars%s)",
+                        "Direct Gemini %s succeeded with %s on attempt "
+                        "%s/%s (%s chars%s)",
                         purpose,
                         model,
-                        attempt_number,
+                        seq_no,
                         total_attempts,
                         len(str(raw or "")),
                         f"; {diagnostics}" if diagnostics else "",
                     )
-                    return data
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    last_error = f"{model}: {_safe_error_text(e, 700)}"
-                    logger.warning(
-                        "Direct Gemini %s failed attempt %s/%s (round %s): %s",
-                        purpose,
-                        attempt_number,
-                        total_attempts,
-                        overload_round,
-                        last_error,
+                    break
+                if winner is not None:
+                    break
+
+                # Per-attempt hard deadlines.
+                for task, (model, seq_no, launched_at) in list(
+                    pending.items()
+                ):
+                    if now - launched_at >= attempt_timeout:
+                        del pending[task]
+                        _abandon(task)
+                        last_error = (
+                            f"{model}: Gemini call timeout after "
+                            f"{attempt_timeout:.0f}s"
+                        )
+                        logger.warning(
+                            "Direct Gemini %s timed out on attempt "
+                            "%s/%s (round %s)",
+                            purpose,
+                            seq_no,
+                            total_attempts,
+                            overload_round,
+                        )
+
+                # Heartbeat so the user sees life + elapsed time.
+                if (
+                    tracker is not None
+                    and pending
+                    and (now - last_heartbeat_at) >= heartbeat_interval
+                ):
+                    last_heartbeat_at = now
+                    active_models = ", ".join(
+                        m for m, _s, _l in pending.values()
                     )
-                    is_overload = _gemini_error_is_overload(e)
-                    if is_overload:
-                        saw_overload = True
-                    if is_last_in_round:
-                        continue
-                    if is_overload:
-                        delay = 2.0
-                        failover_text = (
-                            f"♻️ {model} က အလုပ်များနေလို့ (High Demand) "
-                            "နောက် model ပြောင်းကြိုးစားနေပါသည်..."
+                    label = (
+                        f"{next_index}/{total_attempts}"
+                        if overload_round == 1
+                        else str(next_index)
+                    )
+                    try:
+                        await tracker.update(
+                            f"⏳ Gemini Script ရေးနေဆဲ... "
+                            f"({active_models}, ကြိုးစားမှု {label}) "
+                            f"⏱ {fmt_time(now - round_started)}",
+                            force=True,
                         )
-                    elif any(
-                        token in str(e).lower()
-                        for token in ("500", "timeout", "temporar")
-                    ):
-                        delay = 4.0
-                        failover_text = (
-                            "♻️ Gemini က Script မပြန်သေးလို့ နောက်တစ်ကြိမ်/"
-                            "နောက် model ဖြင့် ပြန်ကြိုးစားနေပါသည်... "
-                            f"({attempt_number + 1}/{total_attempts})"
-                        )
-                    else:
-                        delay = 1.5
-                        failover_text = (
-                            "♻️ Gemini က Script မပြန်သေးလို့ နောက်တစ်ကြိမ်/"
-                            "နောက် model ဖြင့် ပြန်ကြိုးစားနေပါသည်... "
-                            f"({attempt_number + 1}/{total_attempts})"
-                        )
-                    if tracker is not None:
-                        try:
-                            await tracker.update(failover_text, force=True)
-                        except Exception:
-                            pass
-                    await asyncio.sleep(delay)
+                    except Exception:
+                        pass
+        finally:
+            for leftover in list(pending):
+                _abandon(leftover)
+            pending.clear()
+
+        if winner is not None:
+            return winner
 
         # One full round over every model finished without success.
         if not saw_overload or overload_round >= max_rounds:
@@ -3610,7 +3758,8 @@ async def _generate_direct_gemini_json(
             wait_left -= chunk
 
     raise RuntimeError(
-        f"Gemini {purpose} failed after {attempt_number} attempts: {last_error}"
+        f"Gemini {purpose} failed after {attempt_number} attempts: "
+        f"{last_overload_error or last_error}"
     )
 
 
@@ -6821,7 +6970,7 @@ async def _worker_gemini_json(prompt: str, client=None):
     while True:
         round_no += 1
         saw_overload = False
-        for model in PREFERRED_MODELS:
+        for model in _live_gemini_models(PREFERRED_MODELS):
             try:
                 response = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -6844,6 +6993,8 @@ async def _worker_gemini_json(prompt: str, client=None):
                 last_error = e
                 if _gemini_error_is_overload(e):
                     saw_overload = True
+                if _gemini_error_is_model_gone(e):
+                    _DEAD_GEMINI_MODELS.add(model)
                 logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
         if not saw_overload or round_no >= max_rounds:
             break
@@ -12753,7 +12904,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.4-faster-script"
+BUILD_VERSION = "v5.5-hedged-script"
 BUILD_FEATURES = 20
 
 
@@ -12787,6 +12938,8 @@ async def root():
         "gemini_call_heartbeat": "elapsed_progress_every_20s",
         "gemini_overload_retry_budget_seconds": GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
         "gemini_overload_max_rounds": GEMINI_OVERLOAD_MAX_ROUNDS,
+        "gemini_hedge_delay_seconds": GEMINI_HEDGE_DELAY_SECONDS,
+        "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -12858,6 +13011,8 @@ async def health():
         "gemini_call_heartbeat": "elapsed_progress_every_20s",
         "gemini_overload_retry_budget_seconds": GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
         "gemini_overload_max_rounds": GEMINI_OVERLOAD_MAX_ROUNDS,
+        "gemini_hedge_delay_seconds": GEMINI_HEDGE_DELAY_SECONDS,
+        "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
