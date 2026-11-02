@@ -2199,6 +2199,17 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(health.json()["default_voice"], "Charon")
             self.assertFalse(health.json()["default_deep_voice_filter"])
             self.assertEqual(
+                health.json()["gemini_overload_retry_budget_seconds"],
+                bot.GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
+            )
+            self.assertEqual(
+                health.json()["gemini_overload_max_rounds"],
+                bot.GEMINI_OVERLOAD_MAX_ROUNDS,
+            )
+            self.assertIn(
+                "gemini-2.5-flash-lite", health.json()["direct_script_models"]
+            )
+            self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
                 bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
             )
@@ -4833,6 +4844,105 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # user asked for the original Charon delivery.
         self.assertNotIn("deep", captured["contents"])
         self.assertNotIn("အလွန်မြန်မြန်", captured["contents"])
+
+    def _patch_gemini_json_types(self):
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+
+    async def test_direct_gemini_json_waits_out_overload_round_then_succeeds(self):
+        # Regression: real job died with 503 UNAVAILABLE "high demand"
+        # on every model because all attempts were burned within
+        # seconds.  Overload failures must trigger extra backed-off
+        # rounds so a temporary spike can clear.
+        updates = []
+
+        async def fake_update(text, force=False):
+            updates.append(text)
+
+        tracker = SimpleNamespace(update=fake_update)
+        payload = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "ကျွန်တော်"}]}
+        calls = []
+
+        def flaky(model, contents, config):
+            calls.append(model)
+            if len(calls) <= 2:
+                raise RuntimeError(
+                    "503 UNAVAILABLE. {'error': {'code': 503, 'message': "
+                    "'This model is currently experiencing high demand.', "
+                    "'status': 'UNAVAILABLE'}}"
+                )
+            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=flaky)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self._patch_gemini_json_types()
+
+        data = await bot._generate_direct_gemini_json(
+            fake_client, ["contents"], purpose="test script", tracker=tracker
+        )
+
+        self.assertEqual(data, payload)
+        # Round 1: m1, m2 both 503 -> backed-off round 2: m1 succeeds.
+        self.assertEqual(calls, ["m1", "m2", "m1"])
+        self.assertTrue(
+            any("အလုပ်များနေပါသည်" in text for text in updates),
+            updates,
+        )
+
+    async def test_direct_gemini_json_overload_rounds_are_bounded(self):
+        calls = []
+
+        def always_overloaded(model, contents, config):
+            calls.append(model)
+            raise RuntimeError("503 UNAVAILABLE high demand")
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=always_overloaded)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self.start_patch(patch.object(bot, "GEMINI_OVERLOAD_MAX_ROUNDS", 3))
+        self._patch_gemini_json_types()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await bot._generate_direct_gemini_json(
+                fake_client, ["contents"], purpose="test script", tracker=None
+            )
+
+        self.assertIn("failed after 6 attempts", str(ctx.exception))
+        self.assertEqual(calls, ["m1", "m2"] * 3)
+
+    async def test_direct_gemini_json_hard_error_fails_after_one_round(self):
+        calls = []
+
+        def hard_fail(model, contents, config):
+            calls.append(model)
+            raise RuntimeError("400 INVALID_ARGUMENT")
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=hard_fail)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self._patch_gemini_json_types()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await bot._generate_direct_gemini_json(
+                fake_client, ["contents"], purpose="test script", tracker=None
+            )
+
+        self.assertIn("failed after 2 attempts", str(ctx.exception))
+        self.assertEqual(calls, ["m1", "m2"])
 
 
 if __name__ == "__main__":

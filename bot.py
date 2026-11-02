@@ -333,6 +333,32 @@ GEMINI_UPLOAD_TIMEOUT_SECONDS = max(
     60, _parse_int_env("GEMINI_UPLOAD_TIMEOUT_SECONDS", 600)
 )
 GEMINI_HEARTBEAT_SECONDS = 20.0
+# Gemini "503 high demand" / 429 spikes usually clear within minutes.
+# Burning every model within seconds (the old behaviour) turned those
+# temporary spikes into failed jobs, so overload-class failures get
+# extra whole rounds with growing backoff inside this total budget.
+GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS = max(
+    0, _parse_int_env("GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS", 600)
+)
+GEMINI_OVERLOAD_MAX_ROUNDS = max(
+    1, _parse_int_env("GEMINI_OVERLOAD_MAX_ROUNDS", 6)
+)
+
+_GEMINI_OVERLOAD_ERROR_TOKENS = (
+    "429",
+    "503",
+    "resource_exhausted",
+    "unavailable",
+    "quota",
+    "rate limit",
+    "high demand",
+    "overloaded",
+)
+
+
+def _gemini_error_is_overload(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(token in text for token in _GEMINI_OVERLOAD_ERROR_TOKENS)
 MANUAL_SESSION_TTL_HOURS = max(
     1, min(168, _parse_int_env("MANUAL_SESSION_TTL_HOURS", 24))
 )
@@ -472,7 +498,14 @@ def _spawn_background(coro, *, name: str = ""):
     task.add_done_callback(_finished)
     return task
 
-PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+# Last entry is a capacity fallback: lite models often stay available
+# while the main flash models return 503 "high demand".
+PREFERRED_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "gemini-flash-latest",
+    "gemini-2.5-flash-lite",
+]
 PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
 
@@ -2898,7 +2931,7 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
     joined = "\n\n".join(s_["burmese"] for s_ in batch)
 
     for model in PREFERRED_TTS_MODELS:
-        for attempt in range(2):
+        for attempt in range(3):
             tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_raw.bin")
             tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}.pcm")
             try:
@@ -2962,8 +2995,9 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
             except Exception as e:
                 err = str(e)[:200]
                 logger.warning(f"TTS batch {batch_idx + 1} attempt {attempt + 1} ({model}): {err}")
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    await asyncio.sleep(8)
+                if _gemini_error_is_overload(e):
+                    # High-demand spikes need real waiting, not seconds.
+                    await asyncio.sleep(15 * (attempt + 1))
                 else:
                     await asyncio.sleep(2)
             finally:
@@ -3390,94 +3424,165 @@ async def _generate_direct_gemini_json(
     attempts_per_model: int = 1,
     max_output_tokens: int = 8192,
 ):
-    """Generate JSON with model fallback instead of silently using no scenes."""
+    """Generate JSON with model fallback instead of silently using no scenes.
+
+    Ordinary failures fail over quickly to the next model and stop
+    after one full round.  Overload-class failures (429 / 503
+    "high demand") are different: the spikes are usually temporary,
+    so extra whole rounds run with growing backoff inside a bounded
+    budget (``GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS``, at most
+    ``GEMINI_OVERLOAD_MAX_ROUNDS`` rounds) while the progress message
+    shows the wait.  Burning every model within seconds -- the old
+    behaviour -- turned a few minutes of high demand into a failed
+    job.
+    """
     attempts_per_model = max(1, int(attempts_per_model or 1))
-    total_attempts = len(PREFERRED_MODELS) * attempts_per_model
+    models = list(PREFERRED_MODELS)
+    total_attempts = len(models) * attempts_per_model
     attempt_number = 0
     last_error = "unknown Gemini error"
+    started = time.monotonic()
+    overload_deadline = started + float(
+        GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS or 0
+    )
+    max_rounds = max(1, int(GEMINI_OVERLOAD_MAX_ROUNDS or 1))
 
-    for model in PREFERRED_MODELS:
-        for _attempt in range(attempts_per_model):
-            attempt_number += 1
-            try:
-                def _heartbeat_text(
-                    elapsed,
-                    _model=model,
-                    _attempt_number=attempt_number,
-                ):
-                    return (
-                        f"⏳ Gemini Script ရေးနေဆဲ... "
-                        f"({_model}, ကြိုးစားမှု {_attempt_number}/{total_attempts}) "
-                        f"⏱ {fmt_time(elapsed)}"
-                    )
-
-                response = await _await_with_heartbeat(
-                    asyncio.to_thread(
-                        client.models.generate_content,
-                        model=model,
-                        contents=contents,
-                        config=_direct_gemini_json_config(max_output_tokens),
-                    ),
-                    timeout_seconds=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
-                    tracker=tracker,
-                    make_text=_heartbeat_text,
+    overload_round = 0
+    while True:
+        overload_round += 1
+        saw_overload = False
+        for model_index, model in enumerate(models):
+            for attempt_index in range(attempts_per_model):
+                attempt_number += 1
+                is_last_in_round = (
+                    model_index == len(models) - 1
+                    and attempt_index == attempts_per_model - 1
                 )
-                raw, diagnostics = _gemini_response_text_and_diagnostics(response)
-                if not str(raw or "").strip():
-                    detail = f" ({diagnostics})" if diagnostics else ""
-                    raise ValueError(f"Gemini returned empty text{detail}")
-                data = _parse_gemini_json_text(raw)
-                logger.info(
-                    "Direct Gemini %s succeeded with %s on attempt %s/%s "
-                    "(%s chars%s)",
-                    purpose,
-                    model,
-                    attempt_number,
-                    total_attempts,
-                    len(str(raw or "")),
-                    f"; {diagnostics}" if diagnostics else "",
-                )
-                return data
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                last_error = f"{model}: {_safe_error_text(e, 700)}"
-                logger.warning(
-                    "Direct Gemini %s failed attempt %s/%s: %s",
-                    purpose,
-                    attempt_number,
-                    total_attempts,
-                    last_error,
-                )
-                if attempt_number >= total_attempts:
-                    break
-                error_text = str(e).lower()
-                if any(
-                    token in error_text
-                    for token in ("429", "resource_exhausted", "quota", "rate limit")
-                ):
-                    delay = 8.0
-                elif any(
-                    token in error_text
-                    for token in ("500", "503", "timeout", "temporar", "unavailable")
-                ):
-                    delay = 4.0
-                else:
-                    delay = 1.5
-                if tracker is not None:
-                    try:
-                        await tracker.update(
-                            "♻️ Gemini က Script မပြန်သေးလို့ နောက်တစ်ကြိမ်/"
-                            f"နောက် model ဖြင့် ပြန်ကြိုးစားနေပါသည်... "
-                            f"({attempt_number + 1}/{total_attempts})",
-                            force=True,
+                try:
+                    def _heartbeat_text(
+                        elapsed,
+                        _model=model,
+                        _attempt_number=attempt_number,
+                    ):
+                        if _attempt_number <= total_attempts:
+                            label = f"{_attempt_number}/{total_attempts}"
+                        else:
+                            label = str(_attempt_number)
+                        return (
+                            f"⏳ Gemini Script ရေးနေဆဲ... "
+                            f"({_model}, ကြိုးစားမှု {label}) "
+                            f"⏱ {fmt_time(elapsed)}"
                         )
-                    except Exception:
-                        pass
-                await asyncio.sleep(delay)
+
+                    response = await _await_with_heartbeat(
+                        asyncio.to_thread(
+                            client.models.generate_content,
+                            model=model,
+                            contents=contents,
+                            config=_direct_gemini_json_config(max_output_tokens),
+                        ),
+                        timeout_seconds=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
+                        tracker=tracker,
+                        make_text=_heartbeat_text,
+                    )
+                    raw, diagnostics = _gemini_response_text_and_diagnostics(response)
+                    if not str(raw or "").strip():
+                        detail = f" ({diagnostics})" if diagnostics else ""
+                        raise ValueError(f"Gemini returned empty text{detail}")
+                    data = _parse_gemini_json_text(raw)
+                    logger.info(
+                        "Direct Gemini %s succeeded with %s on attempt %s/%s "
+                        "(%s chars%s)",
+                        purpose,
+                        model,
+                        attempt_number,
+                        total_attempts,
+                        len(str(raw or "")),
+                        f"; {diagnostics}" if diagnostics else "",
+                    )
+                    return data
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    last_error = f"{model}: {_safe_error_text(e, 700)}"
+                    logger.warning(
+                        "Direct Gemini %s failed attempt %s/%s (round %s): %s",
+                        purpose,
+                        attempt_number,
+                        total_attempts,
+                        overload_round,
+                        last_error,
+                    )
+                    is_overload = _gemini_error_is_overload(e)
+                    if is_overload:
+                        saw_overload = True
+                    if is_last_in_round:
+                        continue
+                    if is_overload:
+                        delay = 5.0
+                        failover_text = (
+                            f"♻️ {model} က အလုပ်များနေလို့ (High Demand) "
+                            "နောက် model ပြောင်းကြိုးစားနေပါသည်..."
+                        )
+                    elif any(
+                        token in str(e).lower()
+                        for token in ("500", "timeout", "temporar")
+                    ):
+                        delay = 4.0
+                        failover_text = (
+                            "♻️ Gemini က Script မပြန်သေးလို့ နောက်တစ်ကြိမ်/"
+                            "နောက် model ဖြင့် ပြန်ကြိုးစားနေပါသည်... "
+                            f"({attempt_number + 1}/{total_attempts})"
+                        )
+                    else:
+                        delay = 1.5
+                        failover_text = (
+                            "♻️ Gemini က Script မပြန်သေးလို့ နောက်တစ်ကြိမ်/"
+                            "နောက် model ဖြင့် ပြန်ကြိုးစားနေပါသည်... "
+                            f"({attempt_number + 1}/{total_attempts})"
+                        )
+                    if tracker is not None:
+                        try:
+                            await tracker.update(failover_text, force=True)
+                        except Exception:
+                            pass
+                    await asyncio.sleep(delay)
+
+        # One full round over every model finished without success.
+        if not saw_overload or overload_round >= max_rounds:
+            break
+        backoff = min(90.0, 20.0 * (2 ** (overload_round - 1)))
+        remaining_budget = overload_deadline - time.monotonic()
+        if remaining_budget <= 0:
+            break
+        backoff = min(backoff, remaining_budget)
+        logger.warning(
+            "Direct Gemini %s overloaded on every model; waiting %.0fs "
+            "before round %s (elapsed %.0fs)",
+            purpose,
+            backoff,
+            overload_round + 1,
+            time.monotonic() - started,
+        )
+        wait_left = backoff
+        while wait_left > 0:
+            if tracker is not None:
+                try:
+                    await tracker.update(
+                        "⏳ Gemini က အလုပ်များနေပါသည် (High Demand/503) — "
+                        f"နောက် {max(1, int(round(wait_left)))} စက္ကန့်မှာ "
+                        "ပြန်ကြိုးစားပါမယ်... "
+                        f"⏱ စောင့်နေချိန် {fmt_time(time.monotonic() - started)}",
+                        force=True,
+                    )
+                except Exception:
+                    pass
+            chunk = min(10.0, wait_left)
+            await asyncio.sleep(chunk)
+            wait_left -= chunk
 
     raise RuntimeError(
-        f"Gemini {purpose} failed after {total_attempts} attempts: {last_error}"
+        f"Gemini {purpose} failed after {attempt_number} attempts: {last_error}"
     )
 
 
@@ -6663,28 +6768,52 @@ async def _worker_gemini_json(prompt: str, client=None):
         client = _make_gemini_client()
 
     last_error = None
-    for model in PREFERRED_MODELS:
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(response_mime_type="application/json"),
-                ),
-                timeout=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
-            )
-            raw = str(getattr(response, "text", "") or "").strip()
-            if raw.startswith("```"):
-                raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-                raw = re.sub(r"\s*```$", "", raw).strip()
-            data = json.loads(raw)
-            if isinstance(data, (dict, list)):
-                return data
-            raise ValueError("Gemini did not return a JSON object/list")
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
+    started = time.monotonic()
+    overload_deadline = started + float(
+        GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS or 0
+    )
+    max_rounds = max(1, int(GEMINI_OVERLOAD_MAX_ROUNDS or 1))
+    round_no = 0
+    while True:
+        round_no += 1
+        saw_overload = False
+        for model in PREFERRED_MODELS:
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json"),
+                    ),
+                    timeout=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
+                )
+                raw = str(getattr(response, "text", "") or "").strip()
+                if raw.startswith("```"):
+                    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+                    raw = re.sub(r"\s*```$", "", raw).strip()
+                data = json.loads(raw)
+                if isinstance(data, (dict, list)):
+                    return data
+                raise ValueError("Gemini did not return a JSON object/list")
+            except Exception as e:
+                last_error = e
+                if _gemini_error_is_overload(e):
+                    saw_overload = True
+                logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
+        if not saw_overload or round_no >= max_rounds:
+            break
+        backoff = min(90.0, 20.0 * (2 ** (round_no - 1)))
+        remaining_budget = overload_deadline - time.monotonic()
+        if remaining_budget <= 0:
+            break
+        logger.warning(
+            "Worker Gemini JSON overloaded on every model; waiting %.0fs "
+            "before round %s",
+            min(backoff, remaining_budget),
+            round_no + 1,
+        )
+        await asyncio.sleep(min(backoff, remaining_budget))
     raise WorkerJobError(f"Gemini rewrite failed: {last_error}")
 
 
@@ -12580,7 +12709,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.2-gemini-timeout"
+BUILD_VERSION = "v5.3-overload-retry"
 BUILD_FEATURES = 20
 
 
@@ -12612,6 +12741,8 @@ async def root():
         "gemini_generate_timeout_seconds": GEMINI_GENERATE_TIMEOUT_SECONDS,
         "gemini_tts_timeout_seconds": GEMINI_TTS_TIMEOUT_SECONDS,
         "gemini_call_heartbeat": "elapsed_progress_every_20s",
+        "gemini_overload_retry_budget_seconds": GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
+        "gemini_overload_max_rounds": GEMINI_OVERLOAD_MAX_ROUNDS,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -12681,6 +12812,8 @@ async def health():
         "gemini_generate_timeout_seconds": GEMINI_GENERATE_TIMEOUT_SECONDS,
         "gemini_tts_timeout_seconds": GEMINI_TTS_TIMEOUT_SECONDS,
         "gemini_call_heartbeat": "elapsed_progress_every_20s",
+        "gemini_overload_retry_budget_seconds": GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS,
+        "gemini_overload_max_rounds": GEMINI_OVERLOAD_MAX_ROUNDS,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
