@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.2-gemini-timeout` is a **one-shot automatic flow**: the user
+Version `v5.3-overload-retry` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -28,7 +28,14 @@ Every Gemini call (script, TTS, upload) is hard time-boxed
 with elapsed-time heartbeat progress, so a single hanging request can
 no longer freeze a job at "retrying script (3/3)"; if every model
 still returns nothing usable the job fails fast with a clear message
-instead of re-uploading and repeating the same calls. The default TTS
+instead of re-uploading and repeating the same calls. Overload-class
+failures (429 / 503 "high demand") are waited out instead of burned
+through in seconds: whole model rounds repeat with growing backoff
+(20s → 90s) inside a bounded budget
+(`GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS`, default 600s, max 6 rounds)
+with visible countdown progress, a `gemini-2.5-flash-lite` capacity
+fallback runs last in each round, and TTS batches likewise wait
+longer between overload retries. The default TTS
 voice is the original **Charon** with the Deep pitch-shift filter off
 by default and a neutral reading style (no "deep/slow" instructions).
 It
@@ -246,8 +253,9 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.2-gemini-timeout"`,
+URLs must show `"version":"v5.3-overload-retry"`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
+`"gemini_overload_retry_budget_seconds":600`, `"gemini_overload_max_rounds":6`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,
