@@ -252,18 +252,62 @@ ALLOWED_USER_IDS = {8855067536} | _parse_id_list_env("ALLOWED_IDS")
 PIPELINE_MODE = os.environ.get("PIPELINE_MODE", "direct").strip().lower()
 N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "").strip()
 N8N_WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "").strip()
+# Telegram jobs use the in-bot direct pipeline by default (one send ->
+# automatic final video).  Forwarding Telegram URL jobs to n8n is now an
+# explicit opt-in so a stale PIPELINE_MODE=n8n cannot silently reroute
+# or stall ordinary Telegram recaps; the worker API stays available.
+N8N_TELEGRAM_HANDOFF_ENABLED = os.environ.get(
+    "N8N_TELEGRAM_HANDOFF", ""
+).strip().lower() in ("1", "true", "yes", "on")
 WORKER_API_KEY = os.environ.get("WORKER_API_KEY", "").strip()
 WORKER_JOBS_DIR = os.path.join(WORK_ROOT, "n8n_jobs")
 os.makedirs(WORKER_JOBS_DIR, exist_ok=True)
 
-# Telegram's normal user-facing flow is the sequential manual two-minute
-# flow: plan all windows, extract and send only the current window, script
-# and render it only after its Recap button is clicked, then extract and
-# send the next window.  Joining still requires an explicit tap.
-# RECAP_FLOW=auto restores the former one-shot behaviour (and n8n handoff
-# for URL jobs when PIPELINE_MODE=n8n).
-RECAP_FLOW = os.environ.get("RECAP_FLOW", "manual").strip().lower()
-MANUAL_PARTS_ENABLED = RECAP_FLOW not in ("auto", "automatic", "direct", "n8n")
+
+def _resolve_manual_parts_enabled(flow_value=None, opt_in_value=None) -> bool:
+    """Whether the legacy click-each-part flow is active.
+
+    The product default is now the one-shot automatic flow: the user
+    sends one video/link and receives the finished final video.  The old
+    sequential manual flow only activates when it is explicitly opted in
+    with BOTH RECAP_FLOW=manual and ENABLE_MANUAL_FLOW=1, so a stale
+    RECAP_FLOW=manual left in a hosting dashboard cannot keep the
+    retired click-per-part behaviour alive after this change.
+    """
+    flow = (
+        flow_value
+        if flow_value is not None
+        else os.environ.get("RECAP_FLOW", "auto")
+    )
+    opt_in = (
+        opt_in_value
+        if opt_in_value is not None
+        else os.environ.get("ENABLE_MANUAL_FLOW", "")
+    )
+    return str(flow or "").strip().lower() in (
+        "manual",
+        "sequential",
+        "per_part",
+    ) and str(opt_in or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _telegram_pipeline_name() -> str:
+    if MANUAL_PARTS_ENABLED:
+        return "direct_manual_opt_in"
+    if PIPELINE_MODE == "n8n" and N8N_TELEGRAM_HANDOFF_ENABLED:
+        return "n8n_handoff_opt_in"
+    return "direct_auto"
+
+
+# Telegram's normal user-facing flow is the one-shot automatic flow:
+# download the complete source, process it internally in fixed
+# two-minute windows in chronological order, join everything, verify the
+# final duration, and send the final video (split only for Telegram
+# size limits).  No per-part clicking is required.
+RECAP_FLOW = os.environ.get("RECAP_FLOW", "auto").strip().lower()
+MANUAL_PARTS_ENABLED = _resolve_manual_parts_enabled(RECAP_FLOW)
+AUTO_SEGMENT_ATTEMPTS = max(1, _parse_int_env("AUTO_SEGMENT_ATTEMPTS", 3))
+AUTO_SOURCE_ATTEMPTS = max(1, _parse_int_env("AUTO_SOURCE_ATTEMPTS", 2))
 MANUAL_SESSION_TTL_HOURS = max(
     1, min(168, _parse_int_env("MANUAL_SESSION_TTL_HOURS", 24))
 )
@@ -756,6 +800,38 @@ def start_features_text(chat_id=None) -> str:
         if settings.get("auto_start")
         else "Video/Link ပို့ပြီးရင် ✅ စတင်မယ် ခလုတ်အရင် ပြပါမယ်။"
     )
+    if MANUAL_PARTS_ENABLED:
+        flow_steps = (
+            "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ အပိုင်းချိန် Plan</b> ဆောက်မယ်။ "
+            "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။ "
+            "<b>အပိုင်းအားလုံးကို ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ။</b>\n"
+            "3️⃣ <b>ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပြီး</b> မူရင်းအပိုင်းအောက်မှာ "
+            "<b>🎬 Recap လုပ်မယ်</b> ခလုတ်နဲ့ ပြန်ပို့မယ်။ Auto မ Run ဘူး။\n"
+            f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် ပထမလူ Script ရေးပြီး recap လုပ်မယ်။ "
+            "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
+            "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။\n"
+            f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
+            f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။ "
+            "Recap ပြီးမှသာ <b>နောက် ၂ မိနစ်အပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပို့</b>မယ်။\n"
+            "6️⃣ အပိုင်းအားလုံး Recap ပြီးမှ <b>🔗 ပြန်ဆက်မယ်</b> ခလုတ်ကို နှိပ်ရင် "
+            "Recap အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး final video ပို့မယ်။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။\n\n"
+        )
+    else:
+        flow_steps = (
+            "2️⃣ ဘယ်လောက်ရှည်ရှည် အတွင်းမှာ <b>၂ မိနစ်စီ အစဉ်အတိုင်း</b> ခွဲ၍ လုပ်သွားမယ်။ "
+            "ဥပမာ ၁ နာရီခွဲ (၁:၃၀) = ၄၅ ပိုင်း၊ ၃ နာရီ = ၉၀ ပိုင်း။ "
+            "<b>အပိုင်းခလုတ်တွေ တစ်ခုချင်း နှိပ်စရာ လုံးဝမလိုပါ — တစ်ခါပို့ရင် အဆုံးထိ အလိုအလျောက် လုပ်မယ်။</b>\n"
+            "3️⃣ အပိုင်းတစ်ခုချင်းစီအတွက် ပထမလူ Script ရေးမယ်။ "
+            "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
+            "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။\n"
+            f"4️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
+            f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။\n"
+            "5️⃣ အပိုင်းအားလုံး ပြီးရင် အစဉ်အတိုင်း <b>အလိုအလျောက် ပြန်ဆက်ပြီး "
+            "Final duration စစ်ဆေးကာ Final video ပို့ပေးမယ်</b>။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။ "
+            "Download/Script/TTS/Render/Upload ယာယီအမှားဖြစ်ရင် auto-retry လုပ်မယ်။\n\n"
+        )
     return (
         "🎬 <b>RedNote Recap Bot — လုပ်ဆောင်ချက်များ</b>\n"
         "━━━━━━━━━━━━━━━\n\n"
@@ -767,21 +843,8 @@ def start_features_text(chat_id=None) -> str:
         "<b>⚙️ Bot လုပ်မယ့် အစီအစဉ်</b>\n"
         "1️⃣ Source video အပြည့်အစုံကို အရင် download လုပ်မယ်။ "
         "20MB ထက်ကြီးသော file ကို link အနေနဲ့ ပို့ပါ။ Telegram group/channel profile link တစ်ခုတည်းက video မဟုတ်ပါ — video ကိုယ်တိုင်ကို forward/send လုပ်ပါ။\n"
-        "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ အပိုင်းချိန် Plan</b> ဆောက်မယ်။ "
-        "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။ "
-        "<b>အပိုင်းအားလုံးကို ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ။</b>\n"
-        "3️⃣ <b>ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပြီး</b> မူရင်းအပိုင်းအောက်မှာ "
-        "<b>🎬 Recap လုပ်မယ်</b> ခလုတ်နဲ့ ပြန်ပို့မယ်။ Auto မ Run ဘူး။\n"
-        f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် ပထမလူ Script ရေးပြီး recap လုပ်မယ်။ "
-        "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
-        "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-        "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။\n"
-        f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
-        f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။ "
-        "Recap ပြီးမှသာ <b>နောက် ၂ မိနစ်အပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပို့</b>မယ်။\n"
-        "6️⃣ အပိုင်းအားလုံး Recap ပြီးမှ <b>🔗 ပြန်ဆက်မယ်</b> ခလုတ်ကို နှိပ်ရင် "
-        "Recap အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး final video ပို့မယ်။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။\n\n"
-        "<b>⌨️ ခလုတ် / Command တွေ</b>\n"
+        + flow_steps
+        + "<b>⌨️ ခလုတ် / Command တွေ</b>\n"
         "🎬 Recap စတင်မယ် · ⚙️ ဆက်တင်များ · 📊 အခြေအနေ · "
         "🛑 ရပ်မယ် · 📋 အကျဉ်း · ❓ အကူအညီ\n"
         "/start · /menu · /settings · /status · /cancel · /summary · /help\n"
@@ -793,17 +856,31 @@ def start_features_text(chat_id=None) -> str:
     )
 
 
+_HELP_FLOW_STEPS = (
+    (
+        "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက် → "
+        "ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပြီး 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
+        "3️⃣ လက်ရှိအပိုင်းအောက်က ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် "
+        "ပထမလူ Script ရေးပြီး Recap လုပ်ပါမယ်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်\n"
+        "4️⃣ အပိုင်းတိုင်း ပြီးရင် 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်၍ Final ရယူနိုင်ပါတယ်\n\n"
+    )
+    if MANUAL_PARTS_ENABLED
+    else (
+        "2️⃣ Bot က source အပြည့်ဒေါင်း → အတွင်းမှာ ၂ မိနစ်စီ အစဉ်အတိုင်း "
+        "ပထမလူ Script ရေးပြီး Recap လုပ် → အားလုံးပြန်ဆက်ပြီး "
+        "<b>Final video ကို အလိုအလျောက် ပို့ပေးမယ်</b>\n"
+        "3️⃣ အပိုင်းခလုတ်တွေ နှိပ်စရာ မလိုပါ။ ၁ နာရီခွဲ (၁:၃၀) လောက်ရှည်တဲ့ video လည်း ရပါတယ်။ "
+        "ယာယီအမှားဖြစ်ရင် auto-retry လုပ်မယ်\n\n"
+    )
+)
+
 HELP_TEXT = (
     "❓ <b>အသုံးပြုနည်း</b>\n"
     "━━━━━━━━━━━━━━━\n"
     "1️⃣ Telegram video file (20MB အောက်)၊ document video သို့မဟုတ် "
     "RedNote/video link သို့မဟုတ် Telegram public post link (t.me/name/123) ပို့ပါ။ Telegram group/channel profile link တစ်ခုတည်းဆိုလျှင် video ကိုယ်တိုင်ကို forward/send လုပ်ပါ\n"
-    "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက် → "
-    "ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပြီး 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
-    "3️⃣ လက်ရှိအပိုင်းအောက်က ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် "
-    "ပထမလူ Script ရေးပြီး Recap လုပ်ပါမယ်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်\n"
-    "4️⃣ အပိုင်းတိုင်း ပြီးရင် 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်၍ Final ရယူနိုင်ပါတယ်\n\n"
-    "⌨️ <b>Commands:</b>\n"
+    + _HELP_FLOW_STEPS
+    + "⌨️ <b>Commands:</b>\n"
     "/start သို့မဟုတ် /menu — လုပ်ဆောင်ချက် အပြည့်အစုံ + ပင်မ မီနူး\n"
     "/settings — ဆက်တင်များ\n"
     "/status — အလုပ်အခြေအနေ\n"
@@ -5165,6 +5242,187 @@ async def _acquire_source_file(
     return source_path, float(duration or 0)
 
 
+_PERMANENT_SOURCE_ERROR_MARKERS = (
+    "profile",
+    "invite",
+    "private",
+    "unsupported",
+    "no playable",
+    "20mb",
+    "cookie",
+    "login",
+    "geo",
+    "deleted",
+)
+
+
+def _source_error_is_permanent(exc: Exception) -> bool:
+    text = (
+        f"{getattr(exc, 'detail', '')} {getattr(exc, 'user_message', '')} {exc}"
+    ).lower()
+    return any(marker in text for marker in _PERMANENT_SOURCE_ERROR_MARKERS)
+
+
+async def _acquire_source_file_with_retry(
+    source_spec: dict,
+    work_dir: str,
+    tracker=None,
+) -> tuple[str, float]:
+    """Acquire a source, retrying transient download failures once."""
+    attempts = max(1, int(globals().get("AUTO_SOURCE_ATTEMPTS", 2) or 2))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _acquire_source_file(source_spec, work_dir, tracker)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if str(exc) == "cancelled":
+                raise
+            last_exc = exc
+            if attempt >= attempts or _source_error_is_permanent(exc):
+                raise
+            logger.warning(
+                "Source acquisition attempt %s/%s failed (%s); retrying",
+                attempt,
+                attempts,
+                _safe_error_text(exc, 300),
+            )
+            if tracker is not None:
+                await tracker.update(
+                    "♻️ Source download ယာယီအမှားဖြစ်လို့ ပြန်ကြိုးစားနေပါသည်... "
+                    f"({attempt + 1}/{attempts})",
+                    force=True,
+                )
+            await asyncio.sleep(4 * attempt)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("source acquisition failed")
+
+
+async def _concat_video_parts_with_retry(
+    parts: list[str],
+    output_path: str,
+    concat_path: str,
+    *,
+    attempts: int = 2,
+) -> bool:
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        ok = await asyncio.to_thread(
+            _concat_video_parts, parts, output_path, concat_path
+        )
+        if ok and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return True
+        logger.warning("Video concat attempt %s failed", attempt)
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except Exception:
+            pass
+        if attempt < attempts:
+            await asyncio.sleep(2)
+    return False
+
+
+def _cleanup_auto_segment_retry_artifacts(chunk_path: str) -> None:
+    """Remove partial render files so a segment retry starts clean."""
+    try:
+        chunk_dir = os.path.dirname(os.path.abspath(str(chunk_path or "")))
+        if not chunk_dir or not os.path.isdir(chunk_dir):
+            return
+        expected_recap = (
+            str(chunk_path)[:-4] + "_recap.mp4"
+            if str(chunk_path).lower().endswith(".mp4")
+            else str(chunk_path) + "_recap.mp4"
+        )
+        candidates = {os.path.abspath(expected_recap)}
+        for name in os.listdir(chunk_dir):
+            if (
+                (name.startswith("seg_") and name.lower().endswith(".mp4"))
+                or name in (
+                    "video_only.mp4",
+                    "master_audio.pcm",
+                    "master_audio.wav",
+                    "concat.txt",
+                )
+            ):
+                candidates.add(os.path.join(chunk_dir, name))
+        for candidate in candidates:
+            try:
+                if os.path.isfile(candidate):
+                    os.remove(candidate)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+async def _build_chunk_recap_with_retry(
+    chunk_path: str,
+    actual_dur: float,
+    start: float,
+    end: float,
+    story_context: dict,
+    part_num: int,
+    tracker,
+    settings: dict,
+    *,
+    total_parts: int = 0,
+):
+    """Recap one source window with bounded whole-segment retries.
+
+    Script generation and TTS already retry internally; this outer loop
+    covers transient render/upload-side failures so one bad moment does
+    not kill an otherwise healthy long automatic job.  Story context is
+    only advanced by the caller after a successful return.
+    """
+    attempts = max(1, int(globals().get("AUTO_SEGMENT_ATTEMPTS", 3) or 3))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            _cleanup_auto_segment_retry_artifacts(chunk_path)
+            if tracker is not None:
+                label = f"{part_num}/{total_parts}" if total_parts else str(part_num)
+                await tracker.update(
+                    f"♻️ အပိုင်း {label} Recap ကို ပြန်ကြိုးစားနေပါသည်... "
+                    f"({attempt}/{attempts})",
+                    force=True,
+                )
+            await asyncio.sleep(min(30, 5 * attempt))
+        try:
+            async with video_render_semaphore:
+                recap_chunk, new_summary = await build_chunk_recap(
+                    chunk_path,
+                    actual_dur,
+                    start,
+                    end,
+                    story_context,
+                    part_num,
+                    tracker,
+                    settings,
+                )
+            if not recap_chunk:
+                raise RuntimeError(f"အပိုင်း {part_num} Recap မရပါ။")
+            return recap_chunk, new_summary
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if str(exc) == "cancelled":
+                raise
+            last_exc = exc
+            logger.warning(
+                "Auto segment %s recap attempt %s/%s failed: %s",
+                part_num,
+                attempt,
+                attempts,
+                _safe_error_text(exc, 500),
+            )
+    raise RuntimeError(
+        f"အပိုင်း {part_num} Recap ကို {attempts} ကြိမ် ကြိုးစားပြီးသော်လည်း မရပါ: "
+        f"{_safe_error_text(last_exc, 500)}"
+    )
+
+
 def _make_telegram_preview_copy(
     source_path: str,
     output_path: str,
@@ -8819,7 +9077,9 @@ async def _ensure_manual_full_source(state: dict, tracker=None) -> str:
             "♻️ မူရင်းဖိုင်အပြည့် မရှိတော့လို့ source ကို ပြန်ဒေါင်းနေပါသည်...",
             force=True,
         )
-    source_path, total_dur = await _acquire_source_file(spec, session_dir, tracker)
+    source_path, total_dur = await _acquire_source_file_with_retry(
+        spec, session_dir, tracker
+    )
     if not source_path or not os.path.exists(source_path):
         return ""
     relative = os.path.relpath(source_path, session_dir)
@@ -8926,7 +9186,7 @@ async def _rebuild_manual_session_from_payload(
             "♻️ Session ပြန်ဆယ်နေပါသည် — မူရင်း source ကို ပြန်ဒေါင်းနေပါသည်...",
             force=True,
         )
-    source_path, total_dur = await _acquire_source_file(
+    source_path, total_dur = await _acquire_source_file_with_retry(
         source_spec, session_dir, tracker
     )
     expected_dur = float(payload.get("d") or 0)
@@ -9919,7 +10179,7 @@ async def _handle_manual_source_job(
             settings=job_settings,
         )
         session_dir = str(state.get("session_dir") or "")
-        source_path, total_dur = await _acquire_source_file(
+        source_path, total_dur = await _acquire_source_file_with_retry(
             source_spec, session_dir, tracker
         )
         if session_id in CANCELLED_JOBS:
@@ -10973,8 +11233,8 @@ async def _run_manual_join(
                 f"🔗 Recap ပြီးတဲ့ {len(recap_paths)} ပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်နေပါသည်...",
                 force=True,
             )
-            concat_ok = await asyncio.to_thread(
-                _concat_video_parts, recap_paths, final_path, concat_path
+            concat_ok = await _concat_video_parts_with_retry(
+                recap_paths, final_path, concat_path
             )
             if not concat_ok:
                 raise RuntimeError("Recap အပိုင်းအားလုံးကို final video တစ်ခုအဖြစ် ပြန်ဆက်၍မရပါ။")
@@ -11015,14 +11275,25 @@ async def _run_manual_join(
                 caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_duration)})"
                 if len(files_to_send) > 1:
                     caption += f" - အပိုင်း {file_index}/{len(files_to_send)}"
-            result = await tg_upload_media(
-                "sendVideo",
-                {"chat_id": str(chat_id_value), "caption": caption},
-                "video",
-                f"recap_final_{file_index}.mp4",
-                path_to_send,
-                "video/mp4",
-            )
+            result = {}
+            for send_attempt in range(1, 4):
+                result = await tg_upload_media(
+                    "sendVideo",
+                    {"chat_id": str(chat_id_value), "caption": caption},
+                    "video",
+                    f"recap_final_{file_index}.mp4",
+                    path_to_send,
+                    "video/mp4",
+                )
+                if (result or {}).get("ok"):
+                    break
+                logger.warning(
+                    "Manual final part %s upload attempt %s failed",
+                    file_index,
+                    send_attempt,
+                )
+                if send_attempt < 3:
+                    await asyncio.sleep(3 * send_attempt)
             if not (result or {}).get("ok"):
                 description = _safe_error_text(
                     (result or {}).get("description") or "Telegram upload failed"
@@ -11484,7 +11755,10 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
     else:
         initial_text = (
             f"⚡ Recap စတင်နေပါပြီ...\n"
-            "✂️ မူရင်းကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ ပြန်ဆက်ပါမယ်\n"
+            "✂️ မူရင်းကို ၂ မိနစ်စီ အတွင်းမှာ ခွဲပြီး အစဉ်အတိုင်း recap လုပ်ကာ "
+            "အားလုံးပြန်ဆက်၍ <b>Final video ကို အလိုအလျောက် ပို့ပေးပါမယ်</b> "
+            "(အပိုင်းခလုတ်တွေ နှိပ်စရာ မလိုပါ)\n"
+            "♻️ ယာယီအမှားဖြစ်ရင် auto-retry လုပ်ပေးပါမယ်\n"
             f"🎯 Final duration: မူရင်း၏ {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p"
         )
     status_id = await send_text(
@@ -11505,11 +11779,17 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         )
         return
 
-    # Optional n8n orchestration.  The Telegram webhook/menu/status remain
-    # here; n8n only calls this service's authenticated stage endpoints.
-    # If forwarding fails, clean only the worker record and continue with
-    # the unchanged direct pipeline below (ACTIVE_JOBS/job_id are kept).
-    if source_kind == "url" and PIPELINE_MODE == "n8n" and N8N_WEBHOOK_URL:
+    # Optional n8n orchestration (explicit opt-in only).  The Telegram
+    # webhook/menu/status remain here; n8n only calls this service's
+    # authenticated stage endpoints.  If forwarding fails, clean only the
+    # worker record and continue with the unchanged direct pipeline below
+    # (ACTIVE_JOBS/job_id are kept).
+    if (
+        source_kind == "url"
+        and PIPELINE_MODE == "n8n"
+        and N8N_TELEGRAM_HANDOFF_ENABLED
+        and N8N_WEBHOOK_URL
+    ):
         n8n_tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
         forwarded = False
         try:
@@ -11559,7 +11839,7 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
     story_context = {"characters": [], "summary": "", "last_scene": "", "protagonist": "", "pronoun": ""}
 
     try:
-        source_path, total_dur = await _acquire_source_file(
+        source_path, total_dur = await _acquire_source_file_with_retry(
             source_spec, work_dir, tracker
         )
         if total_dur <= 0:
@@ -11639,17 +11919,17 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 force=True,
             )
 
-            async with video_render_semaphore:
-                recap_chunk, new_summary = await build_chunk_recap(
-                    chunk_path,
-                    actual_dur,
-                    start,
-                    segment_end,
-                    story_context,
-                    part_num,
-                    tracker,
-                    job_settings,
-                )
+            recap_chunk, new_summary = await _build_chunk_recap_with_retry(
+                chunk_path,
+                actual_dur,
+                start,
+                segment_end,
+                story_context,
+                part_num,
+                tracker,
+                job_settings,
+                total_parts=total_parts,
+            )
 
             if not recap_chunk:
                 raise RuntimeError(f"အပိုင်း {part_num} Recap မရပါ။")
@@ -11685,8 +11965,8 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         )
         final_out = os.path.join(work_dir, "final_recap.mp4")
         concat_final = os.path.join(work_dir, "final_concat.txt")
-        concat_ok = await asyncio.to_thread(
-            _concat_video_parts, chunks, final_out, concat_final
+        concat_ok = await _concat_video_parts_with_retry(
+            chunks, final_out, concat_final
         )
         if not concat_ok:
             raise RuntimeError("Recap အပိုင်းအားလုံးကို final video တစ်ခုအဖြစ် ပြန်ဆက်၍မရပါ။")
@@ -11709,21 +11989,50 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         )
 
         parts = await split_for_telegram(final_out, work_dir) if job_settings.get('split_tg') else [final_out]
+        if not parts:
+            raise RuntimeError("Final ဗီဒီယိုဖိုင် မတွေ့ပါ (ပို့ရန် အပိုင်း မရှိပါ)။")
+        sent_parts = 0
         for i, part in enumerate(parts):
             caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_dur)})" if job_settings.get("caption") else ""
             if len(parts) > 1:
                 caption += f" - အပိုင်း {i + 1}/{len(parts)}"
-            res = await tg_upload_media(
-                "sendVideo",
-                {"chat_id": str(chat_id), "caption": caption},
-                "video",
-                f"recap_{i + 1}.mp4",
-                part,
-                "video/mp4",
+            delivered = False
+            for send_attempt in range(1, 4):
+                res = await tg_upload_media(
+                    "sendVideo",
+                    {"chat_id": str(chat_id), "caption": caption},
+                    "video",
+                    f"recap_{i + 1}.mp4",
+                    part,
+                    "video/mp4",
+                )
+                if (res or {}).get("ok"):
+                    delivered = True
+                    break
+                logger.warning(
+                    "Final part %s/%s upload attempt %s failed",
+                    i + 1,
+                    len(parts),
+                    send_attempt,
+                )
+                if send_attempt < 3:
+                    await tracker.update(
+                        f"♻️ Final အပိုင်း {i + 1}/{len(parts)} ပို့တာ ယာယီအမှားဖြစ်လို့ "
+                        f"ပြန်ကြိုးစားနေပါသည်... ({send_attempt + 1}/3)",
+                        force=True,
+                    )
+                    await asyncio.sleep(3 * send_attempt)
+            if not delivered:
+                # Never report success for a partially delivered final.
+                raise RuntimeError(
+                    f"Final ဗီဒီယိုအပိုင်း {i + 1}/{len(parts)} ကို Telegram သို့ "
+                    "ပို့၍မရပါ။ ခဏစောင့်ပြီး source ကို ပြန်ပို့ကြည့်ပါ။"
+                )
+            sent_parts += 1
+        if sent_parts != len(parts):
+            raise RuntimeError(
+                f"Final ဗီဒီယို {sent_parts}/{len(parts)} ပိုင်းသာ ပို့နိုင်ပါသည်။"
             )
-            if not res.get("ok"):
-                await edit_text(chat_id, status_id, "⚠️ ဗီဒီယိုပို့ရာတွင် အခက်အခဲရှိပါသည်။")
-                break
 
         bump_stat(chat_id, "done")
         try:
@@ -11830,7 +12139,12 @@ async def handle_callback(cb: dict):
     elif data == "menu:settings":
         await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
     elif data == "menu:recap":
-        await show("🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Bot က download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။ ခလုတ်နှိပ်မှ အဲဒီအပိုင်းကို Recap လုပ်ပြီး ပြီးမှ နောက်တစ်ပိုင်းပို့ပါမယ်။", main_menu_keyboard(chat_id))
+        recap_intro = (
+            "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Bot က download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။ ခလုတ်နှိပ်မှ အဲဒီအပိုင်းကို Recap လုပ်ပြီး ပြီးမှ နောက်တစ်ပိုင်းပို့ပါမယ်။"
+            if MANUAL_PARTS_ENABLED
+            else "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း <b>တစ်ခါပို့လိုက်</b>ရုံပဲလိုပါတယ်။\n✂️ Bot က download လုပ်ပြီး အတွင်းမှာ ၂ မိနစ်စီ အစဉ်အတိုင်း recap လုပ်၊ အားလုံးပြန်ဆက်ပြီး <b>Final video ကို အလိုအလျောက် ပို့ပေးမယ်</b>။ အပိုင်းခလုတ်တွေ နှိပ်စရာ မလိုပါ။ ၁ နာရီခွဲ (၁:၃၀) လောက်ရှည်တဲ့ video လည်း ရပါတယ်။"
+        )
+        await show(recap_intro, main_menu_keyboard(chat_id))
     elif data == "menu:status":
         await show(job_status_text(chat_id), _status_keyboard(chat_id))
     elif data == "menu:summary":
@@ -11971,11 +12285,16 @@ async def process_admin_update(update: dict):
             await handle_telegram_video_job(chat_id, msg_id, attachment)
         else:
             PENDING_INPUTS[chat_id] = dict(attachment)
+            confirm_flow_line = (
+                "✂️ Download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။"
+                if MANUAL_PARTS_ENABLED
+                else "✂️ Download လုပ်ပြီး အတွင်းမှာ ၂ မိနစ်စီ အစဉ်အတိုင်း recap လုပ်၊ အားလုံးပြန်ဆက်ပြီး Final video ကို အလိုအလျောက် ပို့ပေးမယ်။"
+            )
             await send_text(
                 chat_id,
                 "🎬 <b>ဒီ video ကို Recap လုပ်မလား?</b>\n"
                 f"{_telegram_attachment_label(attachment)}\n"
-                "✂️ Download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။",
+                + confirm_flow_line,
                 reply_to=msg_id,
                 reply_markup=confirm_keyboard(),
             )
@@ -12044,7 +12363,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v4.4-error-hardening"
+BUILD_VERSION = "v5.0-auto-recap"
 BUILD_FEATURES = 20
 
 
@@ -12063,6 +12382,14 @@ async def root():
         "direct_script_models": PREFERRED_MODELS,
         "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
+        "telegram_pipeline": _telegram_pipeline_name(),
+        "n8n_telegram_handoff_enabled": N8N_TELEGRAM_HANDOFF_ENABLED,
+        "auto_retry": {
+            "source_attempts": AUTO_SOURCE_ATTEMPTS,
+            "segment_attempts": AUTO_SEGMENT_ATTEMPTS,
+            "final_upload_attempts_per_part": 3,
+            "partial_final_delivery": "rejected_as_failed",
+        },
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -12082,7 +12409,7 @@ async def root():
         "yt_dlp_version": _installed_yt_dlp_version(),
         "yt_dlp_impersonation_available": _yt_dlp_impersonation_available(),
         "rednote_cookie_configured": _rednote_cookie_configured(),
-        "telegram_buttons": "inline_persistent_menu_and_per_part_recap",
+        "telegram_buttons": "inline_persistent_menu_auto_one_shot_manual_opt_in",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
         "public_base_url": PUBLIC_BASE_URL,
         "public_host": urlparse(PUBLIC_BASE_URL).netloc,
@@ -12117,6 +12444,14 @@ async def health():
         "direct_script_models": PREFERRED_MODELS,
         "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
+        "telegram_pipeline": _telegram_pipeline_name(),
+        "n8n_telegram_handoff_enabled": N8N_TELEGRAM_HANDOFF_ENABLED,
+        "auto_retry": {
+            "source_attempts": AUTO_SOURCE_ATTEMPTS,
+            "segment_attempts": AUTO_SEGMENT_ATTEMPTS,
+            "final_upload_attempts_per_part": 3,
+            "partial_final_delivery": "rejected_as_failed",
+        },
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
@@ -12134,7 +12469,7 @@ async def health():
         "yt_dlp_version": _installed_yt_dlp_version(),
         "yt_dlp_impersonation_available": _yt_dlp_impersonation_available(),
         "rednote_cookie_configured": _rednote_cookie_configured(),
-        "telegram_buttons": "inline_persistent_menu_and_per_part_recap",
+        "telegram_buttons": "inline_persistent_menu_auto_one_shot_manual_opt_in",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
         "public_base_url": PUBLIC_BASE_URL,
         "public_host": urlparse(PUBLIC_BASE_URL).netloc,

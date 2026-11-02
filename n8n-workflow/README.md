@@ -6,7 +6,7 @@
 - **n8n** က အဆင့်များကို အစဉ်လိုက် စီမံပါသည်။
 - **Render bot server** ကပဲ yt-dlp၊ ffmpeg၊ Gemini၊ Whisper နှင့် Telegram upload စတဲ့ လေးလံသည့် အလုပ်များကို ၎င်း၏ authenticated worker API မှတစ်ဆင့် လုပ်ပါသည်။
 
-> **v4.0 အရေးကြီးချက်:** Telegram default သည် `RECAP_FLOW=manual` ဖြစ်ပြီး ပထမ/လက်ရှိ ၂ မိနစ်မူရင်းအပိုင်းတစ်ခုကိုပဲ ပို့ပြီး ၎င်းအောက်က **🎬 Recap လုပ်မယ်** ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းအတွက် Script ရေးကာ direct render လုပ်ပါသည်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါသည်။ Manual mode တွင် Telegram job ကို n8n သို့ မပို့ပါ။ အောက်ပါ n8n automatic flow ကို Telegram URL job အတွက် သုံးချင်လျှင် Render တွင် `RECAP_FLOW=auto` နှင့် `PIPELINE_MODE=n8n` နှစ်ခုလုံး ထားရပါမည်။ Worker API ကိုယ်တိုင်ကတော့ mode နှစ်မျိုးလုံးတွင် ဆက်ရှိနေပါသည်။
+> **v5.0 အရေးကြီးချက်:** Telegram default သည် one-shot auto flow ဖြစ်သည် — user က video/link တစ်ခါပို့ရုံနဲ့ bot က source အပြည့်ဒေါင်း၊ အတွင်းမှာ ၂ မိနစ်စီ အစဉ်အတိုင်း recap လုပ်၊ အားလုံးပြန်ဆက်ပြီး Final video ကို အလိုအလျောက် ပို့ပေးပါသည် (အပိုင်းခလုတ် နှိပ်စရာ မလို)။ Telegram job ကို ပုံမှန်အားဖြင့် n8n သို့ မပို့ပါ။ အောက်ပါ n8n automatic flow ကို Telegram URL job အတွက် သုံးချင်လျှင် Render တွင် `RECAP_FLOW=auto`, `PIPELINE_MODE=n8n` နှင့် `N8N_TELEGRAM_HANDOFF=1` သုံးခုလုံး ထားရပါမည်။ Worker API ကိုယ်တိုင်ကတော့ mode နှစ်မျိုးလုံးတွင် ဆက်ရှိနေပါသည်။
 
 ## Flow
 
@@ -54,8 +54,9 @@ Secret များကို GitHub/chat ထဲ မတင်ပါနှင့�
 Render service → **Environment** တွင် အရင်ရှိနေသော `BOT_TOKEN`, `GEMINI_API_KEY`, `ADMIN_ID` တို့ကို မပြောင်းပါနှင့်။ n8n mode အတွက် အောက်ပါတို့ ထပ်ထည့်ပါ။
 
 ```text
-RECAP_FLOW=manual
+RECAP_FLOW=auto
 PIPELINE_MODE=direct
+N8N_TELEGRAM_HANDOFF=0
 N8N_WEBHOOK_URL=
 N8N_WEBHOOK_SECRET=<secret 2>
 WORKER_API_KEY=<secret 1>
@@ -70,7 +71,7 @@ WHISPER_CHUNK_SECONDS=120
 
 အရေးကြီးချက်များ:
 
-- အစတွင် `RECAP_FLOW=manual` နှင့် `PIPELINE_MODE=direct` ထားပါ။ n8n ကို စမ်းသပ်ဖွင့်သည့်အခါမှသာ `RECAP_FLOW=auto` သို့ ပြောင်းပါ။
+- အစတွင် `RECAP_FLOW=auto`, `PIPELINE_MODE=direct`, `N8N_TELEGRAM_HANDOFF=0` ထားပါ (Telegram job တွေ bot ထဲ direct auto flow နဲ့ပဲ သွားမယ်)။ n8n handoff ကို စမ်းသပ်ဖွင့်သည့်အခါမှသာ `PIPELINE_MODE=n8n` နှင့် `N8N_TELEGRAM_HANDOFF=1` သို့ ပြောင်းပါ။
 - `WORKER_API_KEY` မထည့်လျှင် worker API အားလုံး `503` ပြန်ပြီး ပိတ်ထားပါမည်။
 - `WHISPER_API_KEY` မရှိလျှင်လည်း `OPENAI_API_KEY` ကို fallback အဖြစ် သုံးပါသည်။
 - အခြား OpenAI-compatible transcription provider သုံးလျှင် `WHISPER_API_BASE` ကို ၎င်း၏ `/v1` base URL ဖြင့် ပြောင်းပါ။ Code က endpoint ကို `${WHISPER_API_BASE}/audio/transcriptions` အဖြစ် ခေါ်ပါသည်။
@@ -152,6 +153,7 @@ Workflow activate လုပ်ပြီးမှသာ Render တွင် အ�
 N8N_WEBHOOK_URL=https://your-n8n.example/webhook/rednote-recap-job
 PIPELINE_MODE=n8n
 RECAP_FLOW=auto
+N8N_TELEGRAM_HANDOFF=1
 ```
 
 ပြီးနောက် Render ကို redeploy/restart လုပ်ပါ။ Root URL တွင် အောက်ပါအတိုင်း ဖြစ်သင့်ပါသည်:
@@ -161,6 +163,8 @@ RECAP_FLOW=auto
   "pipeline_mode": "n8n",
   "recap_flow": "auto_concat",
   "manual_parts_enabled": false,
+  "telegram_pipeline": "n8n_handoff_opt_in",
+  "n8n_telegram_handoff_enabled": true,
   "worker_api_configured": true,
   "whisper_configured": true,
   "n8n_webhook_configured": true
@@ -219,11 +223,12 @@ Stage start သည် idempotent ဖြစ်နိုင်ရန် စီစ�
 ပြဿနာတစ်ခုခုကြုံလျှင် Render တွင်:
 
 ```text
-RECAP_FLOW=manual
+RECAP_FLOW=auto
 PIPELINE_MODE=direct
+N8N_TELEGRAM_HANDOFF=0
 ```
 
-ပြောင်းပြီး redeploy/restart လုပ်ပါ။ ဒါဆိုရင် Telegram bot က n8n မသုံးဘဲ v4.0 sequential manual per-part direct flow ကို ပြန်သုံးပါမည်။
+ပြောင်းပြီး redeploy/restart လုပ်ပါ။ ဒါဆိုရင် Telegram bot က n8n မသုံးဘဲ bot ထဲက one-shot auto direct flow ကို ပြန်သုံးပါမည်။
 
 Worker API ကိုပါ လုံးဝပိတ်ချင်လျှင် `WORKER_API_KEY` ကို Render env မှ ဖယ်ရှားပါ။
 
@@ -236,7 +241,7 @@ Worker API ကိုပါ လုံးဝပိတ်ချင်လျှင�
 | n8n Payload Code မှာ secret error | Render နှင့် n8n ၏ `N8N_WEBHOOK_SECRET` မတူပါ |
 | n8n HTTP URL က `/api/v1/...` ပုံစံပဲ ဖြစ် | n8n တွင် `WORKER_BASE_URL` မရှိပါ သို့မဟုတ် env access ပိတ်ထားပါသည် |
 | Transcribe fail | `WHISPER_API_KEY`/`OPENAI_API_KEY`, `WHISPER_API_BASE`, `WHISPER_MODEL` တို့ စစ်ပါ |
-| Bot က n8n မသုံးဘဲ direct ဆက်လုပ် | `RECAP_FLOW=auto`, `PIPELINE_MODE=n8n` နှင့် production `N8N_WEBHOOK_URL` အားလုံး ထည့်ထားလား၊ workflow activate ဖြစ်လား စစ်ပါ။ `RECAP_FLOW=manual` ဆိုလျှင် direct per-part flow ဖြစ်သည်မှာ ပုံမှန်ဖြစ်သည် |
+| Bot က n8n မသုံးဘဲ direct ဆက်လုပ် | `RECAP_FLOW=auto`, `PIPELINE_MODE=n8n`, `N8N_TELEGRAM_HANDOFF=1` နှင့် production `N8N_WEBHOOK_URL` အားလုံး ထည့်ထားလား၊ workflow activate ဖြစ်လား စစ်ပါ။ `N8N_TELEGRAM_HANDOFF` မဖွင့်ရသေးရင် direct auto flow ဖြစ်သည်မှာ ပုံမှန်ဖြစ်သည် |
 | Final video မတက် | Telegram status၊ n8n execution နှင့် Render logs မှ stage error ကို စစ်ပါ |
 
 ## ကန့်သတ်ချက်များ
