@@ -2113,6 +2113,14 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json()["version"], bot.BUILD_VERSION)
             self.assertEqual(
+                health.json()["telegram_update_guard"],
+                "friendly_retry_on_error",
+            )
+            self.assertEqual(
+                health.json()["manual_part_send_cap_bytes"],
+                bot.MANUAL_RECOVERABLE_SEND_BYTES,
+            )
+            self.assertEqual(
                 health.json()["manual_session_recovery"],
                 "telegram_message_payload_v1_with_legacy_caption_fallback",
             )
@@ -4153,6 +4161,128 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("သက်တမ်းကုန်", sent_text)
         revived = bot._load_manual_session(session_id)
         self.assertGreater(float(revived["expires_at_unix"]), time.time())
+
+    async def test_guarded_update_reports_retryable_error_to_user(self):
+        failing = AsyncMock(side_effect=RuntimeError("boom"))
+        self.start_patch(patch.object(bot, "process_admin_update", new=failing))
+        answer = AsyncMock(return_value=None)
+        self.start_patch(patch.object(bot, "answer_callback", new=answer))
+        self.mock_send_text.reset_mock()
+        update = {
+            "callback_query": {
+                "id": "cb-err",
+                "data": "part:recap:whatever:1",
+                "from": {"id": 18201},
+                "message": {"message_id": 10, "chat": {"id": 18201}},
+            }
+        }
+
+        await bot._process_admin_update_guarded(update)
+
+        failing.assert_awaited_once()
+        answer.assert_awaited_once()
+        self.assertEqual(answer.await_args.args[0], "cb-err")
+        sent_chat, sent_text = self.mock_send_text.await_args.args[:2]
+        self.assertEqual(sent_chat, 18201)
+        self.assertIn("ယာယီအမှား", sent_text)
+        self.assertIn("ထပ်နှိပ်ကြည့်ပါ", sent_text)
+
+    async def test_original_part_is_sent_as_downloadable_copy_when_large(self):
+        chat_id = 18202
+        state = bot._create_manual_session(
+            session_id="manual-send-cap",
+            chat_id=chat_id,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/big"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        session_dir = Path(state["session_dir"])
+        relative = "source_segments/source_part_0001.mp4"
+        segment = session_dir / relative
+        segment.parent.mkdir(parents=True, exist_ok=True)
+        with open(segment, "wb") as handle:
+            handle.truncate(bot.MANUAL_RECOVERABLE_SEND_BYTES + 1024)
+        state["source_duration_seconds"] = 120.0
+        part = {
+            "index": 1,
+            "start": 0.0,
+            "end": 120.0,
+            "duration": 120.0,
+            "source_file": relative,
+            "status": "ready",
+            "message_id": None,
+        }
+        state["parts"] = [part]
+        bot._save_manual_session(state)
+
+        preview_calls = []
+
+        def fake_preview(_source_path, output_path, target_bytes=None):
+            preview_calls.append(target_bytes)
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"p" * 100)
+            return True
+
+        uploaded_paths = []
+
+        async def fake_upload(_method, payload, _field, _name, file_path, _mime):
+            uploaded_paths.append((file_path, payload.get("caption") or ""))
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": 555,
+                    "video": {"file_id": "SENTPARTFILE"},
+                },
+            }
+
+        self.start_patch(
+            patch.object(bot, "_make_telegram_preview_copy", new=fake_preview)
+        )
+        self.mock_tg_upload.side_effect = fake_upload
+
+        message_id = await bot._send_manual_original_part(state, part)
+
+        self.assertEqual(message_id, 555)
+        self.assertEqual(len(preview_calls), 1)
+        self.assertLessEqual(
+            preview_calls[0], bot.MANUAL_RECOVERABLE_SEND_BYTES
+        )
+        self.assertIn("previews", uploaded_paths[0][0])
+        self.assertIn("RNB1.", uploaded_paths[0][1])
+        self.assertLessEqual(
+            bot._telegram_text_units(uploaded_paths[0][1]), 1024
+        )
+        self.assertEqual(part["source_telegram_file_id"], "SENTPARTFILE")
+        self.assertTrue(part["sent_preview"])
+
+    def test_manual_status_text_stays_within_telegram_limit_for_many_parts(self):
+        state = bot._create_manual_session(
+            session_id="manual-many-parts",
+            chat_id=18203,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/long"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        state["source_duration_seconds"] = 900 * 120.0
+        state["parts"] = [
+            {
+                "index": number,
+                "start": (number - 1) * 120.0,
+                "end": number * 120.0,
+                "duration": 120.0,
+                "status": "waiting",
+            }
+            for number in range(1, 901)
+        ]
+        state["status"] = "ready"
+        bot._save_manual_session(state)
+
+        text = bot._manual_status_text(state)
+        self.assertLessEqual(bot._telegram_text_units(text), 4096)
+        self.assertIn("(+860)", text)
+        self.assertIn("RNB1.", text)
 
     async def test_n8n_forwarding_failure_falls_back_to_direct_pipeline(self):
         self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
