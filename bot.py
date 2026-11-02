@@ -122,6 +122,17 @@ class SourceDownloadError(RuntimeError):
         )
 
 
+class GeminiScriptError(RuntimeError):
+    """Gemini returned no usable script after every model/prompt fallback.
+
+    Kept distinct so the whole-segment auto retry does not immediately
+    re-upload the video and repeat the identical set of doomed model
+    calls several more times (which made jobs look frozen at
+    "retrying script (3/3)" for a very long time).  The job fails fast
+    with this error's message instead.
+    """
+
+
 def setup_ffmpeg() -> str:
     sys_ff = shutil.which("ffmpeg")
     if sys_ff:
@@ -308,6 +319,20 @@ RECAP_FLOW = os.environ.get("RECAP_FLOW", "auto").strip().lower()
 MANUAL_PARTS_ENABLED = _resolve_manual_parts_enabled(RECAP_FLOW)
 AUTO_SEGMENT_ATTEMPTS = max(1, _parse_int_env("AUTO_SEGMENT_ATTEMPTS", 3))
 AUTO_SOURCE_ATTEMPTS = max(1, _parse_int_env("AUTO_SOURCE_ATTEMPTS", 2))
+# Hard per-call bounds for Gemini requests.  A single unbounded
+# generate_content call used to be able to hang forever (the job then
+# sat at "retrying script (3/3)" with a frozen progress message);
+# every model attempt is now time-boxed and heartbeated instead.
+GEMINI_GENERATE_TIMEOUT_SECONDS = max(
+    30, _parse_int_env("GEMINI_GENERATE_TIMEOUT_SECONDS", 240)
+)
+GEMINI_TTS_TIMEOUT_SECONDS = max(
+    30, _parse_int_env("GEMINI_TTS_TIMEOUT_SECONDS", 300)
+)
+GEMINI_UPLOAD_TIMEOUT_SECONDS = max(
+    60, _parse_int_env("GEMINI_UPLOAD_TIMEOUT_SECONDS", 600)
+)
+GEMINI_HEARTBEAT_SECONDS = 20.0
 MANUAL_SESSION_TTL_HOURS = max(
     1, min(168, _parse_int_env("MANUAL_SESSION_TTL_HOURS", 24))
 )
@@ -480,8 +505,8 @@ def get_anim_emoji(frame: int) -> str:
 
 DEFAULT_SETTINGS = {
     "coverage": 90,        # 1  🎯 Script output = input ၏ %
-    "voice": "Charon",     # 2  🎙 အသံ
-    "deep": True,          # 3  🔊 Deep အသံ
+    "voice": "Charon",     # 2  🎙 အသံ (မူရင်း Charon ကို အဓိကသုံး)
+    "deep": False,         # 3  🔊 Deep အသံ (ပိတ်ထား — မူရင်းအသံအတိုင်း)
     "speed": 1.0,          # 4  ⏩ အသံအမြန်နှုန်း
     "volume": 100,         # 5  🔉 အသံအတိုးအကျယ် %
     "resolution": 1280,    # 6  📐 ဗီဒီယို အရွယ်အစား (long edge px)
@@ -507,7 +532,7 @@ FEATURES = [
      "options": [(90, "90% ⭐"), (95, "95%"), (100, "100%")]},
     {"key": "voice", "icon": "🎙️", "label": "အသံ (Voice)", "kind": "cycle",
      "desc": "TTS အသံသရုပ်ဆောင် ရွေးပါ",
-     "options": [("Charon", "Charon (ယောက်ျား·နက်)"), ("Fenrir", "Fenrir (ယောက်ျား)"),
+     "options": [("Charon", "Charon ⭐ (မူရင်းအသံ)"), ("Fenrir", "Fenrir (ယောက်ျား)"),
                  ("Puck", "Puck (ယောက်ျား·သေးသေး)"), ("Kore", "Kore (မိန်းမ)"), ("Aoede", "Aoede (မိန်းမ·နူး)")]},
     {"key": "deep", "icon": "🔊", "label": "Deep အသံ", "kind": "toggle",
      "desc": "အသံကို နက်ရှိုင်း/ရင်အုပ်သံ ဖြစ်အောင် လုပ်ခြင်း"},
@@ -2869,7 +2894,7 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
     s = {**DEFAULT_SETTINGS, **(settings or {})}
     voice_name = s.get("voice") or "Charon"
     voice_filter = build_voice_filter(s)
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = _make_gemini_client()
     joined = "\n\n".join(s_["burmese"] for s_ in batch)
 
     for model in PREFERRED_TTS_MODELS:
@@ -2885,19 +2910,21 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                         )
                     ),
                 )
-                resp = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=f"""
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model,
+                        contents=f"""
 အောက်ပါစာသားကို မြန်မာဘာသာဖြင့် သဘာဝကျသော စကားပြောဟန်ဖြင့် ဖတ်ပါ။
-အသံသည် နက်ရှိုင်းသော (deep, low), ရင်အုပ်သံပါသော, ပဲ့တင်သံမပါသော အသံဖြစ်ရမည်။
+ရွေးထားသော အသံသရုပ်ဆောင်၏ မူရင်းအသံနေအသံထားအတိုင်း ဖတ်ပါ — အသံကို ပိုနက်အောင်၊ ပိုနှေးအောင် မပြောင်းပါနှင့်။
 ဇာတ်လမ်းကို ကိုယ်တိုင်ကြုံတွေ့ခဲ့သော အဓိကဇာတ်ကောင်က ပြန်ပြောပြနေသလို အသံသွင်းပါ။
-အလွန်မြန်မြန်၊ တစ်သံတည်း မဖတ်ပါနှင့်။
 စာသားတွင် မပါသော စကားလုံးများကို မထည့်ပါနှင့်။
 
 {joined}
 """,
-                    config=cfg,
+                        config=cfg,
+                    ),
+                    timeout=float(GEMINI_TTS_TIMEOUT_SECONDS),
                 )
                 cands = getattr(resp, "candidates", None) or []
                 if not cands or not getattr(cands[0], "content", None):
@@ -3245,6 +3272,82 @@ def _gemini_response_text_and_diagnostics(response) -> tuple[str, str]:
     return text, "; ".join(str(item) for item in diagnostics if str(item).strip())
 
 
+def _make_gemini_client():
+    """Build a Gemini client whose HTTP calls cannot hang forever."""
+    timeout_ms = int(
+        max(GEMINI_GENERATE_TIMEOUT_SECONDS, GEMINI_TTS_TIMEOUT_SECONDS) * 1000
+    )
+    try:
+        return genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=timeout_ms),
+        )
+    except Exception:
+        # Older SDKs (or test doubles) may not accept http_options; the
+        # asyncio-level heartbeat timeout still bounds every call.
+        return genai.Client(api_key=GEMINI_API_KEY)
+
+
+async def _await_with_heartbeat(
+    awaitable,
+    *,
+    timeout_seconds,
+    tracker=None,
+    make_text=None,
+):
+    """Await with a hard deadline and periodic progress heartbeats.
+
+    The sync Gemini SDK runs through ``asyncio.to_thread`` and cannot
+    be cancelled once running, so on timeout/cancel we simply stop
+    waiting (the client-level HTTP timeout aborts the request itself
+    shortly after) and attach a done-callback that retrieves any later
+    exception so asyncio does not log it as unretrieved.
+    """
+    task = asyncio.ensure_future(awaitable)
+    started = time.monotonic()
+    heartbeat = max(0.05, float(GEMINI_HEARTBEAT_SECONDS or 20.0))
+    timeout = max(0.05, float(timeout_seconds or 0))
+
+    def _abandon() -> None:
+        def _swallow(done_task) -> None:
+            try:
+                done_task.exception()
+            except Exception:
+                pass
+
+        task.add_done_callback(_swallow)
+
+    try:
+        while True:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                _abandon()
+                raise TimeoutError(
+                    f"Gemini call timeout after {timeout:.0f}s"
+                )
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=min(heartbeat, remaining),
+                )
+            except asyncio.TimeoutError:
+                if time.monotonic() - started >= timeout:
+                    _abandon()
+                    raise TimeoutError(
+                        f"Gemini call timeout after {timeout:.0f}s"
+                    ) from None
+                if tracker is not None and make_text is not None:
+                    try:
+                        await tracker.update(
+                            make_text(time.monotonic() - started), force=True
+                        )
+                    except Exception:
+                        pass
+    except asyncio.CancelledError:
+        _abandon()
+        raise
+
+
 def _direct_gemini_json_config(max_output_tokens: int = 8192):
     kwargs = {
         "response_mime_type": "application/json",
@@ -3297,11 +3400,27 @@ async def _generate_direct_gemini_json(
         for _attempt in range(attempts_per_model):
             attempt_number += 1
             try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=contents,
-                    config=_direct_gemini_json_config(max_output_tokens),
+                def _heartbeat_text(
+                    elapsed,
+                    _model=model,
+                    _attempt_number=attempt_number,
+                ):
+                    return (
+                        f"⏳ Gemini Script ရေးနေဆဲ... "
+                        f"({_model}, ကြိုးစားမှု {_attempt_number}/{total_attempts}) "
+                        f"⏱ {fmt_time(elapsed)}"
+                    )
+
+                response = await _await_with_heartbeat(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model,
+                        contents=contents,
+                        config=_direct_gemini_json_config(max_output_tokens),
+                    ),
+                    timeout_seconds=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
+                    tracker=tracker,
+                    make_text=_heartbeat_text,
                 )
                 raw, diagnostics = _gemini_response_text_and_diagnostics(response)
                 if not str(raw or "").strip():
@@ -3864,14 +3983,20 @@ def _parse_direct_scene_replacements(data, allowed_indexes) -> dict:
 
 
 async def _upload_video_to_gemini(client, chunk_path: str):
-    video_file = await asyncio.to_thread(client.files.upload, file=chunk_path)
+    video_file = await asyncio.wait_for(
+        asyncio.to_thread(client.files.upload, file=chunk_path),
+        timeout=float(GEMINI_UPLOAD_TIMEOUT_SECONDS),
+    )
     for _ in range(40):
         state_obj = getattr(video_file, "state", None)
         state = getattr(state_obj, "name", str(state_obj or ""))
         if state in ("ACTIVE", "FAILED"):
             break
         await asyncio.sleep(2)
-        video_file = await asyncio.to_thread(client.files.get, name=video_file.name)
+        video_file = await asyncio.wait_for(
+            asyncio.to_thread(client.files.get, name=video_file.name),
+            timeout=60.0,
+        )
     state_obj = getattr(video_file, "state", None)
     state = getattr(state_obj, "name", str(state_obj or ""))
     if state != "ACTIVE":
@@ -3883,7 +4008,10 @@ async def _delete_gemini_file(client, video_file) -> None:
     if not video_file:
         return
     try:
-        await asyncio.to_thread(client.files.delete, name=video_file.name)
+        await asyncio.wait_for(
+            asyncio.to_thread(client.files.delete, name=video_file.name),
+            timeout=30.0,
+        )
     except Exception as e:
         logger.warning(f"Gemini delete error: {e}")
 
@@ -3912,7 +4040,7 @@ async def build_chunk_recap(
         raise ValueError("script_only cannot be combined with prepared_script")
     coverage_ratio = _settings_coverage_ratio(st)
     chars_rate = _settings_script_rate(st)
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = _make_gemini_client()
     start_fmt = fmt_time(global_start)
     end_fmt = fmt_time(global_end)
 
@@ -4171,10 +4299,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 
         if not scenes:
             await _delete_gemini_file(client, video_file)
-            raise RuntimeError(
+            raise GeminiScriptError(
                 "Gemini က ဒီအပိုင်းအတွက် Script scene ထုတ်မပေးနိုင်ပါ။ "
                 "Model fallback များနှင့် Script အသစ်ထပ်တောင်းပြီးသော်လည်း "
-                "သုံးနိုင်သော scene မရပါ။ ခေတ္တစောင့်ပြီး ဒီ Part ကို ပြန်နှိပ်ပေးပါ။ "
+                "သုံးနိုင်သော scene မရပါ။ Gemini quota ပြည့်တာ/မအားတာ ဖြစ်နိုင်လို့ "
+                "ခဏစောင့်ပြီး video/link ကို ပြန်ပို့ကြည့်ပါ။ "
                 f"အကြောင်းအသေးစိတ်: {last_script_error or 'empty Gemini response'}"
             )
 
@@ -5449,6 +5578,12 @@ async def _build_chunk_recap_with_retry(
             return recap_chunk, new_summary
         except asyncio.CancelledError:
             raise
+        except GeminiScriptError:
+            # Every model/prompt fallback already failed inside
+            # build_chunk_recap; re-uploading the same window and
+            # repeating the identical calls would only grind for many
+            # more minutes (quota/outage does not recover in seconds).
+            raise
         except Exception as exc:
             if str(exc) == "cancelled":
                 raise
@@ -6525,16 +6660,19 @@ async def _worker_gemini_json(prompt: str, client=None):
     if client is None:
         if not GEMINI_API_KEY:
             raise WorkerJobError("GEMINI_API_KEY is not configured")
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = _make_gemini_client()
 
     last_error = None
     for model in PREFERRED_MODELS:
         try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json"),
+                ),
+                timeout=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
             )
             raw = str(getattr(response, "text", "") or "").strip()
             if raw.startswith("```"):
@@ -6884,7 +7022,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         target_chars = sum(target_by_group.values())
 
     await _worker_progress(state, WORKER_STAGE_LABELS["rewrite"], tracker)
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = _make_gemini_client()
     story_context = {
         "characters": [], "summary": "", "last_scene": "",
         "protagonist": "", "pronoun": "",
@@ -7351,7 +7489,7 @@ async def _worker_adjust_scenes_for_duration(
 
     if not GEMINI_API_KEY:
         raise WorkerJobError("GEMINI_API_KEY is not configured for duration calibration")
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = _make_gemini_client()
     changed = []
     for batch in _batch_transcript_groups(candidates, max_groups=5, max_chars=3000):
         _worker_check_cancelled(state)
@@ -12442,7 +12580,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.1-fast-split"
+BUILD_VERSION = "v5.2-gemini-timeout"
 BUILD_FEATURES = 20
 
 
@@ -12471,6 +12609,11 @@ async def root():
         },
         "source_split_acceptance": "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
         "render_keepalive": "self_ping_public_healthz_while_jobs_active",
+        "gemini_generate_timeout_seconds": GEMINI_GENERATE_TIMEOUT_SECONDS,
+        "gemini_tts_timeout_seconds": GEMINI_TTS_TIMEOUT_SECONDS,
+        "gemini_call_heartbeat": "elapsed_progress_every_20s",
+        "default_voice": DEFAULT_SETTINGS.get("voice"),
+        "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -12535,6 +12678,11 @@ async def health():
         },
         "source_split_acceptance": "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
         "render_keepalive": "self_ping_public_healthz_while_jobs_active",
+        "gemini_generate_timeout_seconds": GEMINI_GENERATE_TIMEOUT_SECONDS,
+        "gemini_tts_timeout_seconds": GEMINI_TTS_TIMEOUT_SECONDS,
+        "gemini_call_heartbeat": "elapsed_progress_every_20s",
+        "default_voice": DEFAULT_SETTINGS.get("voice"),
+        "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
