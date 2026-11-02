@@ -2113,6 +2113,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json()["version"], bot.BUILD_VERSION)
             self.assertEqual(
+                health.json()["manual_session_recovery"],
+                "telegram_message_payload_v1_with_legacy_caption_fallback",
+            )
+            self.assertEqual(
                 health.json()["direct_script_generation"],
                 "multi_model_retry_robust_json_empty_scene_recovery",
             )
@@ -3777,6 +3781,378 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reset["status"], "ready")
         self.assertEqual(reset["parts"][1]["status"], "extract_failed")
         self.assertEqual(reset["current_part_index"], 2)
+
+    def test_manual_recovery_token_roundtrip_and_budget(self):
+        state = bot._create_manual_session(
+            session_id="manual-recover-token",
+            chat_id=18101,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={
+                "kind": "telegram_file",
+                "file_id": "SOURCEFILEID1234567890",
+                "file_name": "movie.mp4",
+                "file_size": 15000000,
+                "mime_type": "video/mp4",
+            },
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        # The Telegram file reference must persist so the source can be
+        # re-acquired after the ephemeral session disk is wiped.
+        self.assertEqual(state["source"]["file_id"], "SOURCEFILEID1234567890")
+        self.assertEqual(state["source"]["file_size"], 15000000)
+
+        state["source_duration_seconds"] = 250.0
+        state["parts"] = [
+            {
+                "index": 1,
+                "start": 0.0,
+                "end": 120.0,
+                "duration": 120.0,
+                "status": "done",
+                "recap_file_id": "RECAPFILEID0001",
+            },
+            {
+                "index": 2,
+                "start": 120.0,
+                "end": 240.0,
+                "duration": 120.0,
+                "status": "ready",
+            },
+            {
+                "index": 3,
+                "start": 240.0,
+                "end": 250.0,
+                "duration": 10.0,
+                "status": "waiting",
+            },
+        ]
+        state["story_context"] = {
+            "characters": ["Hero", "Mina"],
+            "summary": "ဇာတ်လမ်းအကျဉ်း " * 120,
+            "last_scene": "နောက်ဆုံးခန်း " * 80,
+            "protagonist": "Hero",
+            "pronoun": MALE_PRONOUN,
+        }
+        state["status"] = "ready"
+        bot._save_manual_session(state)
+
+        token = bot._build_manual_recovery_token(
+            state, anchor_index=2, max_token_chars=620
+        )
+        self.assertTrue(token)
+        self.assertLessEqual(len(token), 620)
+
+        payload = bot._manual_recovery_decode(token)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["sid"], "manual-recover-token")
+        self.assertEqual(payload["k"], "telegram_file")
+        self.assertEqual(payload["f"], "SOURCEFILEID1234567890")
+        self.assertEqual(payload["d"], 250.0)
+        self.assertEqual(payload["i"], 2)
+        self.assertEqual(payload["done"], [1])
+        self.assertEqual(payload["r"], {"1": "RECAPFILEID0001"})
+        self.assertEqual(payload["ctx"]["p"], "Hero")
+        self.assertEqual(payload["ctx"]["pr"], MALE_PRONOUN)
+
+        caption = f"🎬 မူရင်းအပိုင်း 2/3 (02:00–04:00)\n♻️ RNB1.{token}"
+        from_caption = bot._extract_manual_recovery_payload(caption)
+        self.assertIsNotNone(from_caption)
+        self.assertEqual(from_caption["sid"], "manual-recover-token")
+        self.assertIn("RNB1.", bot._manual_status_text(state))
+
+    async def test_rebuild_manual_session_from_payload_restores_everything(self):
+        chat_id = 18102
+        session_id = "manual-recover-build"
+        payload = {
+            "v": 1,
+            "sid": session_id,
+            "k": "url",
+            "u": "https://videos.example/recover",
+            "d": 250.0,
+            "i": 2,
+            "done": [1],
+            "r": {"1": "RECAPFILEID0001"},
+            "ctx": {
+                "c": ["Hero", "Mina"],
+                "s": "before part two",
+                "l": "door opens",
+                "p": "Hero",
+                "pr": MALE_PRONOUN,
+            },
+        }
+        extract_calls = []
+
+        async def fake_acquire(_spec, work_dir, _tracker=None):
+            path = Path(work_dir) / "source.mp4"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * 10001)
+            return str(path), 250.0
+
+        async def fake_download(_file_id, out_path, _tracker=None, **_kwargs):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"r" * 100)
+            return 108.0
+
+        def fake_extract(_source_path, output_path, start, duration):
+            extract_calls.append((float(start), float(duration)))
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"s" * 100)
+            return True
+
+        def fake_probe(path):
+            name = Path(path).name
+            if name.startswith("recap_part_"):
+                return (108.0, 64, 64)
+            return (120.0, 64, 64)
+
+        self.start_patch(patch.object(bot, "_acquire_source_file", new=fake_acquire))
+        self.start_patch(
+            patch.object(bot, "download_telegram_file", new=fake_download)
+        )
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
+        )
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+
+        state = await bot._rebuild_manual_session_from_payload(
+            payload,
+            chat_id,
+            tracker=bot._NullProgressTracker(),
+            clicked_part_message_id=777,
+            need_current_segment=True,
+        )
+
+        parts = bot._manual_sorted_parts(state)
+        self.assertEqual([p["status"] for p in parts], ["done", "ready", "waiting"])
+        session_dir = Path(state["session_dir"])
+        self.assertTrue((session_dir / "source.mp4").exists())
+        self.assertTrue(
+            (session_dir / "recaps" / "recap_part_0001.mp4").exists()
+        )
+        self.assertEqual(parts[0]["recap_file_id"], "RECAPFILEID0001")
+        self.assertEqual(parts[0]["recap_duration_seconds"], 108.0)
+        self.assertTrue(
+            (session_dir / "source_segments" / "source_part_0002.mp4").exists()
+        )
+        self.assertEqual(parts[1]["message_id"], 777)
+        self.assertEqual(extract_calls, [(120.0, 120.0)])
+        self.assertEqual(state["story_context"]["protagonist"], "Hero")
+        self.assertEqual(state["story_context"]["summary"], "before part two")
+        self.assertEqual(state["current_part_index"], 2)
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(state["recovery_count"], 1)
+        reloaded = bot._load_manual_session(session_id)
+        self.assertEqual(reloaded["source"]["url"], "https://videos.example/recover")
+
+    async def test_missing_session_click_recovers_from_caption_then_recaps(self):
+        chat_id = 18103
+        session_id = "manual-recover-click"
+        token = bot._manual_recovery_encode(
+            {
+                "v": 1,
+                "sid": session_id,
+                "k": "url",
+                "u": "https://videos.example/click-recover",
+                "d": 120.0,
+                "i": 1,
+            }
+        )
+        rebuild_calls = []
+
+        async def fake_rebuild(payload, rebuild_chat_id, tracker=None, **_kwargs):
+            rebuild_calls.append(payload["sid"])
+            state = bot._create_manual_session(
+                session_id=session_id,
+                chat_id=rebuild_chat_id,
+                reply_msg_id=1,
+                status_message_id=2,
+                source_spec={"kind": "url", "url": payload["u"]},
+                settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+            )
+            session_dir = Path(state["session_dir"])
+            relative = "source_segments/source_part_0001.mp4"
+            segment = session_dir / relative
+            segment.parent.mkdir(parents=True, exist_ok=True)
+            segment.write_bytes(b"s" * 100)
+            state["source_duration_seconds"] = 120.0
+            state["full_source_file"] = "source.mp4"
+            state["parts"] = [
+                {
+                    "index": 1,
+                    "start": 0.0,
+                    "end": 120.0,
+                    "duration": 120.0,
+                    "source_file": relative,
+                    "script_file": "",
+                    "status": "ready",
+                    "message_id": 501,
+                    "recap_file": "",
+                    "recap_duration_seconds": 0.0,
+                    "attempts": 0,
+                    "error": "",
+                }
+            ]
+            state["current_part_index"] = 1
+            state["status"] = "ready"
+            bot._save_manual_session(state)
+            return state
+
+        fake_render = AsyncMock(return_value=None)
+        self.start_patch(
+            patch.object(
+                bot, "_rebuild_manual_session_from_payload", new=fake_rebuild
+            )
+        )
+        self.start_patch(
+            patch.object(bot, "_run_manual_part_recap", new=fake_render)
+        )
+        self.start_patch(
+            patch.object(
+                bot, "edit_reply_markup", new=AsyncMock(return_value=None)
+            )
+        )
+        message = {
+            "message_id": 501,
+            "chat": {"id": chat_id},
+            "caption": f"🎬 မူရင်းအပိုင်း 1/1 (00:00–02:00)\n♻️ RNB1.{token}",
+            "video": {"file_id": "PARTFILEID"},
+        }
+        try:
+            await bot._handle_manual_part_callback(
+                f"part:recap:{session_id}:1", chat_id, 501, message=message
+            )
+            for _ in range(20):
+                pending = [
+                    task for task in list(bot.BACKGROUND_TASKS) if not task.done()
+                ]
+                if not pending:
+                    break
+                await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            bot.MANUAL_RECOVERY_IN_PROGRESS.discard(session_id)
+
+        self.assertEqual(rebuild_calls, [session_id])
+        fake_render.assert_awaited_once()
+        self.assertEqual(fake_render.await_args.args[0], session_id)
+        self.assertEqual(fake_render.await_args.args[1], 1)
+        self.assertNotIn(session_id, bot.MANUAL_RECOVERY_IN_PROGRESS)
+
+    async def test_legacy_caption_rebuild_recovers_current_part(self):
+        chat_id = 18104
+        message = {
+            "message_id": 501,
+            "chat": {"id": chat_id},
+            "caption": "🎬 မူရင်းအပိုင်း 1/2 (00:00\u201302:00)\n🎬 Recap လုပ်မယ် ကို နှိပ်ပါ။",
+            "video": {"file_id": "OLDPARTFILE", "file_size": 1000},
+        }
+        info = bot._legacy_manual_caption_info(message)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["index"], 1)
+        self.assertEqual(info["total"], 2)
+        self.assertEqual(info["start"], 0.0)
+        self.assertEqual(info["end"], 120.0)
+
+        async def fake_download(_file_id, out_path, _tracker=None, **_kwargs):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"s" * 100)
+            return 120.0
+
+        self.start_patch(
+            patch.object(bot, "download_telegram_file", new=fake_download)
+        )
+        self.start_patch(
+            patch.object(bot, "probe_video_info", new=lambda _p: (120.0, 64, 64))
+        )
+
+        state = await bot._rebuild_manual_session_from_legacy_message(
+            "manual-legacy-1",
+            chat_id,
+            message,
+            1,
+            tracker=bot._NullProgressTracker(),
+        )
+        parts = bot._manual_sorted_parts(state)
+        self.assertEqual([p["status"] for p in parts], ["ready", "waiting"])
+        self.assertEqual(parts[0]["message_id"], 501)
+        segment = (
+            Path(state["session_dir"])
+            / "source_segments"
+            / "source_part_0001.mp4"
+        )
+        self.assertTrue(segment.exists())
+        self.assertTrue(state["legacy_partial"])
+        self.assertEqual(state["current_part_index"], 1)
+        self.assertEqual(state["source_duration_seconds"], 240.0)
+
+    async def test_ensure_manual_full_source_redownloads_when_missing(self):
+        state = bot._create_manual_session(
+            session_id="manual-ensure-source",
+            chat_id=18105,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/ensure"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        state["full_source_file"] = "source.mp4"
+        bot._save_manual_session(state)
+        acquire_calls = []
+
+        async def fake_acquire(_spec, work_dir, _tracker=None):
+            acquire_calls.append(work_dir)
+            path = Path(work_dir) / "source.mp4"
+            path.write_bytes(b"x" * 100)
+            return str(path), 250.0
+
+        self.start_patch(patch.object(bot, "_acquire_source_file", new=fake_acquire))
+        restored = await bot._ensure_manual_full_source(state)
+        self.assertTrue(restored and Path(restored).exists())
+        self.assertEqual(len(acquire_calls), 1)
+        self.assertEqual(state["source_duration_seconds"], 250.0)
+
+        # A second call reuses the restored file without downloading again.
+        again = await bot._ensure_manual_full_source(state)
+        self.assertEqual(again, restored)
+        self.assertEqual(len(acquire_calls), 1)
+
+    async def test_expired_session_is_revived_on_button_tap_when_files_survive(self):
+        chat_id = 18106
+        session_id = "manual-expired-revive"
+        state = bot._create_manual_session(
+            session_id=session_id,
+            chat_id=chat_id,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/revive"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        state["source_duration_seconds"] = 120.0
+        state["parts"] = [
+            {
+                "index": 1,
+                "start": 0.0,
+                "end": 120.0,
+                "duration": 120.0,
+                "status": "ready",
+                "message_id": 501,
+            }
+        ]
+        state["status"] = "ready"
+        state["current_part_index"] = 1
+        state["expires_at_unix"] = 1.0
+        bot._save_manual_session(state)
+        self.assertTrue(bot._manual_session_expired(state))
+
+        self.mock_send_text.reset_mock()
+        await bot._handle_manual_part_callback(
+            f"part:status:{session_id}", chat_id, 601, message={}
+        )
+
+        sent_text = self.mock_send_text.await_args.args[1]
+        self.assertIn("၂ မိနစ်အပိုင်းများ အခြေအနေ", sent_text)
+        self.assertNotIn("သက်တမ်းကုန်", sent_text)
+        revived = bot._load_manual_session(session_id)
+        self.assertGreater(float(revived["expires_at_unix"]), time.time())
 
     async def test_n8n_forwarding_failure_falls_back_to_direct_pipeline(self):
         self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))

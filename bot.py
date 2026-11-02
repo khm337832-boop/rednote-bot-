@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import gc
 import hmac
 import html
@@ -18,6 +19,7 @@ import tempfile
 import time
 import unicodedata
 import wave
+import zlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from urllib.parse import quote, urljoin, urlparse
@@ -143,7 +145,15 @@ def setup_ffmpeg() -> str:
 
 
 FFMPEG_BIN = setup_ffmpeg()
-WORK_ROOT = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK) else "/tmp"
+# Render's container filesystem is ephemeral: /var/tmp is wiped on every
+# deploy/restart, which used to delete manual per-part sessions.  Allow an
+# operator-provided WORK_ROOT (e.g. a mounted persistent disk); when it is
+# not set, manual sessions additionally carry a Telegram-message recovery
+# payload so they can be rebuilt after the disk is wiped.
+WORK_ROOT = (
+    os.environ.get("WORK_ROOT", "").strip()
+    or ("/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK) else "/tmp")
+)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -351,6 +361,7 @@ CANCELLED_JOBS: set = set()
 BACKGROUND_TASKS: set = set()
 MANUAL_SESSIONS_BY_CHAT: dict = {}
 MANUAL_RENDER_TASKS: dict = {}
+MANUAL_RECOVERY_IN_PROGRESS: set = set()
 MANUAL_SESSION_LOCK = asyncio.Lock()
 PERSISTENT_KEYBOARD_CHATS: set = set()
 TELEGRAM_WEBHOOK_ALLOWED_UPDATES = [
@@ -8498,6 +8509,14 @@ def _create_manual_session(
             "url": url,
             "label": label,
             "file_name": str(source_spec.get("file_name") or ""),
+            # Persist everything needed to re-acquire the source after a
+            # restart/deploy wipes the ephemeral session disk.
+            "file_id": str(source_spec.get("file_id") or ""),
+            "file_unique_id": str(source_spec.get("file_unique_id") or ""),
+            "file_size": int(source_spec.get("file_size") or 0)
+            if str(source_spec.get("file_size") or "").isdigit()
+            else 0,
+            "mime_type": str(source_spec.get("mime_type") or ""),
         },
         "source_duration_seconds": 0.0,
         "source_size_bytes": 0,
@@ -8552,6 +8571,792 @@ def _manual_counts(state: dict) -> dict:
     return counts
 
 
+# ---------------------------------------------------------------------
+# Manual-session recovery after ephemeral-disk loss (deploy/restart)
+# ---------------------------------------------------------------------
+# Render wipes the container filesystem on every deploy/restart, which
+# deleted WORK_ROOT/manual_sessions and stranded every not-yet-finished
+# per-part session behind a "session expired" message.  To survive that
+# without paid persistent storage, each original-part message caption and
+# each session status/control message carries a compact recovery token
+# (source reference + plan + story context + delivered recap file_ids).
+# When a button on such a message is tapped after the disk was wiped,
+# the session is rebuilt from that token: the full source is downloaded
+# again, delivered recaps are re-downloaded from Telegram, and the
+# tapped action continues as if nothing happened.
+
+MANUAL_RECOVERY_MARKER = "RNB1."
+
+
+def _manual_recovery_encode(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = zlib.compress(raw, 9)
+    return base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+
+
+def _manual_recovery_decode(token: str) -> dict | None:
+    try:
+        token = str(token or "").strip()
+        if not token or len(token) > 8192:
+            return None
+        padded = token + "=" * (-len(token) % 4)
+        raw = zlib.decompress(base64.urlsafe_b64decode(padded.encode("ascii")))
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or int(payload.get("v") or 0) != 1:
+        return None
+    if not _is_safe_manual_session_id(str(payload.get("sid") or "")):
+        return None
+    kind = str(payload.get("k") or "")
+    if kind not in ("url", "telegram_file"):
+        return None
+    if kind == "url" and not str(payload.get("u") or ""):
+        return None
+    if kind == "telegram_file" and not str(payload.get("f") or ""):
+        return None
+    try:
+        if float(payload.get("d") or 0) <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return payload
+
+
+def _build_manual_recovery_token(
+    state: dict,
+    *,
+    anchor_index: int = None,
+    max_token_chars: int = 900,
+) -> str:
+    """Compact recovery token for captions/status texts ("" if impossible)."""
+    try:
+        source = state.get("source") or {}
+        kind = str(source.get("kind") or "url")
+        url = str(source.get("url") or "")
+        file_id = str(source.get("file_id") or "")
+        if kind == "telegram_file":
+            if not file_id:
+                return ""
+        elif not url:
+            return ""
+        duration = float(state.get("source_duration_seconds") or 0)
+        if duration <= 0:
+            return ""
+        parts = _manual_sorted_parts(state)
+        if not parts:
+            return ""
+        current = _manual_first_unfinished_part(state)
+        anchor = int(
+            anchor_index
+            or (int(current.get("index") or 0) if current else len(parts) + 1)
+        )
+        done_indexes = [
+            int(part.get("index") or 0)
+            for part in parts
+            if str(part.get("status") or "") == "done"
+        ]
+        recap_refs: dict[str, object] = {}
+        for part in parts:
+            if str(part.get("status") or "") != "done":
+                continue
+            ref = part.get("recap_file_ids") or part.get("recap_file_id")
+            if ref:
+                recap_refs[str(int(part.get("index") or 0))] = ref
+        ctx_full = state.get("story_context") or {}
+
+        def make_payload(summary_len, last_len, keep_recaps, keep_characters):
+            payload: dict[str, object] = {
+                "v": 1,
+                "sid": str(state.get("session_id") or ""),
+                "k": kind,
+                "d": round(duration, 3),
+                "i": anchor,
+            }
+            if kind == "telegram_file":
+                payload["f"] = file_id
+                if source.get("file_name"):
+                    payload["fn"] = str(source.get("file_name") or "")
+                if source.get("file_size"):
+                    payload["fs"] = int(source.get("file_size") or 0)
+                if source.get("mime_type"):
+                    payload["mt"] = str(source.get("mime_type") or "")
+            else:
+                payload["u"] = url
+            if done_indexes:
+                payload["done"] = done_indexes
+            if keep_recaps and recap_refs:
+                payload["r"] = recap_refs
+            ctx: dict[str, object] = {}
+            if keep_characters:
+                characters = [
+                    str(c)[:24]
+                    for c in (ctx_full.get("characters") or [])[:8]
+                    if str(c).strip()
+                ]
+                if characters:
+                    ctx["c"] = characters
+            if summary_len:
+                summary = str(ctx_full.get("summary") or "")[:summary_len]
+                if summary:
+                    ctx["s"] = summary
+            if last_len:
+                last_scene = str(ctx_full.get("last_scene") or "")[:last_len]
+                if last_scene:
+                    ctx["l"] = last_scene
+            if ctx_full.get("protagonist"):
+                ctx["p"] = str(ctx_full.get("protagonist") or "")[:60]
+            if ctx_full.get("pronoun"):
+                ctx["pr"] = str(ctx_full.get("pronoun") or "")
+            if ctx:
+                payload["ctx"] = ctx
+            return payload
+
+        # Prefer keeping delivered-recap file_ids (join needs them), then
+        # progressively trim story-context prose to fit the budget.
+        for summary_len, last_len, keep_recaps, keep_characters in (
+            (240, 160, True, True),
+            (140, 90, True, True),
+            (70, 45, True, False),
+            (0, 0, True, False),
+            (0, 0, False, False),
+        ):
+            token = _manual_recovery_encode(
+                make_payload(summary_len, last_len, keep_recaps, keep_characters)
+            )
+            if len(token) <= max(80, int(max_token_chars or 0)):
+                return token
+        return ""
+    except Exception:
+        return ""
+
+
+def _extract_manual_recovery_payload(text: str) -> dict | None:
+    if not text:
+        return None
+    matches = re.findall(r"RNB1\.([A-Za-z0-9_-]{40,})", str(text))
+    for token in reversed(matches):
+        payload = _manual_recovery_decode(token)
+        if payload:
+            return payload
+    return None
+
+
+def _manual_recovery_payload_from_message(message) -> dict | None:
+    if not isinstance(message, dict):
+        return None
+    for key in ("caption", "text"):
+        payload = _extract_manual_recovery_payload(str(message.get(key) or ""))
+        if payload:
+            return payload
+    return None
+
+
+def _manual_recovery_line(
+    state: dict,
+    *,
+    anchor_index: int = None,
+    max_token_chars: int = 900,
+) -> str:
+    token = _build_manual_recovery_token(
+        state, anchor_index=anchor_index, max_token_chars=max_token_chars
+    )
+    if not token:
+        return ""
+    return f"♻️ {MANUAL_RECOVERY_MARKER}{token}"
+
+
+def _manual_source_spec_from_state(state: dict) -> dict:
+    source = state.get("source") or {}
+    kind = str(source.get("kind") or "url")
+    if kind == "telegram_file":
+        return {
+            "kind": "telegram_file",
+            "file_id": str(source.get("file_id") or ""),
+            "file_name": str(source.get("file_name") or ""),
+            "file_size": int(source.get("file_size") or 0),
+            "mime_type": str(source.get("mime_type") or ""),
+        }
+    return {"kind": "url", "url": str(source.get("url") or "")}
+
+
+async def _ensure_manual_full_source(state: dict, tracker=None) -> str:
+    """Return the retained full-source path, re-downloading it if lost."""
+    try:
+        existing = _manual_full_source_path(state)
+    except Exception:
+        existing = ""
+    if existing and os.path.exists(existing) and os.path.getsize(existing) > 0:
+        return existing
+    spec = _manual_source_spec_from_state(state)
+    if spec.get("kind") == "telegram_file" and not spec.get("file_id"):
+        return ""
+    if spec.get("kind") == "url" and not spec.get("url"):
+        return ""
+    session_dir = str(state.get("session_dir") or "")
+    if not session_dir:
+        return ""
+    if tracker is not None:
+        await tracker.update(
+            "♻️ မူရင်းဖိုင်အပြည့် မရှိတော့လို့ source ကို ပြန်ဒေါင်းနေပါသည်...",
+            force=True,
+        )
+    source_path, total_dur = await _acquire_source_file(spec, session_dir, tracker)
+    if not source_path or not os.path.exists(source_path):
+        return ""
+    relative = os.path.relpath(source_path, session_dir)
+    state["full_source_file"] = relative
+    if isinstance(state.get("source"), dict):
+        state["source"]["full_source_file"] = relative
+    if float(total_dur or 0) > 0 and not float(state.get("source_duration_seconds") or 0):
+        state["source_duration_seconds"] = round(float(total_dur), 3)
+    try:
+        state["source_size_bytes"] = int(os.path.getsize(source_path))
+    except Exception:
+        pass
+    _save_manual_session(state)
+    return source_path
+
+
+async def _restore_manual_recap_file(state: dict, part: dict, ref, tracker=None) -> bool:
+    """Re-download one delivered recap from Telegram during recovery."""
+    index = int(part.get("index") or 0)
+    relative = f"recaps/recap_part_{index:04d}.mp4"
+    part["recap_file"] = relative
+    try:
+        output_path = _manual_path(state, relative)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if isinstance(ref, list):
+            piece_paths: list[str] = []
+            try:
+                for piece_index, piece_ref in enumerate(ref, start=1):
+                    piece_path = _manual_path(
+                        state, f"recaps/.restore_{index:04d}_{piece_index:02d}.mp4"
+                    )
+                    duration = await download_telegram_file(
+                        str(piece_ref), piece_path, tracker, raise_on_error=False
+                    )
+                    if (
+                        not duration
+                        or not os.path.exists(piece_path)
+                        or os.path.getsize(piece_path) <= 0
+                    ):
+                        return False
+                    piece_paths.append(piece_path)
+                concat_path = _manual_path(state, f"recaps/.restore_{index:04d}.txt")
+                ok = await asyncio.to_thread(
+                    _concat_video_parts, piece_paths, output_path, concat_path
+                )
+                if not ok:
+                    return False
+            finally:
+                for piece_path in piece_paths:
+                    try:
+                        os.remove(piece_path)
+                    except Exception:
+                        pass
+        else:
+            duration = await download_telegram_file(
+                str(ref or ""), output_path, tracker, raise_on_error=False
+            )
+            if not duration:
+                return False
+        if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+            return False
+        probed = float(probe_video_info(output_path)[0] or 0)
+        if probed > 0:
+            part["recap_duration_seconds"] = round(probed, 3)
+        return True
+    except Exception:
+        return False
+
+
+async def _rebuild_manual_session_from_payload(
+    payload: dict,
+    chat_id: int,
+    tracker=None,
+    *,
+    clicked_part_message_id: int = None,
+    need_current_segment: bool = True,
+    for_join: bool = False,
+) -> dict:
+    """Rebuild a wiped manual session from its Telegram recovery token."""
+    session_id = str(payload.get("sid") or "")
+    kind = str(payload.get("k") or "url")
+    if kind == "telegram_file":
+        source_spec = {
+            "kind": "telegram_file",
+            "file_id": str(payload.get("f") or ""),
+            "file_name": str(payload.get("fn") or ""),
+            "file_size": int(payload.get("fs") or 0),
+            "mime_type": str(payload.get("mt") or ""),
+        }
+    else:
+        source_spec = {"kind": "url", "url": str(payload.get("u") or "")}
+
+    state = _create_manual_session(
+        session_id=session_id,
+        chat_id=int(chat_id),
+        reply_msg_id=int(clicked_part_message_id or 0),
+        status_message_id=0,
+        source_spec=source_spec,
+        settings=get_user_settings(int(chat_id)),
+    )
+    session_dir = str(state.get("session_dir") or "")
+    if tracker is not None:
+        await tracker.update(
+            "♻️ Session ပြန်ဆယ်နေပါသည် — မူရင်း source ကို ပြန်ဒေါင်းနေပါသည်...",
+            force=True,
+        )
+    source_path, total_dur = await _acquire_source_file(
+        source_spec, session_dir, tracker
+    )
+    expected_dur = float(payload.get("d") or 0)
+    if float(total_dur or 0) <= 0:
+        total_dur = expected_dur
+    if float(total_dur or 0) <= 0:
+        raise ManualSessionError("recovered source has no readable duration")
+
+    segment_plan = build_source_segment_plan(
+        float(total_dur), SOURCE_SEGMENT_SECONDS
+    )
+    if not segment_plan:
+        raise ManualSessionError("could not rebuild the two-minute part plan")
+
+    done_set: set[int] = set()
+    for raw_index in payload.get("done") or []:
+        try:
+            done_set.add(int(raw_index))
+        except (TypeError, ValueError):
+            continue
+    try:
+        anchor = int(payload.get("i") or 0)
+    except (TypeError, ValueError):
+        anchor = 0
+    if not done_set and anchor > 1:
+        # Sequential flow guarantee: every part before the anchored
+        # current part was already delivered.
+        done_set = set(range(1, anchor))
+
+    parts: list[dict] = []
+    for segment in segment_plan:
+        start = round(float(segment.get("start") or 0), 3)
+        end = round(float(segment.get("end") or 0), 3)
+        index = int(segment.get("index") or len(parts) + 1)
+        parts.append(
+            {
+                "index": index,
+                "start": start,
+                "end": end,
+                "duration": round(
+                    float(segment.get("duration") or max(0.0, end - start)), 3
+                ),
+                "source_file": "",
+                "script_file": "",
+                "status": "done" if index in done_set else "waiting",
+                "message_id": None,
+                "recap_file": "",
+                "recap_duration_seconds": 0.0,
+                "attempts": 0,
+                "error": "",
+            }
+        )
+
+    full_source_relative = os.path.relpath(source_path, session_dir)
+    state["source_duration_seconds"] = round(float(total_dur), 3)
+    try:
+        state["source_size_bytes"] = int(os.path.getsize(source_path))
+    except Exception:
+        state["source_size_bytes"] = 0
+    state["full_source_file"] = full_source_relative
+    if isinstance(state.get("source"), dict):
+        state["source"]["full_source_file"] = full_source_relative
+    state["parts"] = parts
+
+    ctx = payload.get("ctx") or {}
+    if isinstance(ctx, dict) and ctx:
+        state["story_context"] = {
+            "characters": [str(c) for c in (ctx.get("c") or []) if str(c).strip()],
+            "summary": str(ctx.get("s") or ""),
+            "last_scene": str(ctx.get("l") or ""),
+            "protagonist": str(ctx.get("p") or ""),
+            "pronoun": str(ctx.get("pr") or ""),
+        }
+
+    recap_refs = payload.get("r") or {}
+    if not isinstance(recap_refs, dict):
+        recap_refs = {}
+    missing_recap_indexes: list[int] = []
+    for part in parts:
+        if part.get("status") != "done":
+            continue
+        index = int(part.get("index") or 0)
+        ref = recap_refs.get(str(index), recap_refs.get(index))
+        restored = False
+        if ref:
+            if tracker is not None:
+                await tracker.update(
+                    f"♻️ ပြီးခဲ့တဲ့ Recap အပိုင်း {index} ကို Telegram က ပြန်ယူနေပါသည်...",
+                    force=True,
+                )
+            restored = await _restore_manual_recap_file(state, part, ref, tracker)
+        if restored:
+            if isinstance(ref, list):
+                part["recap_file_ids"] = [str(r) for r in ref]
+            elif ref:
+                part["recap_file_id"] = str(ref)
+        else:
+            part["recap_missing"] = True
+            part["recap_file"] = f"recaps/recap_part_{index:04d}.mp4"
+            missing_recap_indexes.append(index)
+
+    if for_join and missing_recap_indexes:
+        # A delivered recap that cannot be restored must be re-created
+        # before any final join; reset only those parts to pending.
+        for part in parts:
+            if int(part.get("index") or 0) in missing_recap_indexes:
+                part["status"] = "waiting"
+                part["error"] = (
+                    "Server restart ကြောင့် ဒီ Recap file ပြန်ယူ၍မရပါ — "
+                    "ဒီအပိုင်းကို ထပ်ပြီး Recap လုပ်ပါ။"
+                )
+
+    current = _manual_first_unfinished_part(state)
+    if current and need_current_segment:
+        index = int(current.get("index") or 0)
+        relative = f"source_segments/source_part_{index:04d}.mp4"
+        output_path = _manual_path(state, relative)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        start = float(current.get("start") or 0)
+        duration = float(
+            current.get("duration")
+            or (float(current.get("end") or 0) - start)
+        )
+        if tracker is not None:
+            await tracker.update(
+                f"♻️ လက်ရှိအပိုင်း {index} ကို ပြန်ခွဲထုတ်နေပါသည်...",
+                force=True,
+            )
+        extracted = await asyncio.to_thread(
+            _extract_source_segment_file,
+            source_path,
+            output_path,
+            start,
+            duration,
+        )
+        if extracted and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            current["source_file"] = relative
+            current["status"] = "ready"
+            if clicked_part_message_id:
+                current["message_id"] = int(clicked_part_message_id)
+            actual_duration = float(probe_video_info(output_path)[0] or 0)
+            if actual_duration > 0:
+                current["duration"] = round(actual_duration, 3)
+                current["end"] = round(start + actual_duration, 3)
+        else:
+            current["status"] = "extract_failed"
+            current["error"] = (
+                "Session ပြန်ဆယ်ပြီးသော်လည်း လက်ရှိအပိုင်းကို ခွဲထုတ်၍မရပါ — "
+                "▶️ နောက်အပိုင်းပို့မယ် နဲ့ ထပ်စမ်းပါ။"
+            )
+
+    counts = _manual_counts(state)
+    current = _manual_first_unfinished_part(state)
+    state["current_part_index"] = (
+        int(current.get("index") or 0) if current else None
+    )
+    state["status"] = (
+        "ready_to_join"
+        if counts["total"] and counts["done"] >= counts["total"] and not missing_recap_indexes
+        else "ready"
+    )
+    state["recovered_at"] = _manual_now()
+    state["recovery_count"] = int(state.get("recovery_count") or 0) + 1
+    state["error"] = ""
+    _save_manual_session(state)
+    logger.info(
+        "Recovered manual session %s from Telegram payload (parts=%s done=%s)",
+        session_id,
+        counts["total"],
+        counts["done"],
+    )
+    return state
+
+
+def _parse_manual_timecode(value: str) -> float | None:
+    pieces = [p for p in str(value or "").split(":") if p != ""]
+    try:
+        numbers = [int(p) for p in pieces]
+    except (TypeError, ValueError):
+        return None
+    if len(numbers) == 2:
+        return float(numbers[0] * 60 + numbers[1])
+    if len(numbers) == 3:
+        return float(numbers[0] * 3600 + numbers[1] * 60 + numbers[2])
+    return None
+
+
+def _legacy_manual_caption_info(message) -> dict | None:
+    """Parse pre-recovery-token part captions (sent by older deploys)."""
+    if not isinstance(message, dict):
+        return None
+    caption = str(message.get("caption") or "")
+    match = re.search(
+        r"မူရင်းအပိုင်း\s*(\d+)\s*/\s*(\d+)\s*\(\s*([0-9:]+)\s*[–-]\s*([0-9:]+)\s*\)",
+        caption,
+    )
+    if not match:
+        match = re.search(r"မူရင်းအပိုင်း\s*(\d+)\s*/\s*(\d+)", caption)
+    if not match:
+        return None
+    media = message.get("video") or message.get("document") or {}
+    if not isinstance(media, dict):
+        return None
+    file_id = str(media.get("file_id") or "")
+    if not file_id:
+        return None
+    try:
+        index = int(match.group(1))
+        total = int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+    if index < 1 or total < index:
+        return None
+    start = _parse_manual_timecode(match.group(3)) if match.lastindex and match.lastindex >= 3 else None
+    end = _parse_manual_timecode(match.group(4)) if match.lastindex and match.lastindex >= 4 else None
+    try:
+        file_size = int(media.get("file_size") or 0)
+    except (TypeError, ValueError):
+        file_size = 0
+    return {
+        "index": index,
+        "total": total,
+        "file_id": file_id,
+        "file_size": file_size,
+        "start": start,
+        "end": end,
+        "message_id": message.get("message_id"),
+    }
+
+
+async def _rebuild_manual_session_from_legacy_message(
+    session_id: str,
+    chat_id: int,
+    message: dict,
+    part_index: int,
+    tracker=None,
+) -> dict:
+    """Best-effort rebuild for part messages sent before recovery tokens.
+
+    The tapped message itself contains the current two-minute original,
+    so that one part can always be recapped after a wipe.  Without the
+    original full-source reference, later windows cannot be extracted
+    (except when the source had a single part) and earlier delivered
+    recaps cannot be re-collected for a join.
+    """
+    info = _legacy_manual_caption_info(message)
+    if not info or int(info.get("index") or 0) != int(part_index):
+        raise ManualSessionError("no legacy recovery data on this message")
+
+    state = _create_manual_session(
+        session_id=str(session_id),
+        chat_id=int(chat_id),
+        reply_msg_id=int(info.get("message_id") or 0),
+        status_message_id=0,
+        source_spec={"kind": "url", "url": ""},
+        settings=get_user_settings(int(chat_id)),
+    )
+    if isinstance(state.get("source"), dict):
+        state["source"]["label"] = "Recovered Telegram part"
+        state["source"]["legacy_recovered"] = True
+
+    index = int(info["index"])
+    total = int(info["total"])
+    relative = f"source_segments/source_part_{index:04d}.mp4"
+    segment_path = _manual_path(state, relative)
+    os.makedirs(os.path.dirname(segment_path), exist_ok=True)
+    if tracker is not None:
+        await tracker.update(
+            "♻️ Session ပြန်ဆယ်နေပါသည် — ဒီအပိုင်းရဲ့ မူရင်းဗီဒီယိုကို Telegram က ပြန်ယူနေပါသည်...",
+            force=True,
+        )
+    downloaded_duration = await download_telegram_file(
+        str(info.get("file_id") or ""),
+        segment_path,
+        tracker,
+        expected_size=int(info.get("file_size") or 0),
+        raise_on_error=True,
+    )
+    actual_duration = float(probe_video_info(segment_path)[0] or 0) or float(
+        downloaded_duration or 0
+    )
+    if actual_duration <= 0:
+        raise ManualSessionError("recovered part video has no readable duration")
+
+    start = info.get("start")
+    if start is None:
+        start = float((index - 1) * SOURCE_SEGMENT_SECONDS)
+    end = info.get("end")
+    if end is None or float(end) <= float(start):
+        end = float(start) + actual_duration
+
+    parts: list[dict] = []
+    for number in range(1, total + 1):
+        window_start = float((number - 1) * SOURCE_SEGMENT_SECONDS)
+        window_end = window_start + float(SOURCE_SEGMENT_SECONDS)
+        status = "waiting"
+        if number < index:
+            status = "done"
+        elif number == index:
+            status = "ready"
+            window_start = float(start)
+            window_end = float(end)
+        part = {
+            "index": number,
+            "start": round(window_start, 3),
+            "end": round(window_end, 3),
+            "duration": round(max(0.0, window_end - window_start), 3),
+            "source_file": relative if number == index else "",
+            "script_file": "",
+            "status": status,
+            "message_id": int(info.get("message_id") or 0) or None
+            if number == index
+            else None,
+            "recap_file": f"recaps/recap_part_{number:04d}.mp4"
+            if number < index
+            else "",
+            "recap_duration_seconds": 0.0,
+            "attempts": 0,
+            "error": "",
+        }
+        if number < index:
+            part["recap_missing"] = True
+        parts.append(part)
+
+    state["parts"] = parts
+    if total == 1:
+        state["full_source_file"] = relative
+        if isinstance(state.get("source"), dict):
+            state["source"]["full_source_file"] = relative
+        state["source_duration_seconds"] = round(actual_duration, 3)
+    else:
+        state["legacy_partial"] = True
+        last_duration = actual_duration if index == total else float(SOURCE_SEGMENT_SECONDS)
+        state["source_duration_seconds"] = round(
+            float((total - 1) * SOURCE_SEGMENT_SECONDS) + last_duration, 3
+        )
+    try:
+        state["source_size_bytes"] = int(os.path.getsize(segment_path))
+    except Exception:
+        pass
+    state["current_part_index"] = index
+    state["status"] = "ready"
+    state["recovered_at"] = _manual_now()
+    state["recovery_count"] = int(state.get("recovery_count") or 0) + 1
+    state["error"] = ""
+    _save_manual_session(state)
+    logger.info(
+        "Recovered legacy manual session %s part %s/%s from Telegram message",
+        session_id,
+        index,
+        total,
+    )
+    return state
+
+
+async def _run_manual_session_recovery(
+    data: str,
+    chat_id: int,
+    message_id: int = None,
+    message: dict = None,
+) -> None:
+    """Rebuild a wiped session, then re-run the tapped button action."""
+    bits = str(data or "").split(":")
+    action = bits[1] if len(bits) > 1 else ""
+    session_id = bits[2] if len(bits) > 2 else ""
+    part_index = None
+    if action == "recap" and len(bits) == 4:
+        try:
+            part_index = int(bits[3])
+        except ValueError:
+            part_index = None
+    progress_id = await send_text(
+        chat_id,
+        "♻️ <b>Session ပြန်ဆယ်နေပါသည်...</b>\n"
+        "Server restart/deploy ကြောင့် session ဖိုင်တွေ ပျောက်သွားလို့ "
+        "မူရင်း source ကို ပြန်ယူပြီး session ပြန်ဆောက်နေပါသည်။ ခဏစောင့်ပေးပါ။",
+        reply_markup=job_progress_keyboard(),
+    )
+    tracker = (
+        ProgressTracker(chat_id, int(progress_id), job_id=session_id)
+        if progress_id
+        else _NullProgressTracker()
+    )
+    try:
+        payload = _manual_recovery_payload_from_message(message)
+        if payload and str(payload.get("sid") or "") == session_id:
+            await _rebuild_manual_session_from_payload(
+                payload,
+                int(chat_id),
+                tracker,
+                clicked_part_message_id=int(message_id)
+                if action == "recap" and message_id
+                else None,
+                need_current_segment=action in ("recap", "next"),
+                for_join=action == "join",
+            )
+        elif action == "recap" and part_index:
+            await _rebuild_manual_session_from_legacy_message(
+                session_id,
+                int(chat_id),
+                message or {},
+                int(part_index),
+                tracker,
+            )
+        else:
+            raise ManualSessionError("no recovery data on this message")
+        if progress_id:
+            await edit_text(
+                chat_id,
+                int(progress_id),
+                "✅ <b>Session ပြန်ရပါပြီ</b> — နှိပ်ထားသော အလုပ်ကို ဆက်လုပ်နေပါသည်...",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+        await _handle_manual_part_callback(
+            data,
+            int(chat_id),
+            message_id,
+            message=message,
+            _recovered=True,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Manual session recovery failed")
+        try:
+            _delete_manual_session(session_id)
+        except Exception:
+            pass
+        failure_text = (
+            "⌛ <b>Session ကို အလိုအလျောက် ပြန်ဆယ်လို့ မရပါ။</b>\n"
+            f"အသေးစိတ်: {_user_error_text(exc)}\n\n"
+            "Video/Link ကို ပြန်ပို့ကြည့်ပါ။"
+        )
+        if progress_id:
+            await edit_text(
+                chat_id,
+                int(progress_id),
+                failure_text,
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+        else:
+            await send_text(
+                chat_id, failure_text, reply_markup=main_menu_keyboard(chat_id)
+            )
+    finally:
+        MANUAL_RECOVERY_IN_PROGRESS.discard(session_id)
+
+
 def _manual_status_text(state: dict) -> str:
     counts = _manual_counts(state)
     settings = state.get("settings") or {}
@@ -8595,7 +9400,7 @@ def _manual_status_text(state: dict) -> str:
         )
     except (TypeError, ValueError):
         remaining_hours = 0.0
-    return (
+    text = (
         "🎬 <b>၂ မိနစ်အပိုင်းများ အခြေအနေ</b>\n"
         "━━━━━━━━━━━━━━━\n"
         f"📥 Source: {source_label} ({fmt_time(float(state.get('source_duration_seconds') or 0))})\n"
@@ -8613,6 +9418,10 @@ def _manual_status_text(state: dict) -> str:
         "နောက်အပိုင်းမရောက်ရင် <b>▶️ နောက်အပိုင်းပို့မယ်</b> ကို နှိပ်ပါ။ "
         "အပိုင်းတိုင်းပြီးမှ 🔗 ပြန်ဆက်နိုင်ပါမယ်။"
     )
+    recovery_line = _manual_recovery_line(state, max_token_chars=2400)
+    if recovery_line:
+        text += f"\n{recovery_line}"
+    return text
 
 
 def _manual_script_relative(part_index: int) -> str:
@@ -8794,12 +9603,8 @@ async def _extract_and_send_manual_part(
                 )
 
         if not existing_valid:
-            full_source = _manual_full_source_path(state)
-            if (
-                not full_source
-                or not os.path.exists(full_source)
-                or os.path.getsize(full_source) <= 0
-            ):
+            full_source = await _ensure_manual_full_source(state, tracker)
+            if not full_source:
                 raise ManualSessionError(
                     "မူရင်းဖိုင်အပြည့် မရှိတော့လို့ နောက်အပိုင်းကို ခွဲထုတ်လို့မရပါ။ "
                     "Session ကို ပယ်၍ Source ကို ပြန်ပို့ပါ။"
@@ -8941,6 +9746,13 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
             f"({fmt_time(float(part.get('start') or 0))}–{fmt_time(float(part.get('end') or 0))})\n"
             "🎬 Recap လုပ်မယ် ကို နှိပ်မှသာ ဒီအပိုင်းတစ်ခုတည်းအတွက် Script ရေးပြီး Recap လုပ်ပါမယ်။"
         )
+        # The button lives on the last upload file; embed the session
+        # recovery token in that caption so this exact button can rebuild
+        # the session after a deploy/restart wipes the ephemeral disk.
+        recovery_budget = max(0, 1000 - len(base_caption) - 110)
+        recovery_token = _build_manual_recovery_token(
+            state, anchor_index=index, max_token_chars=recovery_budget
+        )
         message_id = None
         for file_index, path_to_send in enumerate(files_to_send, start=1):
             if not os.path.exists(path_to_send) or os.path.getsize(path_to_send) <= 0:
@@ -8954,6 +9766,8 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
                 caption += f"\n📤 Telegram upload အပိုင်း {file_index}/{len(files_to_send)}"
                 if file_index < len(files_to_send):
                     caption += " — Recap ခလုတ်ကို နောက်ဆုံး upload အောက်မှာ ထားပါတယ်။"
+            if file_index == len(files_to_send) and recovery_token:
+                caption += f"\n♻️ {MANUAL_RECOVERY_MARKER}{recovery_token}"
             payload = {"chat_id": str(chat_id), "caption": caption}
             if file_index == len(files_to_send):
                 payload["reply_markup"] = json.dumps(
@@ -8982,6 +9796,12 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
                         message_id = int(result_data["message_id"])
                     except (TypeError, ValueError):
                         message_id = None
+                if isinstance(result_data, dict):
+                    media_data = (
+                        result_data.get("video") or result_data.get("document") or {}
+                    )
+                    if isinstance(media_data, dict) and media_data.get("file_id"):
+                        part["source_telegram_file_id"] = str(media_data["file_id"])
         return message_id
     finally:
         for candidate in files_to_send:
@@ -9297,10 +10117,36 @@ async def _run_manual_part_recap(
             else _NullProgressTracker()
         )
         source_path = _manual_path(state, str(part.get("source_file") or ""))
-        if not os.path.exists(source_path):
-            raise ManualSessionError(
-                "ဒီအပိုင်းရဲ့ မူရင်း file က session ထဲမှာ မရှိတော့ပါ။ Source ကို ပြန်ပို့ကြည့်ပါ။"
-            )
+        if not os.path.exists(source_path) or os.path.getsize(source_path) <= 0:
+            # The segment file can be gone after an ephemeral-disk wipe
+            # even when state.json survived (or was just rebuilt).  Re-cut
+            # it from the retained/re-downloaded full source instead of
+            # failing the click.
+            full_source = await _ensure_manual_full_source(state, tracker)
+            recovered_segment = False
+            if full_source:
+                os.makedirs(os.path.dirname(source_path), exist_ok=True)
+                segment_start = float(part.get("start") or 0)
+                segment_duration = float(
+                    part.get("duration")
+                    or (float(part.get("end") or 0) - segment_start)
+                )
+                if segment_duration > 0:
+                    recovered_segment = await asyncio.to_thread(
+                        _extract_source_segment_file,
+                        full_source,
+                        source_path,
+                        segment_start,
+                        segment_duration,
+                    )
+            if (
+                not recovered_segment
+                or not os.path.exists(source_path)
+                or os.path.getsize(source_path) <= 0
+            ):
+                raise ManualSessionError(
+                    "ဒီအပိုင်းရဲ့ မူရင်း file က session ထဲမှာ မရှိတော့ပါ။ Source ကို ပြန်ပို့ကြည့်ပါ။"
+                )
         try:
             script = _load_manual_script(state, part)
         except Exception:
@@ -9399,6 +10245,7 @@ async def _run_manual_part_recap(
             f"📤 Recap အပိုင်း {part_index}/{total_parts} ကို ပို့နေပါသည်...",
             force=True,
         )
+        delivered_recap_file_ids: list[str] = []
         for file_index, path_to_send in enumerate(files_to_send, start=1):
             if not os.path.exists(path_to_send) or os.path.getsize(path_to_send) <= 0:
                 raise RuntimeError("Recap file မတွေ့ပါ။")
@@ -9425,6 +10272,13 @@ async def _run_manual_part_recap(
                     (result or {}).get("description") or "Telegram upload failed"
                 )
                 raise RuntimeError(f"Recap upload failed: {description}")
+            result_data = (result or {}).get("result") or {}
+            if isinstance(result_data, dict):
+                media_data = (
+                    result_data.get("video") or result_data.get("document") or {}
+                )
+                if isinstance(media_data, dict) and media_data.get("file_id"):
+                    delivered_recap_file_ids.append(str(media_data["file_id"]))
 
         async with MANUAL_SESSION_LOCK:
             fresh = _load_manual_session(session_id)
@@ -9433,6 +10287,10 @@ async def _run_manual_part_recap(
                 raise ManualSessionError("manual part disappeared")
             fresh_part["status"] = "done"
             fresh_part["recap_file"] = output_relative
+            if len(delivered_recap_file_ids) == 1:
+                fresh_part["recap_file_id"] = delivered_recap_file_ids[0]
+            elif len(delivered_recap_file_ids) > 1:
+                fresh_part["recap_file_ids"] = list(delivered_recap_file_ids)
             fresh_part["recap_duration_seconds"] = round(float(rendered_duration), 3)
             fresh_part["finished_at"] = _manual_now()
             fresh_part["error"] = ""
@@ -10186,6 +11044,8 @@ async def _handle_manual_part_callback(
     data: str,
     chat_id: int,
     message_id: int = None,
+    message: dict = None,
+    _recovered: bool = False,
 ) -> bool:
     if data == "part:noop":
         return True
@@ -10201,6 +11061,60 @@ async def _handle_manual_part_callback(
         return True
     action = bits[1]
     session_id = bits[2]
+
+    if action in ("recap", "next", "status", "join") and not _recovered:
+        try:
+            _existing_state = _load_manual_session(session_id)
+        except Exception:
+            _existing_state = None
+        if (
+            _existing_state is not None
+            and _manual_session_expired(_existing_state)
+            and str(_existing_state.get("status") or "")
+            not in ("completed", "cancelled", "expired")
+        ):
+            # The files survived but the TTL passed.  Tapping a session
+            # button is explicit intent to continue, so revive the
+            # session in place instead of deleting it as expired.
+            try:
+                async with MANUAL_SESSION_LOCK:
+                    _fresh_state = _load_manual_session(session_id)
+                    if _manual_session_expired(_fresh_state):
+                        _fresh_state["expires_at_unix"] = (
+                            time.time() + MANUAL_SESSION_TTL_HOURS * 3600
+                        )
+                        _save_manual_session(_fresh_state)
+                        logger.info(
+                            "Revived expired manual session %s on button tap",
+                            session_id,
+                        )
+            except Exception:
+                pass
+        _session_missing = _existing_state is None
+        if _session_missing:
+            _payload = _manual_recovery_payload_from_message(message)
+            _can_recover = bool(
+                _payload and str(_payload.get("sid") or "") == session_id
+            ) or (
+                action == "recap"
+                and _legacy_manual_caption_info(message) is not None
+            )
+            if _can_recover:
+                if session_id in MANUAL_RECOVERY_IN_PROGRESS:
+                    await send_text(
+                        chat_id,
+                        "♻️ Session ပြန်ဆယ်နေဆဲပါ — ပြီးရင် အလိုအလျောက် ဆက်လုပ်ပေးပါမယ်။",
+                        reply_markup=manual_control_keyboard(session_id),
+                    )
+                    return True
+                MANUAL_RECOVERY_IN_PROGRESS.add(session_id)
+                _spawn_background(
+                    _run_manual_session_recovery(
+                        data, int(chat_id), message_id, message
+                    ),
+                    name=f"manual-recovery-{session_id}",
+                )
+                return True
 
     if action == "recap":
         if len(bits) != 4:
@@ -10810,7 +11724,9 @@ async def handle_callback(cb: dict):
     await ensure_persistent_keyboard(chat_id)
 
     if data.startswith("part:"):
-        await _handle_manual_part_callback(data, int(chat_id), message_id)
+        await _handle_manual_part_callback(
+            data, int(chat_id), message_id, message=msg
+        )
         return
 
     async def show(text, markup):
@@ -11048,7 +11964,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v4.2-script-generation-fix"
+BUILD_VERSION = "v4.3-session-recovery-fix"
 BUILD_FEATURES = 20
 
 
@@ -11060,6 +11976,7 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
+        "manual_session_recovery": "telegram_message_payload_v1_with_legacy_caption_fallback",
         "direct_script_generation": "multi_model_retry_robust_json_empty_scene_recovery",
         "direct_script_models": PREFERRED_MODELS,
         "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
@@ -11111,6 +12028,7 @@ async def health():
         "app": "rednote-bot",
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
+        "manual_session_recovery": "telegram_message_payload_v1_with_legacy_caption_fallback",
         "direct_script_generation": "multi_model_retry_robust_json_empty_scene_recovery",
         "direct_script_models": PREFERRED_MODELS,
         "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",

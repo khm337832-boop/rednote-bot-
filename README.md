@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v4.2-script-generation-fix` downloads the complete source,
+Version `v4.3-session-recovery-fix` downloads the complete source,
 plans fixed **2-minute windows**, physically extracts and sends only the
 first/current window with a **🎬 Recap လုပ်မယ်** button, and waits for the
 user. Clicking that button writes the script and renders only that one
@@ -71,10 +71,19 @@ source duration is, Telegram intake follows this exact order:
    deletes the session.
 
 Sessions are stored below `WORK_ROOT/manual_sessions/` and expire after
-`MANUAL_SESSION_TTL_HOURS` (24 by default). Render's disk is ephemeral;
-the saved state survives an ordinary process restart on the same
-instance but not replacement of the container/filesystem. Discarding a
-session removes its retained files.
+`MANUAL_SESSION_TTL_HOURS` (24 by default). Render's disk is ephemeral
+and is wiped on every deploy/restart, so each original-part caption and
+session status message also carries a compact `RNB1.` recovery token
+(source reference, part plan, story context, and delivered recap
+Telegram file_ids). If a session button is tapped after the disk was
+wiped, the bot rebuilds the session from that token — re-downloading
+the full source and already-delivered recaps — and then continues the
+tapped action; part messages sent by older versions are recovered from
+their caption plus the part video itself when possible. If only the
+TTL passed but the files survived, tapping a session button revives
+the session instead of expiring it. `WORK_ROOT` may be set to a mounted
+persistent disk path to keep session files on disk across deploys as
+well. Discarding a session removes its retained files.
 
 `RECAP_FLOW=auto` retains the v3.6 compatibility behaviour: automatic
 per-part recap and automatic join, including the optional n8n handoff
@@ -200,7 +209,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v4.2-script-generation-fix"`,
+URLs must show `"version":"v4.3-session-recovery-fix"`,
 `"recap_flow":"manual_sequential_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
 `"segment_pipeline":"download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"`,
@@ -210,7 +219,8 @@ URLs must show `"version":"v4.2-script-generation-fix"`,
 `render_git_repo_slug`, `render_git_commit`, and `render_git_branch`.
 They must also show
 `"direct_script_generation":"multi_model_retry_robust_json_empty_scene_recovery"`
-and the configured `direct_script_models` list.
+and the configured `direct_script_models` list, plus
+`"manual_session_recovery":"telegram_message_payload_v1_with_legacy_caption_fallback"`.
 If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
 URL belongs to a different/older service or that service is not deploying
 this repository's `main`; fixing that Render service's repository, branch,
