@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v4.1-telegram-link-fix` downloads the complete source,
+Version `v4.2-script-generation-fix` downloads the complete source,
 plans fixed **2-minute windows**, physically extracts and sends only the
 first/current window with a **🎬 Recap လုပ်မယ်** button, and waits for the
 user. Clicking that button writes the script and renders only that one
@@ -108,6 +108,19 @@ itself. A JSON `pronoun` field alone does not pass. Third-person scenes are
 sent back for first-person repair, and the job fails rather than delivering
 a third-person summary if repair does not succeed.
 
+## Direct script-generation recovery
+
+The click-triggered Gemini script writer does not depend on only the first
+preferred model or on perfectly bare JSON. It tries the preferred models in
+order, records safe finish/block/token diagnostics without logging secrets,
+accepts fenced or lightly wrapped JSON and common scene/text key aliases,
+salvages complete scenes from a truncated response, and—if a response has
+no usable scenes—requests a complete replacement script with a shorter,
+strict prompt instead of trying to “fill gaps” in an empty list. If every
+attempt still returns no usable scenes, the part fails with that specific
+Gemini reason rather than a misleading `0/<target> chars` duration error.
+The measured 90%-duration and per-scene first-person gates remain unchanged.
+
 ## The 20 features (⚙️ ဆက်တင်များ)
 
 1. 🎯 Final ကြာချိန် — **actual final video duration** as % of source duration (90–100%; **90% minimum for every job**, default **90%**)
@@ -187,7 +200,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v4.1-telegram-link-fix"`,
+URLs must show `"version":"v4.2-script-generation-fix"`,
 `"recap_flow":"manual_sequential_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
 `"segment_pipeline":"download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"`,
@@ -195,6 +208,9 @@ URLs must show `"version":"v4.1-telegram-link-fix"`,
 `"telegram_link_handling":"profile_rejected_public_post_web_fallback"`, a current
 `yt_dlp_version`, the service's real `public_host`, and the deployed
 `render_git_repo_slug`, `render_git_commit`, and `render_git_branch`.
+They must also show
+`"direct_script_generation":"multi_model_retry_robust_json_empty_scene_recovery"`
+and the configured `direct_script_models` list.
 If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
 URL belongs to a different/older service or that service is not deploying
 this repository's `main`; fixing that Render service's repository, branch,
