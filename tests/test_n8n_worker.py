@@ -1721,8 +1721,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "RedNote link",
             "၂ မိနစ်စီ",
             "၃ နာရီ = ၉၀ ပိုင်း",
-            "တစ်ပိုင်းချင်း",
-            "Script ကို အရင်ရေးပြီးသိမ်းမယ်",
+            "အပိုင်းတစ်ခုချင်း",
+            "အပိုင်းအားလုံးကို ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ",
+            "ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပြီး",
+            "နောက် ၂ မိနစ်အပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပို့",
             "🎬 Recap လုပ်မယ်",
             "Auto မ Run ဘူး",
             "20MB အောက်",
@@ -2064,11 +2066,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 health.json()["first_person_enforcement"], "per_scene_validated"
             )
             self.assertEqual(health.json()["source_segment_seconds"], 120)
-            self.assertEqual(health.json()["recap_flow"], "manual_per_part")
+            self.assertEqual(health.json()["recap_flow"], "manual_sequential_per_part")
             self.assertTrue(health.json()["manual_parts_enabled"])
             self.assertEqual(
                 health.json()["segment_pipeline"],
-                "download_split_120s_script_first_send_originals_click_recap_explicit_join",
+                "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join",
             )
             self.assertEqual(
                 health.json()["input_types"],
@@ -2103,10 +2105,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(root.json()["minimum_script_coverage_percent"], 90)
             self.assertEqual(root.json()["target_final_duration_percent"], 90)
             self.assertEqual(root.json()["source_segment_seconds"], 120)
-            self.assertEqual(root.json()["recap_flow"], "manual_per_part")
+            self.assertEqual(root.json()["recap_flow"], "manual_sequential_per_part")
             self.assertEqual(
                 root.json()["segment_pipeline"],
-                "download_split_120s_script_first_send_originals_click_recap_explicit_join",
+                "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join",
             )
             self.assertTrue(root.json()["worker_api_configured"])
 
@@ -2754,71 +2756,20 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(script["metrics"]["actual_chars"], 27)
         fake_tts.assert_not_awaited()
 
-    async def test_manual_flow_scripts_first_then_sends_original_parts_with_buttons(self):
+    async def test_manual_flow_sends_only_first_part_without_scripting_rest(self):
         events = []
-        script_contexts = []
+        extract_calls = []
 
         async def fake_telegram_download(_file_id, output_path, _tracker=None, **_kwargs):
             Path(output_path).write_bytes(b"x" * 10001)
             return 250.0
 
-        async def fake_prepare(_source_path, work_dir, _duration, _seconds, tracker=None, **_kwargs):
-            segment_dir = Path(work_dir) / "source_segments"
-            segment_dir.mkdir(parents=True, exist_ok=True)
-            segments = []
-            for index, start, end in ((1, 0, 120), (2, 120, 240), (3, 240, 250)):
-                path = segment_dir / f"source_part_{index:04d}.mp4"
-                path.write_bytes(b"s" * 100)
-                segments.append(
-                    {
-                        "index": index,
-                        "path": str(path),
-                        "start": float(start),
-                        "end": float(end),
-                        "duration": float(end - start),
-                    }
-                )
-            return segments
-
-        async def fake_generate_script(
-            _chunk_path,
-            actual_dur,
-            start,
-            end,
-            story_context,
-            part_num,
-            _tracker,
-            _settings,
-        ):
-            events.append(("script", part_num))
-            script_contexts.append(dict(story_context))
-            summary = {
-                "characters": ["Hero", "Mina"],
-                "summary": f"after part {part_num}",
-                "last_scene": f"ending {part_num}",
-                "protagonist": "Hero",
-                "pronoun": MALE_PRONOUN,
-            }
-            return {
-                "version": 1,
-                "part_index": part_num,
-                "global_start": start,
-                "global_end": end,
-                "duration": actual_dur,
-                "scenes": [
-                    {
-                        "start": 0,
-                        "end": actual_dur,
-                        "burmese": first_person_text(40),
-                    }
-                ],
-                "cuts": [],
-                "protagonist": "Hero",
-                "pronoun": MALE_PRONOUN,
-                "story_context_before": dict(story_context),
-                "story_context_after": summary,
-                "metrics": {"target_chars": 40, "actual_chars": 40},
-            }
+        def fake_extract(_source_path, output_path, start, duration):
+            index = int(Path(output_path).stem.rsplit("_", 1)[-1])
+            extract_calls.append((index, float(start), float(duration)))
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"s" * 100)
+            return True
 
         async def fake_upload(method, payload, _field, file_name, file_path, _mime):
             events.append(("upload", file_name))
@@ -2832,14 +2783,23 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 return (10.0, 64, 64)
             return (120.0, 64, 64)
 
+        prepare_mock = AsyncMock(
+            side_effect=AssertionError("manual intake must not split every part")
+        )
+        generate_mock = AsyncMock(
+            side_effect=AssertionError("manual intake must not script before click")
+        )
         self.start_patch(
             patch.object(bot, "download_telegram_file", new=fake_telegram_download)
         )
         self.start_patch(
-            patch.object(bot, "_prepare_source_segments", new=fake_prepare)
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
         )
         self.start_patch(
-            patch.object(bot, "generate_chunk_script", new=fake_generate_script)
+            patch.object(bot, "_prepare_source_segments", new=prepare_mock)
+        )
+        self.start_patch(
+            patch.object(bot, "generate_chunk_script", new=generate_mock)
         )
         self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
         self.mock_tg_upload.side_effect = fake_upload
@@ -2856,53 +2816,46 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertEqual(
-            events,
-            [
-                ("script", 1),
-                ("script", 2),
-                ("script", 3),
-                ("upload", "original_part_0001.mp4"),
-                ("upload", "original_part_0002.mp4"),
-                ("upload", "original_part_0003.mp4"),
-            ],
-        )
-        self.assertEqual(script_contexts[1]["summary"], "after part 1")
-        self.assertEqual(script_contexts[2]["summary"], "after part 2")
-        self.assertEqual(self.mock_tg_upload.await_count, 3)
+        self.assertEqual(extract_calls, [(1, 0.0, 120.0)])
+        self.assertEqual(events, [("upload", "original_part_0001.mp4")])
+        prepare_mock.assert_not_awaited()
+        generate_mock.assert_not_awaited()
+        self.assertEqual(self.mock_tg_upload.await_count, 1)
 
         state = bot._find_manual_session_for_chat(16001)
         self.assertIsNotNone(state)
         session_id = str(state["session_id"])
         self.assertEqual(state["status"], "ready")
+        self.assertEqual(state["current_part_index"], 1)
         self.assertEqual(
-            [part["status"] for part in state["parts"]], ["ready"] * 3
+            [part["status"] for part in state["parts"]],
+            ["ready", "waiting", "waiting"],
         )
-        for index, call in enumerate(
-            self.mock_tg_upload.await_args_list, start=1
-        ):
-            payload = call.args[1]
-            markup = json.loads(payload["reply_markup"])
-            self.assertEqual(
-                markup,
-                bot.manual_part_keyboard(session_id, index, "ready"),
-            )
-            self.assertEqual(
-                markup["inline_keyboard"][0][0]["callback_data"],
-                f"part:recap:{session_id}:{index}",
-            )
-        full_script = json.loads(
-            (Path(state["session_dir"]) / "full_script.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        self.assertEqual(len(full_script["parts"]), 3)
+        self.assertTrue(state["parts"][0]["source_file"])
         self.assertEqual(
-            full_script["parts"][1]["scenes"][0]["global_start"], 120.0
+            [part["source_file"] for part in state["parts"][1:]], ["", ""]
+        )
+        self.assertEqual(
+            [part["script_file"] for part in state["parts"]], ["", "", ""]
+        )
+        self.assertIsNotNone(state["parts"][0]["message_id"])
+        self.assertEqual(
+            [part["message_id"] for part in state["parts"][1:]], [None, None]
+        )
+        full_source = Path(state["session_dir"]) / state["full_source_file"]
+        self.assertTrue(full_source.exists())
+        self.assertFalse((Path(state["session_dir"]) / "full_script.json").exists())
+
+        payload = self.mock_tg_upload.await_args.args[1]
+        markup = json.loads(payload["reply_markup"])
+        self.assertEqual(markup, bot.manual_part_keyboard(session_id, 1, "ready"))
+        self.assertEqual(
+            markup["inline_keyboard"][0][0]["callback_data"],
+            f"part:recap:{session_id}:1",
         )
         self.assertNotIn(16001, bot.ACTIVE_JOBS)
 
-    async def test_manual_click_recaps_only_clicked_part_and_join_is_explicit(self):
+    async def test_manual_sequential_click_recaps_current_then_sends_next_and_join_is_explicit(self):
         chat_id = int(bot.ADMIN_ID)
         session_id = "manual-test-1"
         state = bot._create_manual_session(
@@ -2914,62 +2867,93 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
         )
         session_dir = Path(state["session_dir"])
-        parts = []
-        for index, start in ((1, 0), (2, 10)):
-            relative = f"source_segments/source_part_{index:04d}.mp4"
-            source_path = session_dir / relative
-            source_path.parent.mkdir(parents=True, exist_ok=True)
-            source_path.write_bytes(b"s" * 100)
-            part = {
-                "index": index,
-                "start": float(start),
-                "end": float(start + 10),
+        (session_dir / "source.mp4").write_bytes(b"x" * 10001)
+        first_relative = "source_segments/source_part_0001.mp4"
+        first_source = session_dir / first_relative
+        first_source.parent.mkdir(parents=True, exist_ok=True)
+        first_source.write_bytes(b"s" * 100)
+        parts = [
+            {
+                "index": 1,
+                "start": 0.0,
+                "end": 10.0,
                 "duration": 10.0,
-                "source_file": relative,
+                "source_file": first_relative,
                 "script_file": "",
                 "status": "ready",
-                "message_id": 500 + index,
+                "message_id": 501,
                 "recap_file": "",
                 "recap_duration_seconds": 0.0,
                 "attempts": 0,
                 "error": "",
-            }
-            bot._save_manual_script(
-                state,
-                part,
-                {
-                    "version": 1,
-                    "part_index": index,
-                    "scenes": [
-                        {
-                            "start": 0,
-                            "end": 10,
-                            "burmese": first_person_text(30),
-                        }
-                    ],
-                    "cuts": [],
-                    "protagonist": "Hero",
-                    "pronoun": MALE_PRONOUN,
-                    "story_context_before": {},
-                    "story_context_after": {
-                        "characters": ["Hero"],
-                        "summary": f"after {index}",
-                        "last_scene": "scene",
-                        "protagonist": "Hero",
-                        "pronoun": MALE_PRONOUN,
-                    },
-                    "metrics": {"target_chars": 30},
-                },
-            )
-            parts.append(part)
+            },
+            {
+                "index": 2,
+                "start": 10.0,
+                "end": 20.0,
+                "duration": 10.0,
+                "source_file": "",
+                "script_file": "",
+                "status": "waiting",
+                "message_id": None,
+                "recap_file": "",
+                "recap_duration_seconds": 0.0,
+                "attempts": 0,
+                "error": "",
+            },
+        ]
         state["source_duration_seconds"] = 20.0
+        state["full_source_file"] = "source.mp4"
+        state["current_part_index"] = 1
         state["parts"] = parts
         state["status"] = "ready"
         bot._save_manual_session(state)
 
+        script_calls = []
+        script_contexts = []
         render_calls = []
+        extract_calls = []
         uploaded = []
         concat_calls = []
+
+        async def fake_generate_script(
+            _chunk_path,
+            actual_dur,
+            start,
+            end,
+            story_context,
+            part_num,
+            _tracker,
+            _settings,
+        ):
+            script_calls.append(part_num)
+            script_contexts.append(dict(story_context))
+            return {
+                "version": 1,
+                "part_index": part_num,
+                "global_start": start,
+                "global_end": end,
+                "duration": actual_dur,
+                "scenes": [
+                    {
+                        "start": 0,
+                        "end": actual_dur,
+                        "burmese": first_person_text(30),
+                    }
+                ],
+                "cuts": [],
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "story_context_before": dict(story_context),
+                "story_context_after": {
+                    "characters": ["Hero", "Mina"],
+                    "summary": f"after {part_num}",
+                    "last_scene": f"scene {part_num}",
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                },
+                "metrics": {"target_chars": 30, "actual_chars": 30},
+            }
 
         async def fake_render(
             _chunk_path,
@@ -2987,6 +2971,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(b"r" * 100)
             return output_path, script
+
+        def fake_extract(_source_path, output_path, start, duration):
+            index = int(Path(output_path).stem.rsplit("_", 1)[-1])
+            extract_calls.append((index, float(start), float(duration)))
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"s" * 100)
+            return True
 
         async def fake_upload(_method, _payload, _field, file_name, _path, _mime):
             uploaded.append(file_name)
@@ -3007,7 +2998,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             return (10.0, 64, 64)
 
         self.start_patch(
+            patch.object(bot, "generate_chunk_script", new=fake_generate_script)
+        )
+        self.start_patch(
             patch.object(bot, "render_chunk_recap_from_script", new=fake_render)
+        )
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
         )
         self.start_patch(patch.object(bot, "_concat_video_parts", new=fake_concat))
         self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
@@ -3026,17 +3023,39 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
+        # A future part cannot be recapped before the current one.
+        self.mock_send_text.reset_mock()
+        await bot._handle_manual_part_callback(
+            f"part:recap:{session_id}:2", chat_id, 502
+        )
+        self.assertEqual(script_calls, [])
+        self.assertEqual(render_calls, [])
+        self.assertEqual(extract_calls, [])
+        self.assertEqual(uploaded, [])
+        self.assertIn("လက်ရှိပို့ထားတဲ့အပိုင်း", self.mock_send_text.await_args.args[1])
+
+        # Clicking part 1 scripts/renders only part 1, then extracts and
+        # sends only original part 2.
         await bot.process_admin_update(
-            callback_update(f"part:recap:{session_id}:2", 502)
+            callback_update(f"part:recap:{session_id}:1", 501)
         )
         task = bot.MANUAL_RENDER_TASKS[session_id]
         await asyncio.wait_for(task, timeout=2)
 
-        self.assertEqual(render_calls, [2])
-        self.assertEqual(uploaded, ["recap_part_0002.mp4"])
+        self.assertEqual(script_calls, [1])
+        self.assertEqual(script_contexts[0]["summary"], "")
+        self.assertEqual(render_calls, [1])
+        self.assertEqual(extract_calls, [(2, 10.0, 10.0)])
+        self.assertEqual(
+            uploaded,
+            ["recap_part_0001.mp4", "original_part_0002.mp4"],
+        )
         state = bot._load_manual_session(session_id)
-        self.assertEqual(bot._manual_part(state, 1)["status"], "ready")
-        self.assertEqual(bot._manual_part(state, 2)["status"], "done")
+        self.assertEqual(bot._manual_part(state, 1)["status"], "done")
+        self.assertEqual(bot._manual_part(state, 2)["status"], "ready")
+        self.assertIsNotNone(bot._manual_part(state, 2)["message_id"])
+        self.assertEqual(state["current_part_index"], 2)
+        self.assertEqual(state["story_context"]["summary"], "after 1")
         self.assertNotIn(chat_id, bot.ACTIVE_JOBS)
 
         self.mock_send_text.reset_mock()
@@ -3048,17 +3067,36 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "မပြီးသေးပါ", self.mock_send_text.await_args.args[1]
         )
 
+        part_two_message = int(bot._manual_part(state, 2)["message_id"])
         await bot.process_admin_update(
-            callback_update(f"part:recap:{session_id}:1", 501)
+            callback_update(
+                f"part:recap:{session_id}:2", part_two_message
+            )
         )
         task = bot.MANUAL_RENDER_TASKS[session_id]
         await asyncio.wait_for(task, timeout=2)
-        self.assertEqual(render_calls, [2, 1])
+
+        self.assertEqual(script_calls, [1, 2])
+        self.assertEqual(script_contexts[1]["summary"], "after 1")
+        self.assertEqual(render_calls, [1, 2])
+        self.assertEqual(extract_calls, [(2, 10.0, 10.0)])
+        self.assertEqual(uploaded[-1], "recap_part_0002.mp4")
         state = bot._load_manual_session(session_id)
         self.assertEqual(state["status"], "ready_to_join")
+        self.assertIsNone(state["current_part_index"])
+        self.assertEqual(state["story_context"]["summary"], "after 2")
+
+        # The recovery Next button must not extract/send anything after
+        # every part is done; it points the user to the explicit join.
+        self.mock_send_text.reset_mock()
+        await bot._handle_manual_part_callback(
+            f"part:next:{session_id}", chat_id, 602
+        )
+        self.assertEqual(extract_calls, [(2, 10.0, 10.0)])
+        self.assertIn("ပြန်ဆက်မယ်", self.mock_send_text.await_args.args[1])
 
         await bot._handle_manual_part_callback(
-            f"part:join:{session_id}", chat_id, 602
+            f"part:join:{session_id}", chat_id, 603
         )
         task = bot.MANUAL_RENDER_TASKS[session_id]
         await asyncio.wait_for(task, timeout=2)
@@ -3071,6 +3109,90 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(bot._find_manual_session_for_chat(chat_id))
         self.assertFalse(session_dir.exists())
         self.mock_bump_stat.assert_called_with(chat_id, "done")
+
+    async def test_manual_next_button_retries_failed_next_original(self):
+        chat_id = 19001
+        session_id = "manual-next-retry"
+        state = bot._create_manual_session(
+            session_id=session_id,
+            chat_id=chat_id,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/next"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        session_dir = Path(state["session_dir"])
+        (session_dir / "source.mp4").write_bytes(b"x" * 10001)
+        state["full_source_file"] = "source.mp4"
+        state["current_part_index"] = 2
+        state["status"] = "failed"
+        state["parts"] = [
+            {
+                "index": 1,
+                "start": 0.0,
+                "end": 10.0,
+                "duration": 10.0,
+                "source_file": "",
+                "script_file": "",
+                "status": "done",
+                "message_id": 501,
+                "recap_file": "recaps/recap_part_0001.mp4",
+                "recap_duration_seconds": 9.0,
+                "attempts": 1,
+                "error": "",
+            },
+            {
+                "index": 2,
+                "start": 10.0,
+                "end": 20.0,
+                "duration": 10.0,
+                "source_file": "",
+                "script_file": "",
+                "status": "extract_failed",
+                "message_id": None,
+                "recap_file": "",
+                "recap_duration_seconds": 0.0,
+                "attempts": 0,
+                "error": "previous extraction interrupted",
+            },
+        ]
+        bot._save_manual_session(state)
+
+        extract_calls = []
+        uploaded = []
+
+        def fake_extract(_source_path, output_path, start, duration):
+            extract_calls.append((float(start), float(duration)))
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"s" * 100)
+            return True
+
+        async def fake_upload(_method, _payload, _field, file_name, _path, _mime):
+            uploaded.append(file_name)
+            return {"ok": True, "result": {"message_id": 502}}
+
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
+        )
+        self.start_patch(
+            patch.object(bot, "probe_video_info", return_value=(10.0, 64, 64))
+        )
+        self.mock_tg_upload.side_effect = fake_upload
+
+        await bot._handle_manual_part_callback(
+            f"part:next:{session_id}", chat_id, 700
+        )
+        task = bot.MANUAL_RENDER_TASKS[session_id]
+        await asyncio.wait_for(task, timeout=2)
+
+        self.assertEqual(extract_calls, [(10.0, 10.0)])
+        self.assertEqual(uploaded, ["original_part_0002.mp4"])
+        state = bot._load_manual_session(session_id)
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(state["current_part_index"], 2)
+        self.assertEqual(bot._manual_part(state, 2)["status"], "ready")
+        self.assertEqual(bot._manual_part(state, 2)["message_id"], 502)
+        self.assertNotIn(chat_id, bot.ACTIVE_JOBS)
 
     async def test_share_text_extracts_rednote_url(self):
         chat_id = int(bot.ADMIN_ID)
@@ -3230,6 +3352,29 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reset["parts"][0]["status"], "failed")
         self.assertFalse(reset["cancel_requested"])
         self.assertNotIn("manual-stale-1", bot.CANCELLED_JOBS)
+
+    def test_stale_manual_next_part_is_reset_after_restart(self):
+        state = bot._create_manual_session(
+            session_id="manual-stale-next",
+            chat_id=18002,
+            reply_msg_id=1,
+            status_message_id=2,
+            source_spec={"kind": "url", "url": "https://videos.example/stale-next"},
+            settings=bot._with_required_coverage(bot.DEFAULT_SETTINGS),
+        )
+        state["parts"] = [
+            {"index": 1, "status": "done", "start": 0, "end": 10},
+            {"index": 2, "status": "extracting", "start": 10, "end": 20},
+        ]
+        state["status"] = "sending_next"
+        state["current_part_index"] = 2
+        bot._save_manual_session(state)
+
+        self.assertEqual(bot._reset_stale_manual_sessions_after_restart(), 1)
+        reset = bot._load_manual_session("manual-stale-next")
+        self.assertEqual(reset["status"], "ready")
+        self.assertEqual(reset["parts"][1]["status"], "extract_failed")
+        self.assertEqual(reset["current_part_index"], 2)
 
     async def test_n8n_forwarding_failure_falls_back_to_direct_pipeline(self):
         self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))

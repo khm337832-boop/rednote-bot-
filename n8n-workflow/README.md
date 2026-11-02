@@ -6,7 +6,7 @@
 - **n8n** က အဆင့်များကို အစဉ်လိုက် စီမံပါသည်။
 - **Render bot server** ကပဲ yt-dlp၊ ffmpeg၊ Gemini၊ Whisper နှင့် Telegram upload စတဲ့ လေးလံသည့် အလုပ်များကို ၎င်း၏ authenticated worker API မှတစ်ဆင့် လုပ်ပါသည်။
 
-> **v3.8 အရေးကြီးချက်:** Telegram default သည် `RECAP_FLOW=manual` ဖြစ်ပြီး ၂ မိနစ်မူရင်းအပိုင်းတစ်ခုချင်းအောက်က **🎬 Recap လုပ်မယ်** ခလုတ်ကို နှိပ်မှသာ direct render လုပ်ပါသည်။ Manual mode တွင် Telegram job ကို n8n သို့ မပို့ပါ။ အောက်ပါ n8n automatic flow ကို Telegram URL job အတွက် သုံးချင်လျှင် Render တွင် `RECAP_FLOW=auto` နှင့် `PIPELINE_MODE=n8n` နှစ်ခုလုံး ထားရပါမည်။ Worker API ကိုယ်တိုင်ကတော့ mode နှစ်မျိုးလုံးတွင် ဆက်ရှိနေပါသည်။
+> **v4.0 အရေးကြီးချက်:** Telegram default သည် `RECAP_FLOW=manual` ဖြစ်ပြီး ပထမ/လက်ရှိ ၂ မိနစ်မူရင်းအပိုင်းတစ်ခုကိုပဲ ပို့ပြီး ၎င်းအောက်က **🎬 Recap လုပ်မယ်** ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းအတွက် Script ရေးကာ direct render လုပ်ပါသည်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါသည်။ Manual mode တွင် Telegram job ကို n8n သို့ မပို့ပါ။ အောက်ပါ n8n automatic flow ကို Telegram URL job အတွက် သုံးချင်လျှင် Render တွင် `RECAP_FLOW=auto` နှင့် `PIPELINE_MODE=n8n` နှစ်ခုလုံး ထားရပါမည်။ Worker API ကိုယ်တိုင်ကတော့ mode နှစ်မျိုးလုံးတွင် ဆက်ရှိနေပါသည်။
 
 ## Flow
 
@@ -223,7 +223,7 @@ RECAP_FLOW=manual
 PIPELINE_MODE=direct
 ```
 
-ပြောင်းပြီး redeploy/restart လုပ်ပါ။ ဒါဆိုရင် Telegram bot က n8n မသုံးဘဲ v3.8 manual per-part direct flow ကို ပြန်သုံးပါမည်။
+ပြောင်းပြီး redeploy/restart လုပ်ပါ။ ဒါဆိုရင် Telegram bot က n8n မသုံးဘဲ v4.0 sequential manual per-part direct flow ကို ပြန်သုံးပါမည်။
 
 Worker API ကိုပါ လုံးဝပိတ်ချင်လျှင် `WORKER_API_KEY` ကို Render env မှ ဖယ်ရှားပါ။
 

@@ -246,9 +246,10 @@ WORKER_API_KEY = os.environ.get("WORKER_API_KEY", "").strip()
 WORKER_JOBS_DIR = os.path.join(WORK_ROOT, "n8n_jobs")
 os.makedirs(WORKER_JOBS_DIR, exist_ok=True)
 
-# Telegram's normal user-facing flow is the manual two-minute-part flow:
-# script the whole item first, send each original part with its own Recap
-# button, render only a clicked part, and join only after an explicit tap.
+# Telegram's normal user-facing flow is the sequential manual two-minute
+# flow: plan all windows, extract and send only the current window, script
+# and render it only after its Recap button is clicked, then extract and
+# send the next window.  Joining still requires an explicit tap.
 # RECAP_FLOW=auto restores the former one-shot behaviour (and n8n handoff
 # for URL jobs when PIPELINE_MODE=n8n).
 RECAP_FLOW = os.environ.get("RECAP_FLOW", "manual").strip().lower()
@@ -473,7 +474,7 @@ FEATURES = [
      "desc": "မလိုတဲ့ အပိုင်း ဖြတ်ထုတ်ခွင့် အများဆုံး %",
      "options": [(0, "လုံးဝ မဖြတ်"), (5, "5%"), (8, "8% ⭐"), (15, "15%")]},
     {"key": "chunk", "icon": "📦", "label": "မူရင်းပိုင်းချိန်", "kind": "cycle",
-     "desc": "Source ကို download ပြီးတာနဲ့ အမြဲတမ်း ၂ မိနစ်စီခွဲပြီး Script အရင်ရေးကာ အပိုင်းတစ်ခုချင်း Recap ခလုတ်ပြမည်",
+     "desc": "Download လုပ်ပြီး ၂ မိနစ်ပိုင်းချိန် Plan သာဆောက်မည် — ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပို့ပြီး ခလုတ်နှိပ်မှ Recap၊ ပြီးမှ နောက်တစ်ပိုင်း",
      "options": [(SOURCE_SEGMENT_SECONDS, "2 မိနစ် ⭐ (အမြဲတမ်း)")]},
     {"key": "rate", "icon": "🗣️", "label": "Script အလျင် ချိန်ညှိ", "kind": "cycle",
      "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — စာသား ပမာဏ တွက်ရန်",
@@ -661,6 +662,7 @@ def manual_part_keyboard(session_id: str, part_index: int, status: str = "ready"
 
 def manual_control_keyboard(session_id: str) -> dict:
     return {"inline_keyboard": [
+        [btn("▶️ နောက်အပိုင်းပို့မယ်", f"part:next:{session_id}")],
         [btn("🔗 Recap အားလုံး ပြန်ဆက်မယ်", f"part:join:{session_id}")],
         [
             btn("📊 အပိုင်းအခြေအနေ", f"part:status:{session_id}"),
@@ -749,17 +751,18 @@ def start_features_text(chat_id=None) -> str:
         "<b>⚙️ Bot လုပ်မယ့် အစီအစဉ်</b>\n"
         "1️⃣ Source video အပြည့်အစုံကို အရင် download လုပ်မယ်။ "
         "20MB ထက်ကြီးသော file ကို link အနေနဲ့ ပို့ပါ။\n"
-        "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ</b> ခွဲမယ်။ "
-        "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။\n"
-        "3️⃣ တစ်ခန်းလုံးရဲ့ <b>Script ကို အရင်ရေးပြီးသိမ်းမယ်</b>။ အကျဉ်းချုပ်"
-        "မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
-        "အချိန်လိုက် ပြန်ပြောမယ်။ ဇာတ်ကောင်နာမည်တွေ၊ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို "
-        "အပိုင်းတိုင်း ဆက်သယ်သွားမယ်။\n"
-        "4️⃣ ပြီးရင် မူရင်း ၂ မိနစ်အပိုင်းတွေကို တစ်ပိုင်းချင်း ပြန်ပို့ပြီး "
-        "အောက်မှာ <b>🎬 Recap လုပ်မယ်</b> ခလုတ်ထားပေးမယ်။ Auto မ Run ဘူး။\n"
-        f"5️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းကိုပဲ သိမ်းထားတဲ့ Script နဲ့ recap လုပ်မယ်။ "
-        f"TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
-        f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။\n"
+        "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ အပိုင်းချိန် Plan</b> ဆောက်မယ်။ "
+        "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။ "
+        "<b>အပိုင်းအားလုံးကို ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ။</b>\n"
+        "3️⃣ <b>ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပြီး</b> မူရင်းအပိုင်းအောက်မှာ "
+        "<b>🎬 Recap လုပ်မယ်</b> ခလုတ်နဲ့ ပြန်ပို့မယ်။ Auto မ Run ဘူး။\n"
+        f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် ပထမလူ Script ရေးပြီး recap လုပ်မယ်။ "
+        "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
+        "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
+        "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။\n"
+        f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
+        f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။ "
+        "Recap ပြီးမှသာ <b>နောက် ၂ မိနစ်အပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပို့</b>မယ်။\n"
         "6️⃣ အပိုင်းအားလုံး Recap ပြီးမှ <b>🔗 ပြန်ဆက်မယ်</b> ခလုတ်ကို နှိပ်ရင် "
         "Recap အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး final video ပို့မယ်။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။\n\n"
         "<b>⌨️ ခလုတ် / Command တွေ</b>\n"
@@ -779,9 +782,10 @@ HELP_TEXT = (
     "━━━━━━━━━━━━━━━\n"
     "1️⃣ Telegram video file (20MB အောက်)၊ document video သို့မဟုတ် "
     "RedNote/video link ပို့ပါ\n"
-    "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီခွဲ → တစ်ခန်းလုံးရဲ့ ပထမလူ "
-    "Script အရင်ရေး → မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
-    "3️⃣ Recap လိုချင်တဲ့ အပိုင်းအောက်က ခလုတ်ကို နှိပ်ပါ။ အဲဒီအပိုင်းကိုပဲ လုပ်ပေးပါမယ်\n"
+    "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက် → "
+    "ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပြီး 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
+    "3️⃣ လက်ရှိအပိုင်းအောက်က ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် "
+    "ပထမလူ Script ရေးပြီး Recap လုပ်ပါမယ်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်\n"
     "4️⃣ အပိုင်းတိုင်း ပြီးရင် 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်၍ Final ရယူနိုင်ပါတယ်\n\n"
     "⌨️ <b>Commands:</b>\n"
     "/start သို့မဟုတ် /menu — လုပ်ဆောင်ချက် အပြည့်အစုံ + ပင်မ မီနူး\n"
@@ -3755,7 +3759,7 @@ async def render_chunk_recap_from_script(
     *,
     output_path: str = "",
 ) -> tuple[str, dict]:
-    """Render one clicked manual part from its previously stored script."""
+    """Render one clicked manual part from its generated/stored script."""
     working_script = json.loads(json.dumps(script or {}, ensure_ascii=False))
     story_context = working_script.get("story_context_before") or {
         "characters": [],
@@ -7282,6 +7286,13 @@ def _load_manual_session(session_id: str) -> dict:
             "protagonist": "",
             "pronoun": "",
         }
+    state["full_source_file"] = str(
+        state.get("full_source_file")
+        or (state.get("source") or {}).get("full_source_file")
+        or ""
+    )
+    if not isinstance(state.get("current_part_index"), int):
+        state["current_part_index"] = None
     return state
 
 
@@ -7304,6 +7315,37 @@ def _manual_part(state: dict, part_index: int) -> dict | None:
         if isinstance(part, dict) and int(part.get("index") or 0) == wanted:
             return part
     return None
+
+
+def _manual_sorted_parts(state: dict) -> list[dict]:
+    parts = [p for p in (state.get("parts") or []) if isinstance(p, dict)]
+
+    def sort_key(part: dict) -> int:
+        try:
+            return int(part.get("index") or 0)
+        except (TypeError, ValueError):
+            return 10**9
+
+    return sorted(parts, key=sort_key)
+
+
+def _manual_first_unfinished_part(state: dict) -> dict | None:
+    """Return the only part allowed to advance in the sequential flow."""
+    for part in _manual_sorted_parts(state):
+        if str(part.get("status") or "") != "done":
+            return part
+    return None
+
+
+def _manual_full_source_path(state: dict) -> str:
+    relative = str(
+        state.get("full_source_file")
+        or (state.get("source") or {}).get("full_source_file")
+        or ""
+    )
+    if not relative:
+        return ""
+    return _manual_path(state, relative)
 
 
 def _manual_session_expired(state: dict) -> bool:
@@ -7413,7 +7455,7 @@ def _reset_stale_manual_sessions_after_restart() -> int:
     Render tasks exist only in process memory.  At startup, therefore, a
     persisted ``rendering``/``joining`` status cannot still be running in
     this process.  Reset only that unit of work for a retry click; an
-    interrupted script-first intake cannot safely resume and is marked
+    interrupted initial intake cannot safely resume and is marked
     failed so its status/discard controls remain available.
     """
     reset_count = 0
@@ -7448,6 +7490,30 @@ def _reset_stale_manual_sessions_after_restart() -> int:
         elif status == "joining":
             state["status"] = "ready_to_join"
             state["error"] = "Server restart ဖြစ်သွား၍ ပြန်ဆက်ရန် ထပ်နှိပ်ပါ။"
+            changed = True
+        elif status == "sending_next" or any(
+            isinstance(part, dict) and part.get("status") == "extracting"
+            for part in (state.get("parts") or [])
+        ):
+            for part in state.get("parts") or []:
+                if isinstance(part, dict) and part.get("status") == "extracting":
+                    part["status"] = "extract_failed"
+                    part["error"] = (
+                        "Server restart ဖြစ်သွားလို့ နောက်အပိုင်းမပို့ရသေးပါ။ "
+                        "▶️ နောက်အပိုင်းပို့မယ် ကို ထပ်နှိပ်ပါ။"
+                    )
+                    changed = True
+            counts = _manual_counts(state)
+            state["status"] = (
+                "ready_to_join"
+                if counts["total"] and counts["done"] == counts["total"]
+                else "ready"
+            )
+            current = _manual_first_unfinished_part(state)
+            state["current_part_index"] = (
+                int(current.get("index") or 0) if current else None
+            )
+            state["error"] = "Server restart ဖြစ်သွားလို့ ▶️ နောက်အပိုင်းပို့မယ် ကို ထပ်နှိပ်ပါ။"
             changed = True
         elif status in ("preparing", "splitting", "scripting", "sending_parts"):
             state["status"] = "failed"
@@ -7513,6 +7579,9 @@ def _create_manual_session(
             "pronoun": "",
         },
         "full_script_file": "",
+        "full_source_file": "",
+        "current_part_index": None,
+        "sequential": True,
         "active_render_part": None,
         "cancel_requested": False,
         "terminal_stat_counted": False,
@@ -7541,7 +7610,7 @@ def _manual_counts(state: dict) -> dict:
             counts["done"] += 1
         elif status == "rendering":
             counts["rendering"] += 1
-        elif status == "failed":
+        elif status in ("failed", "extract_failed"):
             counts["failed"] += 1
         elif status in ("ready", "script_ready"):
             counts["ready"] += 1
@@ -7561,6 +7630,7 @@ def _manual_status_text(state: dict) -> str:
     ready_indexes = []
     failed_indexes = []
     rendering_indexes = []
+    waiting_indexes = []
     for part in state.get("parts") or []:
         if not isinstance(part, dict):
             continue
@@ -7568,16 +7638,24 @@ def _manual_status_text(state: dict) -> str:
         status = str(part.get("status") or "")
         if status == "done":
             done_indexes.append(index)
-        elif status == "rendering":
+        elif status in ("rendering", "extracting"):
             rendering_indexes.append(index)
-        elif status == "failed":
+        elif status in ("failed", "extract_failed"):
             failed_indexes.append(index)
         elif status in ("ready", "script_ready"):
             ready_indexes.append(index)
+        elif status in ("waiting", "pending_script", "scripting"):
+            waiting_indexes.append(index)
 
     def fmt_indexes(values: list[int]) -> str:
         return ", ".join(str(v) for v in values) if values else "မရှိ"
 
+    current_part = _manual_first_unfinished_part(state)
+    current_label = (
+        f"{int(current_part.get('index') or 0)}/{counts['total']}"
+        if current_part
+        else "မရှိ — အားလုံး Recap ပြီးပြီ"
+    )
     try:
         remaining_hours = max(
             0.0, (float(state.get("expires_at_unix") or 0) - time.time()) / 3600.0
@@ -7591,11 +7669,15 @@ def _manual_status_text(state: dict) -> str:
         f"✂️ အပိုင်း: {counts['total']} · ✅ Recap ပြီး: {counts['done']} · "
         f"🎬 စောင့်နေ: {counts['ready']} · ❌ Failed: {counts['failed']}\n"
         f"✅ ပြီးသောအပိုင်းများ: {fmt_indexes(done_indexes)}\n"
-        f"🎬 Recap မလုပ်ရသေးသောအပိုင်းများ: {fmt_indexes(ready_indexes)}\n"
+        f"▶️ လက်ရှိအပိုင်း: {current_label}\n"
+        f"🎬 Recap ခလုတ် အသင့်ရှိသောအပိုင်း: {fmt_indexes(ready_indexes)}\n"
+        f"⏭️ မခွဲ/မပို့ရသေးသောအပိုင်းများ: {fmt_indexes(waiting_indexes)}\n"
         f"⏳ လုပ်နေဆဲ: {fmt_indexes(rendering_indexes)} · ❌ Failed: {fmt_indexes(failed_indexes)}\n"
         f"🎯 တစ်ပိုင်းချင်း Final duration: မူရင်းအပိုင်း၏ {settings.get('coverage', 90)}%\n"
         f"🕒 Session ကျန်ချိန်ခန့်မှန်း: {remaining_hours:.1f} နာရီ\n\n"
-        "မူရင်းအပိုင်းတစ်ခုအောက်က <b>🎬 Recap လုပ်မယ်</b> ကို နှိပ်ပါ။ "
+        "လက်ရှိအပိုင်းအောက်က <b>🎬 Recap လုပ်မယ်</b> ကို နှိပ်ပါ။ "
+        "အဲဒီ Recap ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်။ "
+        "နောက်အပိုင်းမရောက်ရင် <b>▶️ နောက်အပိုင်းပို့မယ်</b> ကို နှိပ်ပါ။ "
         "အပိုင်းတိုင်းပြီးမှ 🔗 ပြန်ဆက်နိုင်ပါမယ်။"
     )
 
@@ -7659,11 +7741,11 @@ def _load_manual_script(state: dict, part: dict) -> dict:
     relative = str(part.get("script_file") or _manual_script_relative(int(part.get("index") or 0)))
     path = _manual_path(state, relative)
     if not os.path.exists(path):
-        raise ManualSessionError("stored script for this part is missing")
+        raise ManualSessionError("script for this part is missing")
     with open(path, encoding="utf-8") as script_file:
         script = json.load(script_file)
     if not isinstance(script, dict) or not script.get("scenes"):
-        raise ManualSessionError("stored script for this part is empty")
+        raise ManualSessionError("script for this part is empty")
     return script
 
 
@@ -7681,6 +7763,214 @@ def _write_manual_full_script(state: dict, scripts: list[dict]) -> None:
     }
     _write_manual_json(state, "full_script.json", payload)
     state["full_script_file"] = "full_script.json"
+
+def _refresh_manual_full_script(state: dict) -> bool:
+    """Rebuild full_script.json from only the scripts written so far."""
+    scripts: list[dict] = []
+    for part in _manual_sorted_parts(state):
+        if not part.get("script_file"):
+            continue
+        try:
+            scripts.append(_load_manual_script(state, part))
+        except Exception:
+            continue
+    if not scripts:
+        return False
+    _write_manual_full_script(state, scripts)
+    return True
+
+
+async def _extract_and_send_manual_part(
+    state: dict,
+    part: dict,
+    tracker=None,
+) -> int | None:
+    """Extract (if needed) and send exactly one planned source window.
+
+    Earlier versions physically split and scripted the entire source
+    before the user saw even the first original.  This helper is the
+    heart of the sequential correction: it touches only ``part``.  The
+    retained full source stays in the session until every later window
+    has been extracted on demand.
+    """
+    session_id = str(state.get("session_id") or "")
+    index = int(part.get("index") or 0)
+    total_parts = len(state.get("parts") or [])
+    if session_id in CANCELLED_JOBS or state.get("cancel_requested"):
+        raise asyncio.CancelledError()
+    if str(part.get("status") or "") == "done":
+        try:
+            return int(part.get("message_id") or 0) or None
+        except (TypeError, ValueError):
+            return None
+
+    existing_source = ""
+    if part.get("source_file"):
+        try:
+            candidate = _manual_path(state, str(part.get("source_file") or ""))
+        except Exception:
+            candidate = ""
+        if candidate and os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+            existing_source = candidate
+
+    # Sessions created by the old all-at-once flow may already have this
+    # original in Telegram.  Do not send a duplicate when advancing one
+    # of those sessions under the new sequential rules.
+    if (
+        existing_source
+        and part.get("message_id")
+        and str(part.get("status") or "") in ("ready", "script_ready", "failed")
+    ):
+        state["status"] = "ready"
+        state["current_part_index"] = index
+        state["error"] = ""
+        _save_manual_session(state)
+        try:
+            return int(part.get("message_id") or 0) or None
+        except (TypeError, ValueError):
+            return None
+
+    state["status"] = "sending_next"
+    state["current_part_index"] = index
+    state["error"] = ""
+    part["error"] = ""
+    try:
+        expected_duration = max(
+            0.0,
+            float(part.get("duration") or 0)
+            or (
+                float(part.get("end") or 0) - float(part.get("start") or 0)
+            ),
+        )
+        existing_valid = False
+        if existing_source:
+            try:
+                actual_existing, _width, _height = await asyncio.to_thread(
+                    probe_video_info, existing_source
+                )
+            except Exception:
+                actual_existing = 0.0
+            if actual_existing and (
+                expected_duration <= 0
+                or abs(float(actual_existing) - expected_duration) <= 2.0
+            ):
+                existing_valid = True
+                part["duration"] = round(float(actual_existing), 3)
+                part["end"] = round(
+                    float(part.get("start") or 0) + float(actual_existing), 3
+                )
+
+        if not existing_valid:
+            full_source = _manual_full_source_path(state)
+            if (
+                not full_source
+                or not os.path.exists(full_source)
+                or os.path.getsize(full_source) <= 0
+            ):
+                raise ManualSessionError(
+                    "မူရင်းဖိုင်အပြည့် မရှိတော့လို့ နောက်အပိုင်းကို ခွဲထုတ်လို့မရပါ။ "
+                    "Session ကို ပယ်၍ Source ကို ပြန်ပို့ပါ။"
+                )
+            start = float(part.get("start") or 0)
+            duration = expected_duration
+            if duration <= 0:
+                raise ManualSessionError(f"part {index} has an invalid time window")
+            relative = f"source_segments/source_part_{index:04d}.mp4"
+            output_path = _manual_path(state, relative)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            part["source_file"] = relative
+            part["status"] = "extracting"
+            _save_manual_session(state)
+            if tracker is not None:
+                await tracker.update(
+                    f"✂️ အပိုင်း {index}/{total_parts} ကိုပဲ ခွဲထုတ်နေပါသည် "
+                    f"({fmt_time(start)}–{fmt_time(start + duration)})\n"
+                    "ကျန်အပိုင်းတွေကို ကြိုမခွဲပါ။",
+                    force=True,
+                )
+            def extraction_stats() -> tuple[int, int]:
+                return _single_file_stats(output_path)
+
+            def extraction_progress(stats, elapsed: float) -> str:
+                _file_count, written_bytes = stats or (0, 0)
+                written_mb = float(written_bytes or 0) / (1024 * 1024)
+                return (
+                    f"✂️ အပိုင်း {index}/{total_parts} ကိုပဲ ခွဲထုတ်နေပါသည်\n"
+                    f"{fmt_progress_bar(50)}\n"
+                    f"💾 ရေးပြီး: {written_mb:.1f}MB · ⏱️ ကြာချိန် {fmt_time(elapsed)}\n"
+                    "ဒီအပိုင်းပြီးရင် Recap ခလုတ်နဲ့ ပို့ပါမယ်။"
+                )
+
+            extracted = await _await_thread_with_progress(
+                _extract_source_segment_file,
+                (full_source, output_path, start, duration),
+                tracker=tracker,
+                stats_func=extraction_stats,
+                make_text=extraction_progress,
+                progress_interval=10.0,
+            )
+            if (
+                not extracted
+                or not os.path.exists(output_path)
+                or os.path.getsize(output_path) <= 0
+            ):
+                raise RuntimeError(f"could not extract source part {index}")
+            actual_duration, _width, _height = await asyncio.to_thread(
+                probe_video_info, output_path
+            )
+            if not actual_duration or float(actual_duration) <= 0:
+                raise RuntimeError(f"extracted source part {index} has no duration")
+            if abs(float(actual_duration) - duration) > 2.0:
+                raise RuntimeError(
+                    f"extracted source part {index} duration mismatch: "
+                    f"expected {duration:.1f}s, got {float(actual_duration):.1f}s"
+                )
+            part["duration"] = round(float(actual_duration), 3)
+            part["end"] = round(start + float(actual_duration), 3)
+            existing_source = output_path
+        else:
+            part["status"] = "ready"
+            _save_manual_session(state)
+
+        if session_id in CANCELLED_JOBS:
+            raise asyncio.CancelledError()
+        if tracker is not None:
+            await tracker.update(
+                f"📤 မူရင်းအပိုင်း {index}/{total_parts} ကို ပို့နေပါသည်...\n"
+                "ရောက်လာရင် 🎬 Recap လုပ်မယ် ကို နှိပ်နိုင်ပါတယ်။",
+                force=True,
+            )
+        message_id = await _send_manual_original_part(state, part)
+        part["status"] = "ready"
+        part["message_id"] = message_id
+        part["error"] = ""
+        state["status"] = "ready"
+        state["current_part_index"] = index
+        state["error"] = ""
+        _save_manual_session(state)
+        return message_id
+    except asyncio.CancelledError:
+        try:
+            part["status"] = "extract_failed"
+            part["error"] = "ဒီအပိုင်းပို့တာကို ရပ်လိုက်ပြီ — ▶️ နောက်အပိုင်းပို့မယ် နဲ့ ထပ်စမ်းနိုင်ပါတယ်။"
+            state["status"] = "ready"
+            state["current_part_index"] = index
+            _save_manual_session(state)
+        except Exception:
+            pass
+        raise
+    except Exception as exc:
+        message = _user_error_text(exc)
+        part["status"] = "extract_failed"
+        part["error"] = message
+        state["status"] = "failed"
+        state["current_part_index"] = index
+        state["error"] = message
+        try:
+            _save_manual_session(state)
+        except Exception:
+            pass
+        raise
 
 
 async def _send_manual_original_part(state: dict, part: dict) -> int | None:
@@ -7716,7 +8006,7 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
         base_caption = (
             f"🎬 မူရင်းအပိုင်း {index}/{total_parts} "
             f"({fmt_time(float(part.get('start') or 0))}–{fmt_time(float(part.get('end') or 0))})\n"
-            "📝 Script အသင့်ရှိပြီ — Recap လုပ်ရန် အောက်ကခလုတ်ကို နှိပ်ပါ။"
+            "🎬 Recap လုပ်မယ် ကို နှိပ်မှသာ ဒီအပိုင်းတစ်ခုတည်းအတွက် Script ရေးပြီး Recap လုပ်ပါမယ်။"
         )
         message_id = None
         for file_index, path_to_send in enumerate(files_to_send, start=1):
@@ -7782,7 +8072,7 @@ async def _handle_manual_source_job(
     status_id: int,
     job_settings: dict,
 ) -> None:
-    """Script a whole source first, then send original parts with buttons."""
+    """Download/plan a source, then extract and send only its first part."""
     tracker = ProgressTracker(chat_id, status_id, job_id=session_id)
     state: dict | None = None
     sent_any_original = False
@@ -7807,9 +8097,13 @@ async def _handle_manual_source_job(
                 detail="acquired source has no readable duration",
             )
         source_size = os.path.getsize(source_path) if os.path.exists(source_path) else 0
+        full_source_relative = os.path.relpath(source_path, session_dir)
         state["source_duration_seconds"] = round(float(total_dur), 3)
         state["source_size_bytes"] = int(source_size)
-        state["status"] = "splitting"
+        state["full_source_file"] = full_source_relative
+        if isinstance(state.get("source"), dict):
+            state["source"]["full_source_file"] = full_source_relative
+        state["status"] = "sending_next"
         _save_manual_session(state)
         logger.info(
             "Full source: %.1fs = %s, %.0fMB",
@@ -7817,33 +8111,29 @@ async def _handle_manual_source_job(
             fmt_time(total_dur),
             source_size / (1024 * 1024),
         )
+
+        # Plan every 2-minute boundary, but do not physically split or
+        # script future windows yet.  The downloaded full source remains
+        # in this session so each later window can be extracted only
+        # after the preceding recap has been delivered.
         segment_plan = build_source_segment_plan(total_dur, SOURCE_SEGMENT_SECONDS)
-        await tracker.update(
-            f"✅ မူရင်းရယူပြီး ({fmt_time(total_dur)}, {source_size / (1024 * 1024):.0f}MB)\n"
-            f"✂️ ၂ မိနစ်စီ {len(segment_plan)} ပိုင်းခွဲနေပါသည်...",
-            force=True,
-        )
-        source_segments = await _prepare_source_segments(
-            source_path,
-            session_dir,
-            total_dur,
-            SOURCE_SEGMENT_SECONDS,
-            tracker=tracker,
-        )
-        if not source_segments:
-            raise RuntimeError("မူရင်းဗီဒီယိုကို ၂ မိနစ်ပိုင်းများ ခွဲ၍မရပါ။")
+        if not segment_plan:
+            raise RuntimeError("မူရင်းဗီဒီယိုအတွက် ၂ မိနစ်အပိုင်းချိန် Plan ဆောက်လို့မရပါ။")
         parts = []
-        for segment in source_segments:
-            segment_path = str(segment.get("path") or "")
+        for segment in segment_plan:
+            start = round(float(segment.get("start") or 0), 3)
+            end = round(float(segment.get("end") or 0), 3)
             parts.append(
                 {
                     "index": int(segment.get("index") or len(parts) + 1),
-                    "start": round(float(segment.get("start") or 0), 3),
-                    "end": round(float(segment.get("end") or 0), 3),
-                    "duration": round(float(segment.get("duration") or 0), 3),
-                    "source_file": os.path.relpath(segment_path, session_dir),
+                    "start": start,
+                    "end": end,
+                    "duration": round(
+                        float(segment.get("duration") or max(0.0, end - start)), 3
+                    ),
+                    "source_file": "",
                     "script_file": "",
-                    "status": "pending_script",
+                    "status": "waiting",
                     "message_id": None,
                     "recap_file": "",
                     "recap_duration_seconds": 0.0,
@@ -7851,127 +8141,40 @@ async def _handle_manual_source_job(
                     "error": "",
                 }
             )
-        state["parts"] = parts
-        state["status"] = "scripting"
-        _save_manual_session(state)
-        try:
-            os.remove(source_path)
-        except Exception:
-            pass
         total_parts = len(parts)
-        await tracker.update(
-            f"✅ ၂ မိနစ်ပိုင်း {total_parts} ခုရပါပြီ\n"
-            "📝 အခု တစ်ခန်းလုံးရဲ့ Script ကို အစဉ်အတိုင်း အရင်ရေးပြီးသိမ်းပါမယ်။ "
-            "ပြီးမှ မူရင်းအပိုင်းတွေကို Recap ခလုတ်တွေနဲ့ တစ်ပိုင်းချင်း ပို့ပါမယ်။",
-            force=True,
-        )
-
-        story_context = {
+        state["parts"] = parts
+        state["current_part_index"] = int(parts[0].get("index") or 1)
+        state["story_context"] = {
             "characters": [],
             "summary": "",
             "last_scene": "",
             "protagonist": "",
             "pronoun": "",
         }
-        scripts: list[dict] = []
-        for part in parts:
-            if session_id in CANCELLED_JOBS or state.get("cancel_requested"):
-                raise Exception("cancelled")
-            part_num = int(part.get("index") or 0)
-            chunk_path = _manual_path(state, str(part.get("source_file") or ""))
-            actual_dur = float(probe_video_info(chunk_path)[0] or 0)
-            if actual_dur <= 0:
-                actual_dur = float(part.get("duration") or 0)
-            if not os.path.exists(chunk_path) or actual_dur <= 0:
-                raise RuntimeError(f"၂ မိနစ်ပိုင်း {part_num} ကြာချိန် မရပါ။")
-            part["duration"] = round(actual_dur, 3)
-            if float(part.get("end") or 0) <= float(part.get("start") or 0):
-                part["end"] = round(float(part.get("start") or 0) + actual_dur, 3)
-            part["status"] = "scripting"
-            state["story_context"] = story_context
-            _save_manual_session(state)
-            await tracker.update(
-                f"📝 Script ရေးနေသည် — အပိုင်း {part_num}/{total_parts} "
-                f"({fmt_time(float(part.get('start') or 0))}–{fmt_time(float(part.get('end') or 0))})\n"
-                "👤 အဓိကဇာတ်ကောင် ကိုယ်တိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် အပြည့်အဝ ပြန်ပြောပါမယ်။",
-                force=True,
-            )
-            script = await generate_chunk_script(
-                chunk_path,
-                actual_dur,
-                float(part.get("start") or 0),
-                float(part.get("end") or 0),
-                story_context,
-                part_num,
-                tracker,
-                job_settings,
-            )
-            script = _save_manual_script(state, part, script)
-            scripts.append(script)
-            next_context = script.get("story_context_after") or {}
-            if isinstance(next_context, dict) and next_context:
-                story_context = {
-                    "characters": list(next_context.get("characters") or []),
-                    "summary": str(next_context.get("summary") or ""),
-                    "last_scene": str(next_context.get("last_scene") or ""),
-                    "protagonist": str(
-                        next_context.get("protagonist")
-                        or script.get("protagonist")
-                        or story_context.get("protagonist")
-                        or ""
-                    ),
-                    "pronoun": str(
-                        next_context.get("pronoun")
-                        or script.get("pronoun")
-                        or story_context.get("pronoun")
-                        or ""
-                    ),
-                }
-            state["story_context"] = story_context
-            part["status"] = "script_ready"
-            _save_manual_session(state)
-            logger.info(
-                "Manual script part %s/%s ready for session %s (%s chars)",
-                part_num,
-                total_parts,
-                session_id,
-                part.get("script_chars"),
-            )
-
-        _write_manual_full_script(state, scripts)
-        state["status"] = "sending_parts"
+        state["status"] = "sending_next"
+        state["error"] = ""
         _save_manual_session(state)
         await tracker.update(
-            f"✅ တစ်ခန်းလုံး Script {total_parts} ပိုင်းစလုံး ရေးပြီး သိမ်းပြီးပါပြီ\n"
-            "📤 အခု မူရင်း ၂ မိနစ်အပိုင်းတွေကို တစ်ပိုင်းချင်း 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့နေပါသည်...",
+            f"✅ မူရင်းရယူပြီး ({fmt_time(total_dur)}, {source_size / (1024 * 1024):.0f}MB)\n"
+            f"✂️ စုစုပေါင်း ၂ မိနစ်အပိုင်း {total_parts} ခု Plan ဆောက်ပြီးပါပြီ။\n"
+            "ပထမအပိုင်းတစ်ခုကိုပဲ အခု ခွဲထုတ်ပို့ပါမယ် — ကျန်အပိုင်းတွေကို "
+            "ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ။",
             force=True,
         )
 
-        for position, part in enumerate(parts, start=1):
-            if session_id in CANCELLED_JOBS or state.get("cancel_requested"):
-                raise Exception("cancelled")
-            part_num = int(part.get("index") or position)
-            await tracker.update(
-                f"📤 မူရင်းအပိုင်း {part_num}/{total_parts} ကို ပို့နေပါသည်...",
-                force=True,
-            )
-            message_id = await _send_manual_original_part(state, part)
-            sent_any_original = True
-            part["message_id"] = message_id
-            part["status"] = "ready"
-            part["error"] = ""
-            _save_manual_session(state)
-            if position < total_parts:
-                await asyncio.sleep(0.2)
-
+        first_part = parts[0]
+        await _extract_and_send_manual_part(state, first_part, tracker)
+        sent_any_original = True
         state["status"] = "ready"
+        state["current_part_index"] = int(first_part.get("index") or 1)
         state["error"] = ""
         _save_manual_session(state)
         await edit_text(
             chat_id,
             status_id,
-            f"✅ Script နှင့် မူရင်း ၂ မိနစ်အပိုင်း {total_parts} ခု အသင့်ဖြစ်ပါပြီ။\n"
-            "Recap လုပ်ချင်တဲ့ အပိုင်းအောက်က 🎬 Recap လုပ်မယ် ကို နှိပ်ပါ။",
+            f"✅ မူရင်းအပိုင်း 1/{total_parts} ကို ပို့ထားပါပြီ။\n"
+            "အဲဒီအပိုင်းအောက်က 🎬 Recap လုပ်မယ် ကို နှိပ်ပါ။ "
+            "အဲဒီ Recap ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်။",
             reply_markup=main_menu_keyboard(chat_id),
         )
         control_id = await send_text(
@@ -7997,10 +8200,24 @@ async def _handle_manual_source_job(
         else:
             bump_stat(chat_id, "failed")
             message = _user_error_text(e)
+            retain_session = False
             if state is not None:
                 has_sent_part = sent_any_original or any(
                     isinstance(p, dict) and p.get("message_id")
                     for p in state.get("parts") or []
+                )
+                full_source = ""
+                try:
+                    full_source = _manual_full_source_path(state)
+                except Exception:
+                    full_source = ""
+                has_full_source = bool(
+                    full_source
+                    and os.path.exists(full_source)
+                    and os.path.getsize(full_source) > 0
+                )
+                retain_session = bool(
+                    has_sent_part or (state.get("parts") and has_full_source)
                 )
                 state["status"] = "failed"
                 state["error"] = message
@@ -8008,13 +8225,21 @@ async def _handle_manual_source_job(
                     _save_manual_session(state)
                 except Exception:
                     pass
-                if not has_sent_part:
+                if not retain_session:
                     _delete_manual_session(session_id)
+            failure_text = f"❌ အမှား: {message}"
+            failure_markup = main_menu_keyboard(chat_id)
+            if retain_session:
+                failure_text += (
+                    "\n\nမူရင်းဖိုင်နဲ့ အပိုင်းချိန် Plan ကို သိမ်းထားပါသေးတယ်။ "
+                    "▶️ နောက်အပိုင်းပို့မယ် နဲ့ ပြန်ကြိုးစားနိုင်ပါတယ်။"
+                )
+                failure_markup = manual_control_keyboard(session_id)
             await edit_text(
                 chat_id,
                 status_id,
-                f"❌ အမှား: {message}",
-                reply_markup=main_menu_keyboard(chat_id),
+                failure_text,
+                reply_markup=failure_markup,
             )
     finally:
         if ACTIVE_JOBS.get(chat_id) == session_id:
@@ -8051,6 +8276,7 @@ async def _claim_manual_part(
                 "splitting",
                 "scripting",
                 "sending_parts",
+                "sending_next",
                 "rendering",
                 "joining",
             ):
@@ -8065,12 +8291,25 @@ async def _claim_manual_part(
             return state, "missing_part"
         if str(part.get("status") or "") == "done":
             return state, "done"
+        current_part = _manual_first_unfinished_part(state)
+        if not current_part:
+            return state, "done"
+        if int(current_part.get("index") or 0) != int(part_index):
+            return state, "not_current"
         task = MANUAL_RENDER_TASKS.get(session_id)
         if task and not task.done():
             return state, "busy"
         if any(
-            isinstance(item, dict) and item.get("status") == "rendering"
+            isinstance(item, dict)
+            and item.get("status") in ("rendering", "extracting")
             for item in state.get("parts") or []
+        ) or state.get("status") in (
+            "preparing",
+            "splitting",
+            "scripting",
+            "sending_parts",
+            "sending_next",
+            "joining",
         ):
             return state, "busy"
         active = ACTIVE_JOBS.get(int(chat_id))
@@ -8080,19 +8319,18 @@ async def _claim_manual_part(
             return state, "not_ready"
         try:
             source_path = _manual_path(state, str(part.get("source_file") or ""))
-            script_path = _manual_path(
-                state,
-                str(part.get("script_file") or _manual_script_relative(part_index)),
-            )
         except Exception:
             return state, "missing"
-        if not os.path.exists(source_path) or not os.path.exists(script_path):
+        # A script is intentionally not required here: in the sequential
+        # flow it is written only after this click claims the current part.
+        if not os.path.exists(source_path) or os.path.getsize(source_path) <= 0:
             return state, "missing"
         part["status"] = "rendering"
         part["attempts"] = int(part.get("attempts") or 0) + 1
         part["error"] = ""
         part["started_at"] = _manual_now()
         state["status"] = "rendering"
+        state["current_part_index"] = int(part_index)
         state["active_render_part"] = int(part_index)
         state["error"] = ""
         ACTIVE_JOBS[int(chat_id)] = session_id
@@ -8130,7 +8368,12 @@ async def _run_manual_part_recap(
             raise ManualSessionError(
                 "ဒီအပိုင်းရဲ့ မူရင်း file က session ထဲမှာ မရှိတော့ပါ။ Source ကို ပြန်ပို့ကြည့်ပါ။"
             )
-        script = _load_manual_script(state, part)
+        try:
+            script = _load_manual_script(state, part)
+        except Exception:
+            # Normal on the first click in the sequential flow: no script
+            # has been written for this part yet.
+            script = None
         actual_dur = float(probe_video_info(source_path)[0] or 0)
         if actual_dur <= 0:
             actual_dur = float(part.get("duration") or 0)
@@ -8156,6 +8399,38 @@ async def _run_manual_part_recap(
                 force=True,
             )
         else:
+            if script is None:
+                await tracker.update(
+                    f"📝 အပိုင်း {part_index}/{total_parts} တစ်ခုတည်းအတွက် Script ရေးနေပါသည်...\n"
+                    "👤 ဇာတ်ကောင်နာမည်များ၊ အချိန်အစဉ်နဲ့ ဖြစ်စဉ်အပြည့်ကို "
+                    "«ကျွန်တော်/ကျွန်မ» ပထမလူအဖြစ်ပြောပါမယ်။",
+                    force=True,
+                )
+                script = await generate_chunk_script(
+                    source_path,
+                    actual_dur,
+                    float(part.get("start") or 0),
+                    float(part.get("end") or 0),
+                    state.get("story_context") or {},
+                    int(part_index),
+                    tracker,
+                    settings,
+                )
+                script = _save_manual_script(state, part, script)
+                _refresh_manual_full_script(state)
+                updated_script = script
+                async with MANUAL_SESSION_LOCK:
+                    fresh = _load_manual_session(session_id)
+                    fresh_part = _manual_part(fresh, part_index)
+                    if fresh_part:
+                        for field in ("script_file", "script_chars", "script_target_chars"):
+                            if part.get(field) not in (None, ""):
+                                fresh_part[field] = part.get(field)
+                        if state.get("full_script_file"):
+                            fresh["full_script_file"] = state.get("full_script_file")
+                        _save_manual_session(fresh)
+                        state = fresh
+                        part = fresh_part
             async with video_render_semaphore:
                 rendered_path, updated_script = await render_chunk_recap_from_script(
                     source_path,
@@ -8175,6 +8450,7 @@ async def _run_manual_part_recap(
                     f"{rendered_duration:.1f}s from {actual_dur:.1f}s source part"
                 )
             _save_manual_script(state, part, updated_script)
+            _refresh_manual_full_script(state)
 
         if session_id in CANCELLED_JOBS:
             raise asyncio.CancelledError()
@@ -8227,7 +8503,43 @@ async def _run_manual_part_recap(
             fresh_part["recap_duration_seconds"] = round(float(rendered_duration), 3)
             fresh_part["finished_at"] = _manual_now()
             fresh_part["error"] = ""
+            if part:
+                for field in ("script_file", "script_chars", "script_target_chars"):
+                    if part.get(field) not in (None, ""):
+                        fresh_part[field] = part.get(field)
+            if state and state.get("full_script_file"):
+                fresh["full_script_file"] = state.get("full_script_file")
+            next_context = (
+                (updated_script or {}).get("story_context_after")
+                if isinstance(updated_script, dict)
+                else None
+            )
+            if isinstance(next_context, dict) and next_context:
+                previous_context = fresh.get("story_context") or {}
+                fresh["story_context"] = {
+                    "characters": list(next_context.get("characters") or []),
+                    "summary": str(next_context.get("summary") or ""),
+                    "last_scene": str(next_context.get("last_scene") or ""),
+                    "protagonist": str(
+                        next_context.get("protagonist")
+                        or (updated_script or {}).get("protagonist")
+                        or previous_context.get("protagonist")
+                        or ""
+                    ),
+                    "pronoun": str(
+                        next_context.get("pronoun")
+                        or (updated_script or {}).get("pronoun")
+                        or previous_context.get("pronoun")
+                        or ""
+                    ),
+                }
             counts = _manual_counts(fresh)
+            next_part_after_done = _manual_first_unfinished_part(fresh)
+            fresh["current_part_index"] = (
+                int(next_part_after_done.get("index") or 0)
+                if next_part_after_done
+                else None
+            )
             fresh["status"] = (
                 "ready_to_join" if counts["done"] >= counts["total"] and counts["total"] else "ready"
             )
@@ -8256,24 +8568,88 @@ async def _run_manual_part_recap(
                 manual_part_keyboard(session_id, int(part_index), "done"),
             )
         counts = _manual_counts(state)
-        if progress_message_id:
-            await edit_text(
-                chat_id_value,
-                int(progress_message_id),
-                f"✅ <b>Recap အပိုင်း {part_index}/{total_parts} ပြီးပါပြီ</b> "
-                f"({fmt_time(rendered_duration)})\n"
-                f"📊 ပြီးသောအပိုင်း: {counts['done']}/{counts['total']} · "
-                f"ကျန်အပိုင်း: {counts['total'] - counts['done']}",
-                reply_markup=manual_control_keyboard(session_id),
-            )
-        if counts["done"] >= counts["total"] and counts["total"]:
+        all_done = bool(counts["total"] and counts["done"] >= counts["total"])
+        if all_done:
+            if progress_message_id:
+                await edit_text(
+                    chat_id_value,
+                    int(progress_message_id),
+                    f"✅ <b>Recap အပိုင်း {part_index}/{total_parts} ပြီးပါပြီ</b> "
+                    f"({fmt_time(rendered_duration)})\n"
+                    f"📊 ပြီးသောအပိုင်း: {counts['done']}/{counts['total']} · "
+                    f"ကျန်အပိုင်း: {counts['total'] - counts['done']}",
+                    reply_markup=manual_control_keyboard(session_id),
+                )
             await send_text(
                 chat_id_value,
                 "🎉 <b>အပိုင်းအားလုံး Recap ပြီးပါပြီ!</b>\n"
                 "အခု 🔗 <b>Recap အားလုံး ပြန်ဆက်မယ်</b> ကို နှိပ်ပြီး Final video ရယူနိုင်ပါတယ်။",
                 reply_markup=manual_control_keyboard(session_id),
             )
+        else:
+            next_part = _manual_first_unfinished_part(state)
+            next_index = int(next_part.get("index") or 0) if next_part else 0
+            if progress_message_id:
+                await edit_text(
+                    chat_id_value,
+                    int(progress_message_id),
+                    f"✅ <b>Recap အပိုင်း {part_index}/{total_parts} ပြီးပါပြီ</b> "
+                    f"({fmt_time(rendered_duration)})\n"
+                    f"📊 ပြီးသောအပိုင်း: {counts['done']}/{counts['total']} · "
+                    f"ကျန်အပိုင်း: {counts['total'] - counts['done']}\n"
+                    f"▶️ အခု နောက်တစ်ပိုင်း {next_index}/{total_parts} ကိုပဲ ခွဲထုတ်ပို့နေပါသည်...",
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+            if next_part:
+                try:
+                    await _extract_and_send_manual_part(
+                        state, next_part, tracker
+                    )
+                    counts = _manual_counts(state)
+                    if progress_message_id:
+                        await edit_text(
+                            chat_id_value,
+                            int(progress_message_id),
+                            f"✅ <b>Recap အပိုင်း {part_index}/{total_parts} ပြီးပြီး "
+                            f"နောက်တစ်ပိုင်း {next_index}/{total_parts} ကို ပို့ထားပါပြီ</b>\n"
+                            f"📊 ပြီးသောအပိုင်း: {counts['done']}/{counts['total']} · "
+                            f"ကျန်အပိုင်း: {counts['total'] - counts['done']}\n"
+                            "ပို့ထားတဲ့ နောက်မူရင်းအပိုင်းအောက်က 🎬 Recap လုပ်မယ် ကို နှိပ်ပါ။",
+                            reply_markup=manual_control_keyboard(session_id),
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as advance_exc:
+                    # The recap above was already delivered and marked done.
+                    # A failure to prepare the next original must not turn
+                    # that successful recap into a failed part.
+                    logger.exception("Manual next-part extraction/send failed")
+                    advance_message = _user_error_text(advance_exc)
+                    try:
+                        state = _load_manual_session(session_id)
+                    except Exception:
+                        pass
+                    advance_text = (
+                        f"✅ <b>Recap အပိုင်း {part_index}/{total_parts} ပြီးပါပြီ</b>\n"
+                        f"⚠️ နောက်တစ်ပိုင်း {next_index}/{total_parts} ကို ပို့လို့မရသေးပါ။\n"
+                        f"{advance_message}\n\n"
+                        "▶️ <b>နောက်အပိုင်းပို့မယ်</b> ကို နှိပ်ပြီး ပြန်ကြိုးစားပါ။"
+                    )
+                    if progress_message_id:
+                        await edit_text(
+                            chat_id_value,
+                            int(progress_message_id),
+                            advance_text,
+                            reply_markup=manual_control_keyboard(session_id),
+                        )
+                    else:
+                        await send_text(
+                            chat_id_value,
+                            advance_text,
+                            reply_markup=manual_control_keyboard(session_id),
+                        )
     except asyncio.CancelledError:
+        cancelled_part_status = "ready"
         try:
             async with MANUAL_SESSION_LOCK:
                 fresh = _load_manual_session(session_id)
@@ -8281,7 +8657,26 @@ async def _run_manual_part_recap(
                 if fresh_part and fresh_part.get("status") == "rendering":
                     fresh_part["status"] = "ready"
                     fresh_part["error"] = ""
-                fresh["status"] = "ready"
+                if fresh_part:
+                    cancelled_part_status = str(
+                        fresh_part.get("status") or cancelled_part_status
+                    )
+                for item in fresh.get("parts") or []:
+                    if isinstance(item, dict) and item.get("status") == "extracting":
+                        item["status"] = "extract_failed"
+                        item["error"] = "နောက်အပိုင်းပို့တာကို ရပ်လိုက်ပြီ — ▶️ နောက်အပိုင်းပို့မယ် နဲ့ ထပ်စမ်းနိုင်ပါတယ်။"
+                counts = _manual_counts(fresh)
+                fresh["status"] = (
+                    "ready_to_join"
+                    if counts["total"] and counts["done"] >= counts["total"]
+                    else "ready"
+                )
+                current_after_cancel = _manual_first_unfinished_part(fresh)
+                fresh["current_part_index"] = (
+                    int(current_after_cancel.get("index") or 0)
+                    if current_after_cancel
+                    else None
+                )
                 fresh["active_render_part"] = None
                 fresh["cancel_requested"] = False
                 _save_manual_session(fresh, allow_clear_cancel=True)
@@ -8296,13 +8691,23 @@ async def _run_manual_part_recap(
                 await edit_reply_markup(
                     chat_id_value,
                     button_message_id,
-                    manual_part_keyboard(session_id, int(part_index), "ready"),
+                    manual_part_keyboard(
+                        session_id,
+                        int(part_index),
+                        "done" if cancelled_part_status == "done" else "ready",
+                    ),
                 )
             if progress_message_id:
+                cancel_text = (
+                    f"✅ Recap အပိုင်း {part_index} ပြီးပါပြီ။ နောက်အပိုင်းပို့တာကိုတော့ ရပ်လိုက်ပါပြီ။ "
+                    "ဆက်လုပ်ချင်ရင် ▶️ နောက်အပိုင်းပို့မယ် ကို နှိပ်ပါ။"
+                    if cancelled_part_status == "done"
+                    else "🛑 ဒီအပိုင်း Recap ကို ရပ်လိုက်ပါပြီ။ ပြန်လုပ်ချင်ရင် Recap ခလုတ်ကို ထပ်နှိပ်ပါ။"
+                )
                 await edit_text(
                     chat_id_value,
                     int(progress_message_id),
-                    "🛑 ဒီအပိုင်း Recap ကို ရပ်လိုက်ပါပြီ။ ပြန်လုပ်ချင်ရင် Recap ခလုတ်ကို ထပ်နှိပ်ပါ။",
+                    cancel_text,
                     reply_markup=manual_control_keyboard(session_id),
                 )
         raise
@@ -8313,10 +8718,25 @@ async def _run_manual_part_recap(
             async with MANUAL_SESSION_LOCK:
                 fresh = _load_manual_session(session_id)
                 fresh_part = _manual_part(fresh, part_index)
-                if fresh_part:
+                recap_already_done = bool(
+                    fresh_part and fresh_part.get("status") == "done"
+                )
+                if fresh_part and not recap_already_done:
                     fresh_part["status"] = "failed"
                     fresh_part["error"] = message
-                fresh["status"] = "ready"
+                counts_after_error = _manual_counts(fresh)
+                fresh["status"] = (
+                    "ready_to_join"
+                    if counts_after_error["total"]
+                    and counts_after_error["done"] >= counts_after_error["total"]
+                    else "ready"
+                )
+                current_after_error = _manual_first_unfinished_part(fresh)
+                fresh["current_part_index"] = (
+                    int(current_after_error.get("index") or 0)
+                    if current_after_error
+                    else None
+                )
                 fresh["active_render_part"] = None
                 fresh["error"] = message
                 _save_manual_session(fresh)
@@ -8326,24 +8746,41 @@ async def _run_manual_part_recap(
             pass
         if chat_id_value:
             button_message_id = int(original_message_id or 0) or None
+            recap_done_for_ui = bool(
+                state
+                and (_manual_part(state, part_index) or {}).get("status") == "done"
+            )
             if button_message_id:
                 await edit_reply_markup(
                     chat_id_value,
                     button_message_id,
-                    manual_part_keyboard(session_id, int(part_index), "failed"),
+                    manual_part_keyboard(
+                        session_id,
+                        int(part_index),
+                        "done" if recap_done_for_ui else "failed",
+                    ),
                 )
+            error_text = (
+                f"✅ <b>အပိုင်း {part_index} Recap ပြီးပါပြီ</b>\n"
+                f"⚠️ နောက်အဆင့်မှာ အမှားတွေ့ပါတယ်: {message}\n\n"
+                "▶️ နောက်အပိုင်းပို့မယ် ကို နှိပ်ပြီး ဆက်ကြိုးစားပါ။"
+                if recap_done_for_ui
+                else (
+                    f"❌ <b>အပိုင်း {part_index} Recap မအောင်မြင်ပါ</b>\n{message}\n\n"
+                    "မူရင်းအပိုင်းအောက်က 🔁 Recap ပြန်လုပ်မယ် ကို နှိပ်ပြီး ပြန်ကြိုးစားနိုင်ပါတယ်။"
+                )
+            )
             if progress_message_id:
                 await edit_text(
                     chat_id_value,
                     int(progress_message_id),
-                    f"❌ <b>အပိုင်း {part_index} Recap မအောင်မြင်ပါ</b>\n{message}\n\n"
-                    "မူရင်းအပိုင်းအောက်က 🔁 Recap ပြန်လုပ်မယ် ကို နှိပ်ပြီး ပြန်ကြိုးစားနိုင်ပါတယ်။",
+                    error_text,
                     reply_markup=manual_control_keyboard(session_id),
                 )
             else:
                 await send_text(
                     chat_id_value,
-                    f"❌ <b>အပိုင်း {part_index} Recap မအောင်မြင်ပါ</b>\n{message}",
+                    error_text,
                     reply_markup=manual_control_keyboard(session_id),
                 )
     finally:
@@ -8354,9 +8791,213 @@ async def _run_manual_part_recap(
             try:
                 fresh = _load_manual_session(session_id)
                 should_clear = not any(
-                    isinstance(item, dict) and item.get("status") == "rendering"
+                    isinstance(item, dict)
+                    and item.get("status") in ("rendering", "extracting")
                     for item in fresh.get("parts") or []
-                ) and fresh.get("status") != "joining"
+                ) and fresh.get("status") not in ("joining", "sending_next")
+            except Exception:
+                should_clear = True
+            if should_clear:
+                ACTIVE_JOBS.pop(chat_id_value, None)
+        gc.collect()
+
+
+
+
+async def _claim_manual_next_part(
+    session_id: str,
+    chat_id: int,
+) -> tuple[dict | None, str]:
+    """Claim extraction/sending of the first not-yet-delivered part."""
+    async with MANUAL_SESSION_LOCK:
+        try:
+            state = _load_manual_session(session_id)
+        except Exception:
+            return None, "expired"
+        if int(state.get("chat_id") or 0) != int(chat_id):
+            return None, "wrong_chat"
+        if _manual_session_expired(state):
+            _delete_manual_session(session_id)
+            return None, "expired"
+        if state.get("status") in ("cancelled", "completed"):
+            return state, "closed"
+        task = MANUAL_RENDER_TASKS.get(session_id)
+        if state.get("cancel_requested"):
+            if (task and not task.done()) or state.get("status") in (
+                "preparing",
+                "splitting",
+                "scripting",
+                "sending_parts",
+                "sending_next",
+                "rendering",
+                "joining",
+            ):
+                return state, "busy"
+            state["cancel_requested"] = False
+            CANCELLED_JOBS.discard(session_id)
+            _save_manual_session(state, allow_clear_cancel=True)
+        if (task and not task.done()) or state.get("status") in (
+            "preparing",
+            "splitting",
+            "scripting",
+            "sending_parts",
+            "sending_next",
+            "rendering",
+            "joining",
+        ) or any(
+            isinstance(item, dict)
+            and item.get("status") in ("rendering", "extracting")
+            for item in state.get("parts") or []
+        ):
+            return state, "busy"
+        active = ACTIVE_JOBS.get(int(chat_id))
+        if active and active != session_id:
+            return state, "active_other"
+        current = _manual_first_unfinished_part(state)
+        if not current:
+            return state, "ready_to_join"
+        current_status = str(current.get("status") or "")
+        if current_status in ("ready", "script_ready", "failed") and current.get(
+            "message_id"
+        ):
+            state["status"] = "ready"
+            state["current_part_index"] = int(current.get("index") or 0)
+            state["error"] = ""
+            _save_manual_session(state)
+            return state, "current_waiting"
+        if current_status not in (
+            "waiting",
+            "extract_failed",
+            "failed",
+            "ready",
+            "script_ready",
+        ):
+            return state, "busy"
+        current["status"] = "extracting"
+        current["error"] = ""
+        state["status"] = "sending_next"
+        state["current_part_index"] = int(current.get("index") or 0)
+        state["active_render_part"] = None
+        state["error"] = ""
+        ACTIVE_JOBS[int(chat_id)] = session_id
+        _save_manual_session(state)
+        return state, "claimed"
+
+
+async def _run_manual_next_part(
+    session_id: str,
+    progress_message_id: int = None,
+) -> None:
+    """Extract/send the current original after a manual Next tap."""
+    current_task = asyncio.current_task()
+    chat_id_value = 0
+    part_index = 0
+    total_parts = 0
+    try:
+        state = _load_manual_session(session_id)
+        chat_id_value = int(state.get("chat_id") or 0)
+        total_parts = len(state.get("parts") or [])
+        part = _manual_first_unfinished_part(state)
+        if not part:
+            if progress_message_id:
+                await edit_text(
+                    chat_id_value,
+                    int(progress_message_id),
+                    "✅ အပိုင်းအားလုံး Recap ပြီးပါပြီ — 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်ပါ။",
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+            return
+        part_index = int(part.get("index") or 0)
+        tracker = (
+            ProgressTracker(
+                chat_id_value, int(progress_message_id), job_id=session_id
+            )
+            if progress_message_id
+            else _NullProgressTracker()
+        )
+        await _extract_and_send_manual_part(state, part, tracker)
+        state = _load_manual_session(session_id)
+        counts = _manual_counts(state)
+        if progress_message_id:
+            await edit_text(
+                chat_id_value,
+                int(progress_message_id),
+                f"✅ <b>မူရင်းအပိုင်း {part_index}/{total_parts} ကို ပို့ထားပါပြီ</b>\n"
+                f"📊 Recap ပြီးသောအပိုင်း: {counts['done']}/{counts['total']}\n"
+                "ပို့ထားတဲ့ အပိုင်းအောက်က 🎬 Recap လုပ်မယ် ကို နှိပ်ပါ။",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+    except asyncio.CancelledError:
+        try:
+            async with MANUAL_SESSION_LOCK:
+                fresh = _load_manual_session(session_id)
+                for item in fresh.get("parts") or []:
+                    if isinstance(item, dict) and item.get("status") == "extracting":
+                        item["status"] = "extract_failed"
+                        item["error"] = "နောက်အပိုင်းပို့တာကို ရပ်လိုက်ပြီ — ▶️ နောက်အပိုင်းပို့မယ် နဲ့ ထပ်စမ်းနိုင်ပါတယ်။"
+                counts = _manual_counts(fresh)
+                fresh["status"] = (
+                    "ready_to_join"
+                    if counts["total"] and counts["done"] >= counts["total"]
+                    else "ready"
+                )
+                current = _manual_first_unfinished_part(fresh)
+                fresh["current_part_index"] = (
+                    int(current.get("index") or 0) if current else None
+                )
+                fresh["cancel_requested"] = False
+                _save_manual_session(fresh, allow_clear_cancel=True)
+                CANCELLED_JOBS.discard(session_id)
+                chat_id_value = int(fresh.get("chat_id") or chat_id_value)
+        except Exception:
+            pass
+        if chat_id_value and progress_message_id:
+            await edit_text(
+                chat_id_value,
+                int(progress_message_id),
+                "🛑 နောက်အပိုင်းပို့တာကို ရပ်လိုက်ပါပြီ။ ▶️ နောက်အပိုင်းပို့မယ် နဲ့ ပြန်စမ်းနိုင်ပါတယ်။",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+        raise
+    except Exception as e:
+        logger.exception("Manual next-part send failed")
+        message = _user_error_text(e)
+        try:
+            state = _load_manual_session(session_id)
+            chat_id_value = int(state.get("chat_id") or chat_id_value)
+        except Exception:
+            pass
+        if chat_id_value:
+            text = (
+                f"❌ <b>အပိုင်း {part_index}/{total_parts} ကို ပို့၍မရသေးပါ</b>\n"
+                f"{message}\n\n"
+                "▶️ နောက်အပိုင်းပို့မယ် ကို ထပ်နှိပ်ပြီး ပြန်ကြိုးစားနိုင်ပါတယ်။"
+            )
+            if progress_message_id:
+                await edit_text(
+                    chat_id_value,
+                    int(progress_message_id),
+                    text,
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+            else:
+                await send_text(
+                    chat_id_value,
+                    text,
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+    finally:
+        if MANUAL_RENDER_TASKS.get(session_id) is current_task:
+            MANUAL_RENDER_TASKS.pop(session_id, None)
+        if chat_id_value and ACTIVE_JOBS.get(chat_id_value) == session_id:
+            should_clear = True
+            try:
+                fresh = _load_manual_session(session_id)
+                should_clear = not any(
+                    isinstance(item, dict)
+                    and item.get("status") in ("rendering", "extracting")
+                    for item in fresh.get("parts") or []
+                ) and fresh.get("status") not in ("joining", "sending_next")
             except Exception:
                 should_clear = True
             if should_clear:
@@ -8379,7 +9020,11 @@ async def _claim_manual_join(
             _delete_manual_session(session_id)
             return None, "expired"
         task = MANUAL_RENDER_TASKS.get(session_id)
-        if (task and not task.done()) or state.get("status") in ("rendering", "joining"):
+        if (task and not task.done()) or state.get("status") in (
+            "rendering",
+            "joining",
+            "sending_next",
+        ):
             return state, "busy"
         if state.get("cancel_requested"):
             state["cancel_requested"] = False
@@ -8592,7 +9237,11 @@ async def _run_manual_join(
             should_clear = True
             try:
                 fresh = _load_manual_session(session_id)
-                should_clear = fresh.get("status") not in ("rendering", "joining")
+                should_clear = fresh.get("status") not in (
+                    "rendering",
+                    "joining",
+                    "sending_next",
+                )
             except Exception:
                 should_clear = True
             if should_clear:
@@ -8641,9 +9290,10 @@ async def _handle_manual_part_callback(
                 "missing_part": "⚠️ ဒီအပိုင်းကို မတွေ့ပါ။",
                 "done": f"✅ အပိုင်း {part_index} Recap က ပြီးပြီးသားပါ။",
                 "busy": "⏳ အပိုင်းတစ်ခုကို Recap လုပ်နေဆဲပါ။ ပြီးမှ နောက်တစ်ခု နှိပ်ပါ။",
+                "not_current": "⏭️ အရင်ဆုံး လက်ရှိပို့ထားတဲ့အပိုင်းကို Recap ပြီးအောင်လုပ်ပါ။ ပြီးမှ နောက်အပိုင်းကို ပို့ပေးပါမယ်။",
                 "active_other": "⚠️ အခြားအလုပ်တစ်ခု လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ။",
-                "not_ready": "⏳ ဒီအပိုင်းရဲ့ Script/Original က အသင့်မဖြစ်သေးပါ။",
-                "missing": "⌛ ဒီအပိုင်းရဲ့ မူရင်း file သို့မဟုတ် Script မရှိတော့ပါ။ Source ကို ပြန်ပို့ကြည့်ပါ။",
+                "not_ready": "⏳ ဒီအပိုင်းက လက်ရှိ Recap လုပ်လို့ရတဲ့ အပိုင်းမဟုတ်သေးပါ။ လက်ရှိအပိုင်းကို အရင်ပြီးအောင်လုပ်ပါ။",
+                "missing": "⌛ ဒီအပိုင်းရဲ့ မူရင်း file မရှိတော့ပါ။ ▶️ နောက်အပိုင်းပို့မယ် နဲ့ ပြန်စမ်းပါ။ မရရင် Source ကို ပြန်ပို့ကြည့်ပါ။",
             }
             await send_text(
                 chat_id,
@@ -8665,7 +9315,7 @@ async def _handle_manual_part_callback(
         progress_id = await send_text(
             chat_id,
             f"🎬 <b>အပိုင်း {part_index}/{total_parts} Recap စတင်လိုက်ပါပြီ</b>\n"
-            "ဒီအပိုင်းတစ်ခုကိုပဲ သိမ်းထားတဲ့ Script နဲ့ လုပ်ပါမယ်။",
+            "ဒီအပိုင်းတစ်ခုတည်းအတွက် Script ရေးပြီး Recap လုပ်ပါမယ်။ ပြီးမှ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်။",
             reply_markup=job_progress_keyboard(),
         )
         task = _spawn_background(
@@ -8676,6 +9326,50 @@ async def _handle_manual_part_callback(
                 int(message_id) if message_id else None,
             ),
             name=f"manual-part-{session_id}-{part_index}",
+        )
+        MANUAL_RENDER_TASKS[session_id] = task
+        return True
+
+    if action == "next":
+        state, code = await _claim_manual_next_part(session_id, int(chat_id))
+        if code != "claimed":
+            current = _manual_first_unfinished_part(state) if state else None
+            current_index = int(current.get("index") or 0) if current else 0
+            total_parts = len((state or {}).get("parts") or [])
+            messages = {
+                "expired": "⌛ ဒီ session က သက်တမ်းကုန်/ပျောက်သွားပါပြီ။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+                "wrong_chat": "⛔ ဒီ session က ဒီ chat အတွက် မဟုတ်ပါ။",
+                "closed": "⚪ ဒီ session က ပိတ်သွားပါပြီ။",
+                "busy": "⏳ အလုပ်တစ်ခုခု လုပ်နေဆဲပါ။ ပြီးမှ နောက်အပိုင်းကို ပို့ပါမယ်။",
+                "active_other": "⚠️ အခြားအလုပ်တစ်ခု လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ။",
+                "ready_to_join": "✅ အပိုင်းအားလုံး Recap ပြီးပါပြီ — 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်ပါ။",
+                "current_waiting": (
+                    f"🎬 လက်ရှိအပိုင်း {current_index}/{total_parts} ကို ပို့ထားပြီးသားပါ။ "
+                    "အဲဒီအပိုင်းအောက်က Recap လုပ်မယ် ကို နှိပ်ပါ။"
+                ),
+            }
+            await send_text(
+                chat_id,
+                messages.get(code, "⚠️ နောက်အပိုင်းကို ပို့၍မရသေးပါ။"),
+                reply_markup=(
+                    manual_control_keyboard(session_id)
+                    if state
+                    else main_menu_keyboard(chat_id)
+                ),
+            )
+            return True
+        current = _manual_first_unfinished_part(state or {})
+        current_index = int(current.get("index") or 0) if current else 0
+        total_parts = len((state or {}).get("parts") or [])
+        progress_id = await send_text(
+            chat_id,
+            f"▶️ <b>နောက်တစ်ပိုင်း {current_index}/{total_parts} ကိုပဲ ခွဲထုတ်ပို့နေပါသည်</b>\n"
+            "ကျန်အပိုင်းတွေကို ကြိုမခွဲပါ။",
+            reply_markup=job_progress_keyboard(),
+        )
+        task = _spawn_background(
+            _run_manual_next_part(session_id, progress_id),
+            name=f"manual-next-{session_id}-{current_index}",
         )
         MANUAL_RENDER_TASKS[session_id] = task
         return True
@@ -8727,11 +9421,13 @@ async def _handle_manual_part_callback(
                         "splitting",
                         "scripting",
                         "sending_parts",
+                        "sending_next",
                         "rendering",
                         "joining",
                     )
                     or any(
-                        isinstance(p, dict) and p.get("status") == "rendering"
+                        isinstance(p, dict)
+                        and p.get("status") in ("rendering", "extracting")
                         for p in state.get("parts") or []
                     )
                 )
@@ -8853,8 +9549,8 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
     if MANUAL_PARTS_ENABLED:
         initial_text = (
             f"⚡ Recap ပြင်ဆင်နေပါပြီ...\n"
-            "📝 Source တစ်ခုလုံးရဲ့ Script ကို အရင်ရေးပြီး၊ မူရင်းကို ၂ မိနစ်စီခွဲကာ "
-            "တစ်ပိုင်းချင်း 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ် (Auto မ Run ပါ)\n"
+            "✂️ Source ကို download လုပ်ပြီး ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက်ကာ "
+            "ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ် (Auto မ Run ပါ)\n"
             f"🎯 တစ်ပိုင်းချင်း Final duration: မူရင်းအပိုင်း၏ {job_settings['coverage']}% · "
             f"🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p"
         )
@@ -9205,7 +9901,7 @@ async def handle_callback(cb: dict):
     elif data == "menu:settings":
         await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
     elif data == "menu:recap":
-        await show("🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Bot က ၂ မိနစ်စီခွဲပြီး တစ်ခန်းလုံး Script အရင်ရေးမယ်၊ ပြီးရင် မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ တစ်ပိုင်းချင်း ပြန်ပို့ပါမယ်။", main_menu_keyboard(chat_id))
+        await show("🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Bot က download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။ ခလုတ်နှိပ်မှ အဲဒီအပိုင်းကို Recap လုပ်ပြီး ပြီးမှ နောက်တစ်ပိုင်းပို့ပါမယ်။", main_menu_keyboard(chat_id))
     elif data == "menu:status":
         await show(job_status_text(chat_id), _status_keyboard(chat_id))
     elif data == "menu:summary":
@@ -9307,7 +10003,7 @@ async def process_admin_update(update: dict):
         await send_text(
             chat_id,
             "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n"
-            "✂️ Bot က ၂ မိနစ်စီခွဲပြီး တစ်ခန်းလုံး Script အရင်ရေးကာ မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်။",
+            "✂️ Bot က download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။",
             reply_to=msg_id,
             reply_markup=main_menu_keyboard(chat_id),
         )
@@ -9350,7 +10046,7 @@ async def process_admin_update(update: dict):
                 chat_id,
                 "🎬 <b>ဒီ video ကို Recap လုပ်မလား?</b>\n"
                 f"{_telegram_attachment_label(attachment)}\n"
-                "✂️ ၂ မိနစ်စီခွဲပြီး Script အရင်ရေးကာ မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်။",
+                "✂️ Download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။",
                 reply_to=msg_id,
                 reply_markup=confirm_keyboard(),
             )
@@ -9403,7 +10099,7 @@ async def lifespan(_app: FastAPI):
         _installed_yt_dlp_version(),
         _yt_dlp_impersonation_available(),
         _rednote_cookie_configured(),
-        "manual_per_part" if MANUAL_PARTS_ENABLED else "auto",
+        "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto",
     )
     setup_task = _spawn_background(_setup_bot(), name="telegram-setup")
     try:
@@ -9419,7 +10115,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.9-split-progress-fix"
+BUILD_VERSION = "v4.0-sequential-one-part-flow"
 BUILD_FEATURES = 20
 
 
@@ -9431,7 +10127,7 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
-        "recap_flow": "manual_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
+        "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
@@ -9441,7 +10137,7 @@ async def root():
         "first_person_enforcement": "per_scene_validated",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
-            "download_split_120s_script_first_send_originals_click_recap_explicit_join"
+            "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
             if MANUAL_PARTS_ENABLED
             else "download_split_120s_recap_each_concat_send"
         ),
@@ -9479,7 +10175,7 @@ async def health():
         "app": "rednote-bot",
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
-        "recap_flow": "manual_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
+        "recap_flow": "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -9487,7 +10183,7 @@ async def health():
         "first_person_enforcement": "per_scene_validated",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
-            "download_split_120s_script_first_send_originals_click_recap_explicit_join"
+            "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
             if MANUAL_PARTS_ENABLED
             else "download_split_120s_recap_each_concat_send"
         ),
