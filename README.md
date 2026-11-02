@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v4.0-sequential-one-part-flow` downloads the complete source,
+Version `v4.1-telegram-link-fix` downloads the complete source,
 plans fixed **2-minute windows**, physically extracts and sends only the
 first/current window with a **🎬 Recap လုပ်မယ်** button, and waits for the
 user. Clicking that button writes the script and renders only that one
@@ -42,9 +42,13 @@ Set `RECAP_FLOW=manual` (the default in `render.yaml`). Whatever the
 source duration is, Telegram intake follows this exact order:
 
 1. Accept a Telegram video/document video or a video link — including a
-   URL inside RedNote share text — and download the complete source. A
+   URL inside RedNote share text and a public Telegram post link such as
+   `https://t.me/name/123` — and download the complete source. A
    Telegram-uploaded file is still subject to Telegram's Bot API **20MB
-   download limit**; larger material must be sent as a link.
+   download limit**; larger material must be sent as a link. A bare
+   Telegram bot/group/channel profile link (`https://t.me/name`) does not
+   identify a video, so the bot asks the user to forward/send the video
+   itself or copy that video post's link.
 2. Plan the 2-minute boundaries without physically splitting future
    windows. A 3-hour source becomes 90 planned parts; only the last part
    may be shorter. The complete downloaded source remains in the manual
@@ -183,11 +187,12 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v4.0-sequential-one-part-flow"`,
+URLs must show `"version":"v4.1-telegram-link-fix"`,
 `"recap_flow":"manual_sequential_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
 `"segment_pipeline":"download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"`,
-`"telegram_buttons":"inline_persistent_menu_and_per_part_recap"`, a current
+`"telegram_buttons":"inline_persistent_menu_and_per_part_recap"`,
+`"telegram_link_handling":"profile_rejected_public_post_web_fallback"`, a current
 `yt_dlp_version`, the service's real `public_host`, and the deployed
 `render_git_repo_slug`, `render_git_commit`, and `render_git_branch`.
 If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
@@ -201,7 +206,9 @@ the new buttons.
 The downloader no longer sends yt-dlp stderr to `/dev/null`. Logs retain
 only a bounded, redacted tail and the user receives the classified reason
 (403/anti-bot, login/cookie required, geo/private/deleted, unsupported
-extractor, network, or no playable format). The application uses the
+extractor, network, or no playable format). Telegram profile, invite,
+private-post, and public-post links are classified before yt-dlp; public
+posts also get a Telegram web-preview direct-media fallback. The application uses the
 installed `yt-dlp` Python module (with the `curl-cffi` extra), browser
 headers, redirect resolution, RedNote canonical URL candidates, and
 — for RedNote — direct media URLs embedded in the note page as fallbacks.

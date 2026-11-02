@@ -1719,6 +1719,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         for expected in (
             "Telegram ထဲ တိုက်ရိုက်ပို့တဲ့",
             "RedNote link",
+            "Telegram public post link",
+            "group/channel profile link",
             "၂ မိနစ်စီ",
             "၃ နာရီ = ၉၀ ပိုင်း",
             "အပိုင်းတစ်ခုချင်း",
@@ -2078,8 +2080,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(health.json()["telegram_file_download_limit_mb"], 20)
             self.assertEqual(
+                health.json()["telegram_link_handling"],
+                "profile_rejected_public_post_web_fallback",
+            )
+            self.assertEqual(
                 health.json()["source_download_diagnostics"],
-                "redacted_yt_dlp_stderr_with_direct_and_rednote_fallbacks",
+                "redacted_yt_dlp_stderr_with_direct_rednote_and_telegram_fallbacks",
             )
             self.assertEqual(
                 health.json()["telegram_buttons"],
@@ -2561,6 +2567,90 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("403/anti-bot", mapped.user_message)
         self.assertNotIn(fake_token, mapped.detail)
+
+    async def test_telegram_profile_link_is_rejected_before_extractor(self):
+        profile_url = "https://t.me/Goiiautobot0"
+        public_post_url = "https://t.me/example/123"
+        self.assertEqual(bot._telegram_link_info(profile_url)["kind"], "profile")
+        self.assertEqual(
+            bot._telegram_link_info(public_post_url)["kind"], "public_post"
+        )
+        self.assertEqual(
+            bot._telegram_link_info("https://t.me/s/example/123")["kind"],
+            "public_post",
+        )
+        self.assertEqual(
+            bot._telegram_link_info("https://t.me/c/123456/789")["kind"],
+            "private_post",
+        )
+        self.assertEqual(
+            bot._telegram_link_info("https://t.me/+invite-token")["kind"],
+            "invite",
+        )
+
+        mapped = bot._download_error_from_detail(
+            f"ERROR: Unsupported URL: {profile_url}", profile_url
+        )
+        self.assertIn("profile link", mapped.user_message)
+        self.assertIn("forward", mapped.user_message)
+        self.assertIn("extractor rejected", mapped.detail)
+        self.assertNotIn(profile_url, mapped.detail)
+
+        info_mock = AsyncMock(
+            side_effect=AssertionError("Telegram links must skip yt-dlp info")
+        )
+        self.start_patch(patch.object(bot, "_run_ytdlp_info", new=info_mock))
+        self.assertEqual(await bot.get_source_duration(profile_url), 0.0)
+        with self.assertRaises(bot.SourceDownloadError) as raised_duration:
+            await bot.get_source_duration(profile_url, raise_on_error=True)
+        self.assertIn("profile link", raised_duration.exception.user_message)
+        info_mock.assert_not_awaited()
+
+        ytdlp_mock = AsyncMock(
+            side_effect=AssertionError("profile links must not reach yt-dlp")
+        )
+        self.start_patch(
+            patch.object(bot, "_download_with_ytdlp_once", new=ytdlp_mock)
+        )
+        with self.assertRaises(bot.SourceDownloadError) as raised_download:
+            await bot.download_full(
+                profile_url,
+                str(self.tmp_path / "telegram-profile.mp4"),
+                raise_on_error=True,
+            )
+        self.assertIn("profile link", raised_download.exception.user_message)
+        self.assertIn("https://t.me/name/123", raised_download.exception.user_message)
+        ytdlp_mock.assert_not_awaited()
+
+        page = (
+            '<img src="https://cdn4.telesco.pe/file/poster.jpg">'
+            '<video preload="none" '
+            'src="https://cdn4.telesco.pe/file/movie.mp4"></video>'
+        )
+        self.assertEqual(
+            bot._extract_telegram_video_urls_from_html(page, public_post_url),
+            ["https://cdn4.telesco.pe/file/movie.mp4"],
+        )
+
+        extract_mock = AsyncMock(
+            return_value=["https://cdn4.telesco.pe/file/movie.mp4"]
+        )
+        direct_mock = AsyncMock(return_value=33.0)
+        self.start_patch(
+            patch.object(bot, "_extract_telegram_direct_urls", new=extract_mock)
+        )
+        self.start_patch(
+            patch.object(bot, "_download_direct_media", new=direct_mock)
+        )
+        duration = await bot.download_full(
+            public_post_url,
+            str(self.tmp_path / "telegram-public.mp4"),
+            raise_on_error=True,
+        )
+        self.assertEqual(duration, 33.0)
+        extract_mock.assert_awaited_once_with(public_post_url)
+        direct_mock.assert_awaited_once()
+        ytdlp_mock.assert_not_awaited()
 
     def test_rednote_cookies_accept_netscape_and_json(self):
         self.start_patch(
