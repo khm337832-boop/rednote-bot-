@@ -336,12 +336,14 @@ GEMINI_HEARTBEAT_SECONDS = 20.0
 # Gemini "503 high demand" / 429 spikes usually clear within minutes.
 # Burning every model within seconds (the old behaviour) turned those
 # temporary spikes into failed jobs, so overload-class failures get
-# extra whole rounds with growing backoff inside this total budget.
+# extra whole rounds with short, gently growing backoff inside this
+# total budget -- probing often (every ~10-30s) so the job resumes
+# almost as soon as capacity returns instead of sleeping past it.
 GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS = max(
-    0, _parse_int_env("GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS", 600)
+    0, _parse_int_env("GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS", 300)
 )
 GEMINI_OVERLOAD_MAX_ROUNDS = max(
-    1, _parse_int_env("GEMINI_OVERLOAD_MAX_ROUNDS", 6)
+    1, _parse_int_env("GEMINI_OVERLOAD_MAX_ROUNDS", 12)
 )
 
 _GEMINI_OVERLOAD_ERROR_TOKENS = (
@@ -2972,7 +2974,10 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                 with open(tmp_raw, "wb") as f:
                     f.write(data)
 
-                result = run_cmd([
+                # to_thread: a blocking ffmpeg call here would stall
+                # the event loop (progress edits, keep-alive, and the
+                # other parallel TTS batch) for its whole duration.
+                result = await asyncio.to_thread(run_cmd, [
                     FFMPEG_BIN, "-y",
                     "-f", "s16le", "-ar", "24000", "-ac", "1",
                     "-i", tmp_raw,
@@ -3015,15 +3020,35 @@ async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> 
     BATCH_SIZE = 8
     batches = [scenes[i:i + BATCH_SIZE] for i in range(0, len(scenes), BATCH_SIZE)]
     logger.info(f"TTS: {len(scenes)} scenes in {len(batches)} batches")
-    all_clips = []
 
-    for b_idx, batch in enumerate(batches):
-        clips = await _tts_one_batch(batch, b_idx, len(batches), work_dir, settings)
-        if clips is None:
-            logger.error(f"TTS batch {b_idx + 1}/{len(batches)} failed — silence fallback")
+    # Batches are independent (own temp files per batch index), so run
+    # two at a time instead of strictly one-by-one with a fixed pause
+    # between them.  Order is preserved by gather; the per-batch
+    # overload waits inside _tts_one_batch still apply.
+    semaphore = asyncio.Semaphore(2)
+
+    async def _run_batch(b_idx, batch):
+        async with semaphore:
+            return await _tts_one_batch(
+                batch, b_idx, len(batches), work_dir, settings
+            )
+
+    results = await asyncio.gather(
+        *(_run_batch(b_idx, batch) for b_idx, batch in enumerate(batches)),
+        return_exceptions=True,
+    )
+    all_clips = []
+    for b_idx, (batch, clips) in enumerate(zip(batches, results)):
+        if isinstance(clips, Exception) or clips is None:
+            if isinstance(clips, Exception):
+                logger.error(
+                    f"TTS batch {b_idx + 1}/{len(batches)} raised "
+                    f"{clips!r} — silence fallback"
+                )
+            else:
+                logger.error(f"TTS batch {b_idx + 1}/{len(batches)} failed — silence fallback")
             clips = [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in batch]
         all_clips.extend(clips)
-        await asyncio.sleep(1.5)
 
     return all_clips
 
@@ -3519,7 +3544,7 @@ async def _generate_direct_gemini_json(
                     if is_last_in_round:
                         continue
                     if is_overload:
-                        delay = 5.0
+                        delay = 2.0
                         failover_text = (
                             f"♻️ {model} က အလုပ်များနေလို့ (High Demand) "
                             "နောက် model ပြောင်းကြိုးစားနေပါသည်..."
@@ -3551,7 +3576,10 @@ async def _generate_direct_gemini_json(
         # One full round over every model finished without success.
         if not saw_overload or overload_round >= max_rounds:
             break
-        backoff = min(90.0, 20.0 * (2 ** (overload_round - 1)))
+        # Probe again soon (12s, 16s, 20s ... capped at 30s): the goal
+        # is to resume almost immediately when capacity returns, not
+        # to sleep through the end of the spike.
+        backoff = min(30.0, 8.0 + 4.0 * overload_round)
         remaining_budget = overload_deadline - time.monotonic()
         if remaining_budget <= 0:
             break
@@ -4156,8 +4184,15 @@ async def build_chunk_recap(
     # consistent.  The old values required at least 15 x 80 chars even for
     # a 120s part whose full 90% target is only about 702 chars.
     scene_count = max(1, min(15, int(round(float(chunk_dur or 0) / 12.0)) or 1))
-    chars_per_scene = int(
-        math.ceil(float(target_chars or 0) / max(1, scene_count))
+    # Models reliably undershoot explicit character counts, which used
+    # to trigger extra full-video top-up calls on most windows (each
+    # one re-processes the whole clip -- slow).  Ask for ~15% more
+    # than the real target up front; validation still uses
+    # target_chars and trim_scenes_to_target caps any overshoot
+    # locally, instantly, with no extra Gemini call.
+    request_chars = int(math.ceil(float(target_chars or 0) * 1.15))
+    request_chars_per_scene = int(
+        math.ceil(float(request_chars or 0) / max(1, scene_count))
     )
     # 👤 ရေးဟန် = ပထမလူ အမြဲတမ်း (fixed) — အဓိကဇာတ်ကောင် ကိုယ်တိုင်
     # «ကျွန်တော်/ကျွန်မ» အနေနှင့် ပြန်ပြောပြသလို ရေးသည်။ အရင်သိမ်းထားသော
@@ -4240,14 +4275,14 @@ async def build_chunk_recap(
 ## ကြာချိန်နှင့် ဗီဒီယိုတည်းဖြတ်ရန် အချိန်မှတ်ချက်များ
 - နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်းအပိုင်း၏ {st['coverage']}% ဖြစ်ရမည်။ စာလုံးပမာဏသည် အဲဒီကြာချိန်ကို ရအောင်တွက်ထားသော ပမာဏဖြစ်ပြီး အကျဉ်းချုပ်၍ မရပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
-- ခန်း {scene_count} ခန်းခန့် ရေးပါ။ ခန်းတစ်ခန်းလျှင် ပျမ်းမျှ {chars_per_scene} လုံးခန့်ဖြင့် စုစုပေါင်း {target_chars} လုံးခန့် ပြည့်ရမည်။
+- ခန်း {scene_count} ခန်းခန့် ရေးပါ။ ခန်းတစ်ခန်းလျှင် ပျမ်းမျှ {request_chars_per_scene} လုံးခန့်ဖြင့် စုစုပေါင်း {request_chars} လုံးခန့် ပြည့်ရမည်။
 - အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။
 - ပထမခန်း၏ "start" သည် အပိုင်းအစ (0.0 ပတ်ဝန်းကျင်) မှ စပြီး နောက်ဆုံးခန်း၏ "end" သည် အပိုင်းဆုံး ({chunk_dur:.0f} စက္ကန့် ပတ်လည်) အထိ ရောက်ရမည်။ အလယ်တွင် ဇာတ်လမ်းနှင့် ဆိုင်သည့် အချိန်ကွက် တစ်ခုမှ မလွတ်ရပါ။
 - အရေးမကြီးသောအပိုင်းကို ဖြတ်သင့်ပါက ၎င်း၏ မူရင်းစတင်ချိန်နှင့် ဆုံးချိန်ကို "cuts" စာရင်းတွင် ထည့်ပြီး ဖြတ်ရသည့်အကြောင်းကို တိုတိုရေးပါ။
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
-JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {target_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
+JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
 
 ## အဖြေထုတ်ပုံ
 အောက်ပါပုံစံအတိုင်း JSON ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် ရှင်းလင်းချက် သို့မဟုတ် အခြားစာသား မရေးပါနှင့်။
@@ -4310,6 +4345,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     else:
         await tracker.update("🎧 Gemini ဆီ ဗီဒီယိုတင်ပြီး ဇာတ်လမ်းစာသား ရေးနေပါသည်...", force=True)
         video_file = await _upload_video_to_gemini(client, chunk_path)
+        initial_call_failed = False
         try:
             parsed = await _generate_direct_gemini_json(
                 client,
@@ -4337,13 +4373,17 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            initial_call_failed = True
             last_script_error = _safe_error_text(e, 900)
             logger.error(f"AI script error: {last_script_error}")
 
-        if not scenes:
-            # A gap-fill/top-up prompt against an empty previous script is
-            # not a useful recovery.  Ask again with a shorter, unambiguous
-            # full-script prompt and the same multi-model fallback.
+        if not scenes and not initial_call_failed:
+            # The initial call *answered* but with no usable scenes, so
+            # a shorter, unambiguous full-script prompt can recover.
+            # (If the call itself failed -- every model errored or the
+            # overload budget ran out -- this retry would just repeat
+            # the identical long wait, so it is skipped and the
+            # GeminiScriptError below fails the job immediately.)
             await tracker.update(
                 "♻️ Gemini က scene မပြန်သေးလို့ Script အသစ်ကို ပုံစံတိတိကျကျဖြင့် "
                 "ထပ်တောင်းနေပါသည်...",
@@ -4356,7 +4396,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - နာမ်စား: {pronoun_line}
 - လေသံ: {tone_line}
 - "scenes" ကို ဘယ်တော့မှ ကွက်လပ်မထားရ။ အပိုင်းအစ၏ 0.0 မှ {chunk_dur:.1f} စက္ကန့်အထိကို ခန်း {scene_count} ခန်းခန့် ဆက်တိုက်ခွဲပါ။
-- စုစုပေါင်း မြန်မာစာသား {target_chars} လုံးခန့် (ခန်းပျမ်းမျှ {chars_per_scene} လုံး) ရေးပါ။
+- စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့် (ခန်းပျမ်းမျှ {request_chars_per_scene} လုံး) ရေးပါ။
 - အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် ရွေးထားသော နာမ်စား ပါရမည်။
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
 - JSON key များမှာ "protagonist", "pronoun", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
@@ -4550,9 +4590,13 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 scenes, batch_indexes, new_pronoun, new_protagonist
             )
             try:
+                # Text-only on purpose: the repair prompt already
+                # contains every scene's full text, so re-sending the
+                # video would only make each repair call much slower
+                # (full video re-processing) for no fidelity gain.
                 repair_data = await _generate_direct_gemini_json(
                     client,
-                    [video_file, repair_prompt],
+                    [repair_prompt],
                     purpose="first-person repair",
                     tracker=tracker,
                     max_output_tokens=8192,
@@ -6803,7 +6847,7 @@ async def _worker_gemini_json(prompt: str, client=None):
                 logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
         if not saw_overload or round_no >= max_rounds:
             break
-        backoff = min(90.0, 20.0 * (2 ** (round_no - 1)))
+        backoff = min(30.0, 8.0 + 4.0 * round_no)
         remaining_budget = overload_deadline - time.monotonic()
         if remaining_budget <= 0:
             break
@@ -12709,7 +12753,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.3-overload-retry"
+BUILD_VERSION = "v5.4-faster-script"
 BUILD_FEATURES = 20
 
 
