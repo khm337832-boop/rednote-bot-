@@ -16,12 +16,22 @@ services:
         sync: false
       - key: ADMIN_ID
         sync: false
-      # Default Telegram UX: plan 2-minute windows, extract/send only the
-      # current original, script/render it after its Recap click, then send
-      # the next original; explicit final join.  Use "auto" only to restore
-      # the old one-shot pipeline/n8n handoff behaviour.
+      # Default Telegram UX (one-shot auto): the user sends one video/link,
+      # the bot downloads the full source, processes it internally in
+      # fixed 2-minute windows in order, joins everything, verifies the
+      # final duration, and sends the finished final video automatically.
+      # The retired click-each-part manual flow needs BOTH RECAP_FLOW=manual
+      # and ENABLE_MANUAL_FLOW=1; do not set them for normal use.
       - key: RECAP_FLOW
-        value: manual
+        value: auto
+      - key: ENABLE_MANUAL_FLOW
+        value: "0"
+      - key: N8N_TELEGRAM_HANDOFF
+        value: "0"
+      - key: AUTO_SEGMENT_ATTEMPTS
+        value: "3"
+      - key: AUTO_SOURCE_ATTEMPTS
+        value: "2"
       - key: MANUAL_SESSION_TTL_HOURS
         value: "24"
       # Optional RedNote/Xiaohongshu access.  Never paste these values in

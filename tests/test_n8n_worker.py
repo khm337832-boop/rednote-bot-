@@ -2162,7 +2162,23 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["telegram_buttons"],
-                "inline_persistent_menu_and_per_part_recap",
+                "inline_persistent_menu_auto_one_shot_manual_opt_in",
+            )
+            self.assertEqual(
+                health.json()["telegram_pipeline"], "direct_manual_opt_in"
+            )
+            self.assertFalse(health.json()["n8n_telegram_handoff_enabled"])
+            self.assertEqual(
+                health.json()["auto_retry"]["segment_attempts"],
+                bot.AUTO_SEGMENT_ATTEMPTS,
+            )
+            self.assertEqual(
+                health.json()["auto_retry"]["source_attempts"],
+                bot.AUTO_SOURCE_ATTEMPTS,
+            )
+            self.assertEqual(
+                health.json()["auto_retry"]["partial_final_delivery"],
+                "rejected_as_failed",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
@@ -2412,8 +2428,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(13003, bot.ACTIVE_JOBS)
 
     async def test_telegram_source_is_recapped_part_by_part_then_joined_and_sent(self):
-        # This is the RECAP_FLOW=auto compatibility path; the default
-        # manual button flow has dedicated tests below.
+        # This is the default one-shot auto path (v5): one send, internal
+        # 2-minute windows, automatic join and final delivery.  The legacy
+        # manual button flow (explicit opt-in) has dedicated tests below.
         self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
         build_calls = []
         prepare_calls = []
@@ -4288,6 +4305,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
         self.start_patch(patch.object(bot, "PIPELINE_MODE", "n8n"))
         self.start_patch(
+            patch.object(bot, "N8N_TELEGRAM_HANDOFF_ENABLED", True)
+        )
+        self.start_patch(patch.object(bot, "AUTO_SOURCE_ATTEMPTS", 1))
+        self.start_patch(
             patch.object(bot, "N8N_WEBHOOK_URL", "https://n8n.example/webhook")
         )
         self.start_patch(
@@ -4310,6 +4331,177 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             {"kind": "url", "url": "https://videos.example/fallback"},
         )
         self.assertNotIn(14001, bot.ACTIVE_JOBS)
+
+    async def test_manual_flow_requires_double_opt_in(self):
+        resolve = bot._resolve_manual_parts_enabled
+        self.assertFalse(resolve("manual", ""))
+        self.assertFalse(resolve("manual", "0"))
+        self.assertTrue(resolve("manual", "1"))
+        self.assertTrue(resolve("sequential", "yes"))
+        self.assertTrue(resolve("MANUAL", "ON"))
+        self.assertFalse(resolve("auto", "1"))
+        self.assertFalse(resolve("", "1"))
+        self.assertFalse(resolve("auto", ""))
+
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
+        self.start_patch(patch.object(bot, "PIPELINE_MODE", "n8n"))
+        self.start_patch(
+            patch.object(bot, "N8N_TELEGRAM_HANDOFF_ENABLED", False)
+        )
+        # A stale PIPELINE_MODE=n8n must not reroute Telegram jobs.
+        self.assertEqual(bot._telegram_pipeline_name(), "direct_auto")
+
+    async def test_telegram_pipeline_name_variants(self):
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
+        self.start_patch(patch.object(bot, "PIPELINE_MODE", "n8n"))
+        self.start_patch(
+            patch.object(bot, "N8N_TELEGRAM_HANDOFF_ENABLED", True)
+        )
+        self.assertEqual(bot._telegram_pipeline_name(), "n8n_handoff_opt_in")
+
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", True))
+        self.assertEqual(bot._telegram_pipeline_name(), "direct_manual_opt_in")
+
+    async def test_auto_segment_recap_retries_transient_failure(self):
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+        build = AsyncMock(
+            side_effect=[
+                RuntimeError("ffmpeg died transiently"),
+                ("recap.mp4", {"summary": "ok"}),
+            ]
+        )
+        self.start_patch(patch.object(bot, "build_chunk_recap", new=build))
+        cleanup = Mock()
+        self.start_patch(
+            patch.object(bot, "_cleanup_auto_segment_retry_artifacts", new=cleanup)
+        )
+
+        recap, summary = await bot._build_chunk_recap_with_retry(
+            "chunk.mp4", 120.0, 0.0, 120.0, {}, 1, None, {}, total_parts=3
+        )
+
+        self.assertEqual(recap, "recap.mp4")
+        self.assertEqual(summary, {"summary": "ok"})
+        self.assertEqual(build.await_count, 2)
+        cleanup.assert_called_once_with("chunk.mp4")
+
+    async def test_auto_source_acquisition_retries_only_transient_failures(self):
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+        acquire = AsyncMock(
+            side_effect=[RuntimeError("read timeout"), ("src.mp4", 30.0)]
+        )
+        self.start_patch(patch.object(bot, "_acquire_source_file", new=acquire))
+
+        result = await bot._acquire_source_file_with_retry(
+            {"kind": "url", "url": "https://videos.example/x"},
+            str(self.tmp_path),
+            None,
+        )
+        self.assertEqual(result, ("src.mp4", 30.0))
+        self.assertEqual(acquire.await_count, 2)
+
+        permanent = AsyncMock(
+            side_effect=bot.SourceDownloadError(
+                "too big", detail="Telegram Bot API 20MB download limit"
+            )
+        )
+        self.start_patch(patch.object(bot, "_acquire_source_file", new=permanent))
+        with self.assertRaises(bot.SourceDownloadError):
+            await bot._acquire_source_file_with_retry(
+                {"kind": "url", "url": "https://videos.example/big"},
+                str(self.tmp_path),
+                None,
+            )
+        self.assertEqual(permanent.await_count, 1)
+
+    async def test_auto_partial_final_upload_is_failure_not_success(self):
+        self.start_patch(patch.object(bot, "MANUAL_PARTS_ENABLED", False))
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+
+        async def fake_telegram_download(_file_id, output_path, _tracker=None, **_kwargs):
+            Path(output_path).write_bytes(b"x" * 10001)
+            return 60.0
+
+        async def fake_prepare(_source_path, work_dir, _duration, _seconds, tracker=None, **_kwargs):
+            path = Path(work_dir) / "source_part_0001.mp4"
+            path.write_bytes(b"s" * 100)
+            return [
+                {
+                    "index": 1,
+                    "path": str(path),
+                    "start": 0.0,
+                    "end": 60.0,
+                    "duration": 60.0,
+                }
+            ]
+
+        async def fake_build(chunk_path, *_args, **_kwargs):
+            output = Path(chunk_path).parent / "recap_part_0001.mp4"
+            output.write_bytes(b"r" * 100)
+            return str(output), {
+                "characters": ["Hero"],
+                "summary": "done",
+                "last_scene": "end",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            }
+
+        def fake_concat(parts, output_path, concat_path):
+            Path(concat_path).write_text("\n".join(parts), encoding="utf-8")
+            Path(output_path).write_bytes(b"joined" * 100)
+            return True
+
+        def fake_probe(path):
+            if Path(path).name == "final_recap.mp4":
+                return (54.0, 64, 64)
+            return (60.0, 64, 64)
+
+        async def fake_split(path, work_dir):
+            extra = Path(work_dir) / "final_part2.mp4"
+            extra.write_bytes(b"p2" * 100)
+            return [path, str(extra)]
+
+        self.start_patch(
+            patch.object(bot, "download_telegram_file", new=fake_telegram_download)
+        )
+        self.start_patch(
+            patch.object(bot, "_prepare_source_segments", new=fake_prepare)
+        )
+        self.start_patch(patch.object(bot, "build_chunk_recap", new=fake_build))
+        self.start_patch(patch.object(bot, "_concat_video_parts", new=fake_concat))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.start_patch(
+            patch.object(bot, "split_for_telegram", new=AsyncMock(side_effect=fake_split))
+        )
+        # First final part uploads; the second fails on every attempt.
+        self.mock_tg_upload.reset_mock()
+        self.mock_tg_upload.side_effect = [{"ok": True}] + [{"ok": False}] * 3
+        self.mock_bump_stat.reset_mock()
+
+        await bot.handle_telegram_video_job(
+            16001,
+            99,
+            {
+                "file_id": "uploaded-source",
+                "file_name": "movie.mp4",
+                "mime_type": "video/mp4",
+                "duration": 60,
+                "file_size": 10001,
+            },
+        )
+
+        # 1 successful upload + 3 attempts on the failing part.
+        self.assertEqual(self.mock_tg_upload.await_count, 4)
+        bumped = [call.args for call in self.mock_bump_stat.call_args_list]
+        self.assertIn((16001, "failed"), bumped)
+        self.assertNotIn((16001, "done"), bumped)
+        self.assertNotIn(16001, bot.ACTIVE_JOBS)
 
 
 if __name__ == "__main__":
