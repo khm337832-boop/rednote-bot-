@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.5-hedged-script` is a **one-shot automatic flow**: the user
+Version `v5.6-fastest-answer` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -30,20 +30,23 @@ no longer freeze a job at "retrying script (3/3)"; if every model
 still returns nothing usable the job fails fast with a clear message
 instead of re-uploading and repeating the same calls. Overload-class
 failures (429 / 503 "high demand") are waited out instead of burned
-through in seconds: whole model rounds repeat with short backoff
-(12s → 30s, probing often so the job resumes as soon as capacity
-returns) inside a bounded budget
-(`GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS`, default 300s, max 12 rounds)
+through in seconds: whole model rounds repeat with very short
+backoff (6s → 10s, probing often so the job resumes as soon as
+capacity returns, but giving up clearly instead of making the user
+wait) inside a bounded budget
+(`GEMINI_OVERLOAD_RETRY_BUDGET_SECONDS`, default 120s, max 12 rounds)
 with visible countdown progress, a `gemini-3.5-flash-lite` capacity
 fallback runs last in each round, and TTS batches likewise wait
 longer between overload retries. Models that return 404 NOT_FOUND
 (e.g. retired `gemini-2.5-flash-lite`) are remembered process-wide
 and skipped from then on, and the reported error prefers the
-overload cause over a trailing model's 404. Script models are also called with
-staggered hedging: if the current model has not answered within
-`GEMINI_HEDGE_DELAY_SECONDS` (45s), the next model starts in parallel
-and the first successful answer wins, so one slow/queued request
-cannot stall the cascade. The script stage is also leaner:
+overload cause over a trailing model's 404. Script generation races
+models for the fastest answer: on calls that carry the video, the
+first `GEMINI_HEDGE_INITIAL_PARALLEL` (2) models start together;
+any model still unanswered after `GEMINI_HEDGE_DELAY_SECONDS` (15s)
+gets the next model started in parallel, and the first successful
+answer wins (text-only calls start single to save quota), so one
+slow/queued request cannot stall the cascade. The script stage is also leaner:
 the first prompt asks for ~15% more text than the target (models
 undershoot counts; overshoot is trimmed locally for free), the
 second full-script retry is skipped when the first call itself
@@ -266,10 +269,10 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.5-hedged-script"`,
-`"gemini_hedge_delay_seconds":45`,
+URLs must show `"version":"v5.6-fastest-answer"`,
+`"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
-`"gemini_overload_retry_budget_seconds":300`, `"gemini_overload_max_rounds":12`,
+`"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,
