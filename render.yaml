@@ -16,9 +16,10 @@ services:
         sync: false
       - key: ADMIN_ID
         sync: false
-      # Default Telegram UX: whole script first, original 2-minute parts
-      # with individual Recap buttons, explicit final join.  Use "auto"
-      # only to restore the old one-shot pipeline/n8n handoff behaviour.
+      # Default Telegram UX: plan 2-minute windows, extract/send only the
+      # current original, script/render it after its Recap click, then send
+      # the next original; explicit final join.  Use "auto" only to restore
+      # the old one-shot pipeline/n8n handoff behaviour.
       - key: RECAP_FLOW
         value: manual
       - key: MANUAL_SESSION_TTL_HOURS

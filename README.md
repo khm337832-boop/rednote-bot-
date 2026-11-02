@@ -6,11 +6,12 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v3.9-split-progress-fix` downloads the complete source,
-splits it into fixed **2-minute parts**, writes and stores the script for
-the whole source first, sends the original parts back one by one with a
-**🎬 Recap လုပ်မယ်** button under each part, and renders only the part the
-user clicks. After every part is done, the user presses **🔗 ပြန်ဆက်မယ်** to
+Version `v4.0-sequential-one-part-flow` downloads the complete source,
+plans fixed **2-minute windows**, physically extracts and sends only the
+first/current window with a **🎬 Recap လုပ်မယ်** button, and waits for the
+user. Clicking that button writes the script and renders only that one
+part; after it is delivered, the bot extracts and sends only the next
+window. After every part is done, the user presses **🔗 ပြန်ဆက်မယ်** to
 join and receive the final video. It installs the persistent bottom
 buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
@@ -35,7 +36,7 @@ inline buttons attached. While a job is running, Status and Settings open
 in separate messages so progress updates do not overwrite them. Cancel
 persists the request for worker jobs as well as cancelling direct jobs.
 
-## Manual two-minute part pipeline (default)
+## Sequential manual two-minute pipeline (default)
 
 Set `RECAP_FLOW=manual` (the default in `render.yaml`). Whatever the
 source duration is, Telegram intake follows this exact order:
@@ -44,22 +45,22 @@ source duration is, Telegram intake follows this exact order:
    URL inside RedNote share text — and download the complete source. A
    Telegram-uploaded file is still subject to Telegram's Bot API **20MB
    download limit**; larger material must be sent as a link.
-2. Split the downloaded source into 2-minute video files. A 3-hour
-   source becomes 90 parts; only the last part may be shorter. The
-   Telegram progress message updates during this stage with files/MB
-   written, percent, elapsed time, and—when sparse keyframes require the
-   accurate re-encode fallback—part X/N plus an ETA, so a long split is
-   visibly progressing rather than looking stuck.
-3. Before sending any part back, write the script for **all parts in
-   order** and save it under the durable manual session. Character names,
-   protagonist/pronoun, prior-events summary, and last scene are carried
-   from one part to the next to preserve chronology.
-4. Send the original 2-minute parts one by one. Each part has a
-   **🎬 Recap လုပ်မယ်** button; nothing renders automatically.
-5. A click renders only that part from its saved script, using the
-   settings snapshot captured when the source was submitted. Only one
-   part renders at a time for a chat. Successful delivery marks the part
-   done and removes its retained source copy.
+2. Plan the 2-minute boundaries without physically splitting future
+   windows. A 3-hour source becomes 90 planned parts; only the last part
+   may be shorter. The complete downloaded source remains in the manual
+   session for later on-demand extraction.
+3. Extract and send only part 1 (or, later, only the current part) with a
+   **🎬 Recap လုပ်မယ်** button. Its extraction progress shows MB written
+   and elapsed time. No script for it—or any later part—has been written
+   yet.
+4. A click claims only that chronological part and only then writes its
+   first-person script and renders it. Character names,
+   protagonist/pronoun, prior-events summary, and last scene are updated
+   after each finished part and carried into the next one.
+5. After that recap is delivered, the bot extracts and sends only the
+   next original window. If that advance is interrupted, **▶️ နောက်အပိုင်းပို့မယ်**
+   retries just that next original. A future part cannot be recapped
+   before earlier parts are done.
 6. When every part is done, the user clicks **🔗 ပြန်ဆက်မယ်**. The bot joins
    the recap files in order, re-checks the whole-source duration target,
    splits only for Telegram size delivery, sends the final video, and
@@ -116,7 +117,7 @@ a third-person summary if repair does not succeed.
 9. 🎨 အရောင် မြှင့် (color enhance) on/off
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
-12. 📦 မူရင်းပိုင်းချိန် — source is always split into fixed 2-minute parts
+12. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
 13. 🗣️ Script အလျင် ချိန်ညှိ — initial TTS chars/sec estimate 5.5 / 6.5 / 7.5 (later corrected from measured TTS)
 14. 👤 ပြောပြသူ ရှုထောင့် — protagonist first-person (ကျွန်တော်/ကျွန်မ) always; every scene is validated/repaired and the script retells the whole video in order, scene by scene, no summarizing
 15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
@@ -182,10 +183,10 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v3.9-split-progress-fix"`,
-`"recap_flow":"manual_per_part"`, `"manual_parts_enabled":true`,
+URLs must show `"version":"v4.0-sequential-one-part-flow"`,
+`"recap_flow":"manual_sequential_per_part"`, `"manual_parts_enabled":true`,
 `"source_segment_seconds":120`,
-`"segment_pipeline":"download_split_120s_script_first_send_originals_click_recap_explicit_join"`,
+`"segment_pipeline":"download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"`,
 `"telegram_buttons":"inline_persistent_menu_and_per_part_recap"`, a current
 `yt_dlp_version`, the service's real `public_host`, and the deployed
 `render_git_repo_slug`, `render_git_commit`, and `render_git_branch`.
