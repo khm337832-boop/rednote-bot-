@@ -2236,6 +2236,15 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 sorted(bot._DEAD_GEMINI_MODELS),
             )
             self.assertEqual(
+                health.json()["direct_tts_models"], bot.PREFERRED_TTS_MODELS
+            )
+            self.assertIn(
+                "gemini-3.8-flash-lite-tts", health.json()["direct_tts_models"]
+            )
+            self.assertEqual(
+                health.json()["last_tts_error"], bot._LAST_TTS_ERROR
+            )
+            self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
                 bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
             )
@@ -5061,6 +5070,99 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             [1.0] * 8 + [2.0] * 8 + [3.0] * 4,
         )
         self.assertEqual(state["max"], 2)
+
+    async def test_tts_one_batch_falls_back_and_scans_all_parts(self):
+        # Regression: TTS failed on every model in production (100%
+        # silent scenes).  The batch must (a) fall through to the
+        # next model, (b) find the audio even when it is not in
+        # parts[0], and (c) remember the failing model's error for
+        # diagnostics.
+        batch = [{"burmese": "က"}, {"burmese": "ခ"}]
+        audio = b"\x00\x01" * 4000
+        good_resp = SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[
+                            SimpleNamespace(inline_data=None),
+                            SimpleNamespace(
+                                inline_data=SimpleNamespace(data=audio)
+                            ),
+                        ]
+                    )
+                )
+            ]
+        )
+
+        def gen(model, contents, config):
+            if model == "bad-tts":
+                raise RuntimeError("400 INVALID_ARGUMENT: bad voice config")
+            return good_resp
+
+        def fake_run_cmd(cmd, timeout):
+            with open(cmd[-1], "wb") as f:
+                # >1s of samples so split_pcm_by_weights really splits.
+                f.write(b"\x10\x00" * bot.SAMPLE_RATE * 2)
+            return SimpleNamespace(returncode=0)
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(
+                bot, "PREFERRED_TTS_MODELS", ["bad-tts", "good-tts"]
+            )
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", lambda: fake_client)
+        )
+        self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+
+        clips = await bot._tts_one_batch(
+            batch, 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(clips), 2)
+        self.assertIn("bad-tts", bot._LAST_TTS_ERROR)
+        self.assertIn("400", bot._LAST_TTS_ERROR)
+
+    async def test_tts_one_batch_all_fail_records_error_for_gates(self):
+        # When every TTS model fails, the batch returns None (silence
+        # fallback) and the last error is recorded so the silent-
+        # scene gate message can name the actual cause.
+        def gen(model, contents, config):
+            raise RuntimeError("503 UNAVAILABLE: high demand")
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(bot, "PREFERRED_TTS_MODELS", ["only-tts"])
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", lambda: fake_client)
+        )
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+
+        clips = await bot._tts_one_batch(
+            [{"burmese": "က"}], 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNone(clips)
+        self.assertIn("only-tts", bot._LAST_TTS_ERROR)
+        self.assertIn("last TTS error", bot._last_tts_error_suffix())
+
+    def test_tts_speech_config_shapes(self):
+        new_cfg = bot._tts_speech_config("Charon", "voice")
+        self.assertEqual(new_cfg.voice_config.voice, "Charon")
+        old_cfg = bot._tts_speech_config("Charon", "prebuilt")
+        self.assertEqual(
+            old_cfg.voice_config.prebuilt_voice_config.voice_name, "Charon"
+        )
 
     async def test_direct_gemini_json_hedges_when_first_model_is_slow(self):
         # Regression: one model was observed processing a script call

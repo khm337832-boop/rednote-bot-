@@ -391,6 +391,7 @@ _GEMINI_MODEL_GONE_TOKENS = (
     "not_found",
     "not found",
     "no longer available",
+    "not supported",
 )
 
 
@@ -403,6 +404,17 @@ def _live_gemini_models(models) -> list:
     """Drop models known to 404; fall back to the full list if all died."""
     live = [m for m in (models or []) if m not in _DEAD_GEMINI_MODELS]
     return live or list(models or [])
+
+
+# Most recent TTS failure ("model: error"), kept so silent-scene
+# failures are self-diagnosing: it is appended to the user-facing
+# error and exposed on /healthz (Render logs are not always at hand
+# when a job fails in production).
+_LAST_TTS_ERROR = ""
+
+
+def _last_tts_error_suffix() -> str:
+    return f" (last TTS error: {_LAST_TTS_ERROR})" if _LAST_TTS_ERROR else ""
 
 
 MANUAL_SESSION_TTL_HOURS = max(
@@ -546,17 +558,24 @@ def _spawn_background(coro, *, name: str = ""):
 
 # Last entry is a capacity fallback: lite models often stay available
 # while the main flash models return 503 "high demand".
-# NOTE: gemini-2.5-flash-lite now returns 404 "no longer available to
-# new users" for this API key -- Google's own error message says to
-# use gemini-3.5-flash-lite instead.  Models that 404 are also
-# remembered at runtime (see _DEAD_GEMINI_MODELS) and skipped.
+# NOTE: the gemini-2.5 family is being retired for new API keys --
+# gemini-2.5-flash-lite returns 404 "no longer available to new
+# users" (Google's message says to use gemini-3.5-flash-lite) and
+# gemini-2.5-flash was also observed 404ing in production, so the
+# 3.5 models lead.  Anything that 404s is remembered at runtime
+# (see _DEAD_GEMINI_MODELS) and skipped.
 PREFERRED_MODELS = [
-    "gemini-2.5-flash",
     "gemini-3.5-flash",
     "gemini-flash-latest",
+    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
 ]
-PREFERRED_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
+PREFERRED_TTS_MODELS = [
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-preview-tts",
+]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
 
 DEEP_VOICE_FILTER = (
@@ -2973,12 +2992,44 @@ def build_voice_filter(settings: dict = None) -> str:
     return base
 
 
+def _tts_speech_config(voice_name: str, shape: str = "voice"):
+    """Build the TTS speech config.
+
+    Current Gemini TTS models (gemini-3.8-flash-tts and friends)
+    document ``voice_config: {"voice": "Charon"}``; the older
+    preview models used ``prebuilt_voice_config.voice_name``.
+    Sending the shape a model does not accept fails every request
+    with 400 -- observed in production as 100% silent scenes -- so
+    callers alternate shapes across attempts and whichever shape a
+    model accepts wins within the first two attempts.
+    """
+    if shape == "prebuilt":
+        return types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=voice_name
+                )
+            )
+        )
+    return types.SpeechConfig(
+        voice_config=types.VoiceConfig(voice=voice_name)
+    )
+
+
 async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str, settings: dict = None):
+    global _LAST_TTS_ERROR
     s = {**DEFAULT_SETTINGS, **(settings or {})}
     voice_name = s.get("voice") or "Charon"
     voice_filter = build_voice_filter(s)
     client = _make_gemini_client()
     joined = "\n\n".join(s_["burmese"] for s_ in batch)
+    # Current models want voice_config.voice; legacy preview models
+    # want prebuilt_voice_config.voice_name.  Alternate per attempt.
+    try:
+        _voice_fields = types.VoiceConfig.model_fields
+    except Exception:
+        _voice_fields = {}
+    shapes = ["voice", "prebuilt"] if "voice" in _voice_fields else ["prebuilt"]
 
     for model in _live_gemini_models(PREFERRED_TTS_MODELS):
         for attempt in range(3):
@@ -2987,24 +3038,20 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
             try:
                 cfg = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
-                        )
+                    speech_config=_tts_speech_config(
+                        voice_name, shapes[attempt % len(shapes)]
                     ),
                 )
+                # Plain text only: current TTS models recite the
+                # input verbatim, so style instructions would be
+                # read aloud.  Verbatim recitation in the selected
+                # prebuilt voice *is* the original voice at natural
+                # speed.
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
                         client.models.generate_content,
                         model=model,
-                        contents=f"""
-အောက်ပါစာသားကို မြန်မာဘာသာဖြင့် သဘာဝကျသော စကားပြောဟန်ဖြင့် ဖတ်ပါ။
-ရွေးထားသော အသံသရုပ်ဆောင်၏ မူရင်းအသံနေအသံထားအတိုင်း ဖတ်ပါ — အသံကို ပိုနက်အောင်၊ ပိုနှေးအောင် မပြောင်းပါနှင့်။
-ဇာတ်လမ်းကို ကိုယ်တိုင်ကြုံတွေ့ခဲ့သော အဓိကဇာတ်ကောင်က ပြန်ပြောပြနေသလို အသံသွင်းပါ။
-စာသားတွင် မပါသော စကားလုံးများကို မထည့်ပါနှင့်။
-
-{joined}
-""",
+                        contents=joined,
                         config=cfg,
                     ),
                     timeout=float(GEMINI_TTS_TIMEOUT_SECONDS),
@@ -3012,10 +3059,19 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                 cands = getattr(resp, "candidates", None) or []
                 if not cands or not getattr(cands[0], "content", None):
                     raise RuntimeError("no candidates")
-                parts = cands[0].content.parts
-                if not parts or not getattr(parts[0], "inline_data", None):
+                # The audio part is not guaranteed to be first --
+                # scan every part for inline audio data.
+                parts = getattr(cands[0].content, "parts", None) or []
+                data = None
+                for part in parts:
+                    inline = getattr(part, "inline_data", None)
+                    if inline is not None and getattr(inline, "data", None):
+                        data = inline.data
+                        break
+                if data is None:
                     raise RuntimeError("no inline_data")
-                data = parts[0].inline_data.data
+                if isinstance(data, str):
+                    data = base64.b64decode(data)
                 if not data or len(data) < 1000:
                     raise RuntimeError(f"too small ({len(data) if data else 0} bytes)")
 
@@ -3047,6 +3103,7 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
 
             except Exception as e:
                 err = str(e)[:200]
+                _LAST_TTS_ERROR = f"{model}: {err}"[:300]
                 logger.warning(f"TTS batch {batch_idx + 1} attempt {attempt + 1} ({model}): {err}")
                 if _gemini_error_is_model_gone(e):
                     # Retired model: remember it and move straight to
@@ -4918,7 +4975,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             silent_count = int(measurements.get("silent_count") or 0)
             if silent_count == len(clips) or silent_count > max(1, int(len(clips) * 0.25)):
                 raise RuntimeError(
-                    f"Gemini TTS produced too many silent scenes: {silent_count}/{len(clips)}"
+                    f"Gemini TTS produced too many silent scenes: {silent_count}/{len(clips)}" + _last_tts_error_suffix()
                 )
             duration_status = _duration_status(audio_seconds, chunk_dur, st)
             calibration_history.append({
@@ -8073,10 +8130,10 @@ async def _worker_stage_tts(state: dict, tracker=None):
             measurements = _narration_measurements(scenes, clips, settings)
             round_silent = int(measurements.get("silent_count") or 0)
             if not scenes or round_silent == len(scenes):
-                raise WorkerJobError("Gemini TTS produced only silent audio")
+                raise WorkerJobError("Gemini TTS produced only silent audio" + _last_tts_error_suffix())
             if round_silent > max(1, int(len(scenes) * 0.25)):
                 raise WorkerJobError(
-                    f"Gemini TTS produced too many silent scenes: {round_silent}/{len(scenes)}"
+                    f"Gemini TTS produced too many silent scenes: {round_silent}/{len(scenes)}" + _last_tts_error_suffix()
                 )
             narration_now = float(measurements.get("narration_seconds") or 0)
             calibration_history.append({
@@ -8245,10 +8302,10 @@ async def _worker_stage_tts(state: dict, tracker=None):
                 wav_file.writeframes(pause_bytes)
 
     if not entries or silent_count == len(entries):
-        raise WorkerJobError("Gemini TTS produced only silent audio")
+        raise WorkerJobError("Gemini TTS produced only silent audio" + _last_tts_error_suffix())
     if silent_count > max(1, int(len(entries) * 0.25)):
         raise WorkerJobError(
-            f"Gemini TTS produced too many silent scenes: {silent_count}/{len(entries)}"
+            f"Gemini TTS produced too many silent scenes: {silent_count}/{len(entries)}" + _last_tts_error_suffix()
         )
 
     narration_seconds = (
@@ -12945,7 +13002,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.6-fastest-answer"
+BUILD_VERSION = "v5.7-tts-voice-fix"
 BUILD_FEATURES = 20
 
 
@@ -12982,6 +13039,8 @@ async def root():
         "gemini_hedge_delay_seconds": GEMINI_HEDGE_DELAY_SECONDS,
         "gemini_hedge_initial_parallel": GEMINI_HEDGE_INITIAL_PARALLEL,
         "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
+        "direct_tts_models": PREFERRED_TTS_MODELS,
+        "last_tts_error": _LAST_TTS_ERROR,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -13056,6 +13115,8 @@ async def health():
         "gemini_hedge_delay_seconds": GEMINI_HEDGE_DELAY_SECONDS,
         "gemini_hedge_initial_parallel": GEMINI_HEDGE_INITIAL_PARALLEL,
         "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
+        "direct_tts_models": PREFERRED_TTS_MODELS,
+        "last_tts_error": _LAST_TTS_ERROR,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,

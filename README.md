@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.6-fastest-answer` is a **one-shot automatic flow**: the user
+Version `v5.7-tts-voice-fix` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -54,6 +54,15 @@ failed on every model, first-person repairs are text-only (no video
 re-processing), and two TTS batches run concurrently. The default TTS
 voice is the original **Charon** with the Deep pitch-shift filter off
 by default and a neutral reading style (no "deep/slow" instructions).
+TTS requests use the current `voice_config.voice` shape (alternating
+with the legacy `prebuilt_voice_config` shape per attempt, since
+model generations accept different shapes), send plain text only
+(current models recite verbatim -- instructions would be read
+aloud), scan all response parts for the audio, and fall back across
+`gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts`,
+`gemini-3.1-flash-tts-preview` and `gemini-2.5-flash-preview-tts`;
+the most recent TTS error is remembered, appended to silent-scene
+failures, and exposed as `last_tts_error` on `/healthz`.
 It
 installs the persistent bottom buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
@@ -269,7 +278,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.6-fastest-answer"`,
+URLs must show `"version":"v5.7-tts-voice-fix"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
