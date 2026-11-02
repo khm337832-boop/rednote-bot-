@@ -2189,6 +2189,16 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "self_ping_public_healthz_while_jobs_active",
             )
             self.assertEqual(
+                health.json()["gemini_generate_timeout_seconds"],
+                bot.GEMINI_GENERATE_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(
+                health.json()["gemini_tts_timeout_seconds"],
+                bot.GEMINI_TTS_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(health.json()["default_voice"], "Charon")
+            self.assertFalse(health.json()["default_deep_voice_filter"])
+            self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
                 bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
             )
@@ -4650,6 +4660,179 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         self.assertEqual(calls, ["https://example.test/healthz"])
+
+    async def test_direct_gemini_json_times_out_per_model_and_heartbeats(self):
+        # Regression: a single hanging generate_content call used to
+        # freeze the job forever at "retrying script (3/3)".
+        updates = []
+
+        async def fake_update(text, force=False):
+            updates.append(text)
+
+        tracker = SimpleNamespace(update=fake_update)
+        called_models = []
+
+        def hang(model, contents, config):
+            called_models.append(model)
+            time.sleep(1.0)
+            return SimpleNamespace(text="{}")
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=hang)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self.start_patch(
+            patch.object(bot, "GEMINI_GENERATE_TIMEOUT_SECONDS", 0.4)
+        )
+        self.start_patch(patch.object(bot, "GEMINI_HEARTBEAT_SECONDS", 0.05))
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+
+        started = time.monotonic()
+        with self.assertRaises(RuntimeError) as ctx:
+            await bot._generate_direct_gemini_json(
+                fake_client, ["contents"], purpose="test script", tracker=tracker
+            )
+        elapsed = time.monotonic() - started
+
+        self.assertIn("failed after 2 attempts", str(ctx.exception))
+        self.assertEqual(called_models, ["m1", "m2"])
+        # Bounded: ~0.4s per attempt, not the full 1s hang per model.
+        self.assertLess(elapsed, 1.8)
+        self.assertTrue(any("ရေးနေဆဲ" in text for text in updates))
+
+    async def test_direct_gemini_json_succeeds_within_timeout(self):
+        payload = {"scenes": [{"start": 0.0, "end": 5.0, "burmese": "ကျွန်တော်"}]}
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=lambda model, contents, config: SimpleNamespace(
+                    text=json.dumps(payload, ensure_ascii=False)
+                )
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+
+        data = await bot._generate_direct_gemini_json(
+            fake_client, ["contents"], purpose="test script", tracker=None
+        )
+        self.assertEqual(data, payload)
+
+    async def test_script_error_is_not_retried_by_segment_wrapper(self):
+        build = AsyncMock(side_effect=bot.GeminiScriptError("no scenes"))
+        self.start_patch(patch.object(bot, "build_chunk_recap", new=build))
+
+        with self.assertRaises(bot.GeminiScriptError):
+            await bot._build_chunk_recap_with_retry(
+                "chunk.mp4", 120.0, 0.0, 120.0, {}, 1, None, {}, total_parts=2
+            )
+        # Inner generation already exhausted every model fallback; the
+        # whole-segment wrapper must fail fast instead of re-uploading.
+        self.assertEqual(build.await_count, 1)
+
+    async def test_default_voice_is_original_charon_without_deep_filter(self):
+        self.assertEqual(bot.DEFAULT_SETTINGS["voice"], "Charon")
+        self.assertFalse(bot.DEFAULT_SETTINGS["deep"])
+        default_filter = bot.build_voice_filter({})
+        self.assertNotIn("asetrate", default_filter)
+        # The Deep toggle still exists for users who explicitly want it.
+        self.assertIn("asetrate", bot.build_voice_filter({"deep": True}))
+
+    async def test_tts_uses_charon_voice_and_neutral_prompt(self):
+        captured = {}
+
+        def fake_generate(model, contents, config):
+            captured["model"] = model
+            captured["contents"] = contents
+            captured["config"] = config
+            return SimpleNamespace(
+                candidates=[
+                    SimpleNamespace(
+                        content=SimpleNamespace(
+                            parts=[
+                                SimpleNamespace(
+                                    inline_data=SimpleNamespace(data=b"x" * 4000)
+                                )
+                            ]
+                        )
+                    )
+                ]
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=fake_generate)
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+                    SpeechConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+                    VoiceConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+                    PrebuiltVoiceConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+                ),
+            )
+        )
+
+        def fake_run_cmd(cmd, timeout=600):
+            bot.np.zeros(4800, dtype=bot.np.int16).tofile(cmd[-1])
+            return SimpleNamespace(returncode=0)
+
+        self.start_patch(patch.object(bot, "run_cmd", new=fake_run_cmd))
+        self.start_patch(
+            patch.object(
+                bot,
+                "split_pcm_by_weights",
+                new=lambda master, batch: [
+                    bot.np.zeros(2400, dtype=bot.np.float32) for _ in batch
+                ],
+            )
+        )
+
+        clips = await bot._tts_one_batch(
+            [{"burmese": "ကျွန်တော် အိမ်ပြန်ခဲ့တယ်။"}],
+            0,
+            1,
+            str(self.tmp_path),
+            {},
+        )
+
+        self.assertIsNotNone(clips)
+        voice_name = (
+            captured["config"]
+            .speech_config.voice_config.prebuilt_voice_config.voice_name
+        )
+        self.assertEqual(voice_name, "Charon")
+        self.assertIn("ကျွန်တော် အိမ်ပြန်ခဲ့တယ်။", captured["contents"])
+        # Nothing may instruct the voice to sound deep or slow — the
+        # user asked for the original Charon delivery.
+        self.assertNotIn("deep", captured["contents"])
+        self.assertNotIn("အလွန်မြန်မြန်", captured["contents"])
 
 
 if __name__ == "__main__":

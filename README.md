@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.1-fast-split` is a **one-shot automatic flow**: the user
+Version `v5.2-gemini-timeout` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -23,6 +23,14 @@ accurate extraction), so the split stage takes seconds instead of
 re-encoding the whole source. While any job runs, the service also
 self-pings its public `/healthz` URL every few minutes so Render's
 free-plan 15-minute idle spin-down cannot kill a long job mid-render.
+Every Gemini call (script, TTS, upload) is hard time-boxed
+(`GEMINI_GENERATE_TIMEOUT_SECONDS`, default 240s per model attempt)
+with elapsed-time heartbeat progress, so a single hanging request can
+no longer freeze a job at "retrying script (3/3)"; if every model
+still returns nothing usable the job fails fast with a clear message
+instead of re-uploading and repeating the same calls. The default TTS
+voice is the original **Charon** with the Deep pitch-shift filter off
+by default and a neutral reading style (no "deep/slow" instructions).
 It
 installs the persistent bottom buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
@@ -238,7 +246,9 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.1-fast-split"`,
+URLs must show `"version":"v5.2-gemini-timeout"`,
+`"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
+`"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,
 `"source_segment_seconds":120`,
