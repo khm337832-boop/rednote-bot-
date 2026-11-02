@@ -1099,7 +1099,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         generate_calls = []
 
         def fake_generate(model, contents, config):
-            prompt = str(contents[1]) if len(contents) > 1 else ""
+            # Prompt is the last string part (repair calls are text-only
+            # now, so it may be the only part).
+            prompt = next(
+                (str(c) for c in reversed(contents) if isinstance(c, str)),
+                "",
+            )
             generate_calls.append(prompt)
             if "FIRST-PERSON REPAIR ONLY" in prompt:
                 payload = {
@@ -3210,7 +3215,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 settings={"coverage": 90, "rate": 6.5, "pause": 0},
             )
 
-        self.assertEqual(len(model_calls), 4)
+        # The initial call itself failed on every model, so the retry
+        # prompt is skipped (it would repeat the identical wait);
+        # only the initial pass over the models ran.
+        self.assertEqual(len(model_calls), 2)
         self.assertIn("Script scene ထုတ်မပေးနိုင်ပါ", str(raised.exception))
         self.assertIn("synthetic empty Gemini response", str(raised.exception))
         self.assertNotIn("0/702 chars", str(raised.exception))
@@ -4943,6 +4951,90 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("failed after 2 attempts", str(ctx.exception))
         self.assertEqual(calls, ["m1", "m2"])
+
+    async def test_direct_recap_skips_retry_prompt_when_initial_call_fails(self):
+        # If the initial script *call* itself failed on every model,
+        # the second full retry-prompt call would repeat the identical
+        # long wait.  It must be skipped so the job fails fast instead.
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+        calls = []
+
+        def always_fail(model, contents, config):
+            calls.append(model)
+            raise RuntimeError("400 INVALID_ARGUMENT")
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=always_fail),
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1", "m2"]))
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        with self.assertRaises(bot.GeminiScriptError):
+            await bot.build_chunk_recap(
+                str(self.tmp_path / "chunk.mp4"),
+                100,
+                0,
+                100,
+                {},
+                1,
+                tracker,
+                settings={"coverage": 50, "rate": 10.0},
+            )
+        # Only the initial call ran (one pass over the models); the
+        # retry prompt would have doubled this to 4 calls.
+        self.assertEqual(calls, ["m1", "m2"])
+
+    async def test_synthesize_tts_runs_two_batches_concurrently_in_order(self):
+        state = {"active": 0, "max": 0}
+
+        async def fake_one_batch(batch, b_idx, total, work_dir, settings=None):
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+            await asyncio.sleep(0.05)
+            state["active"] -= 1
+            return [
+                bot.np.full(10, float(b_idx + 1), dtype=bot.np.float32)
+                for _ in batch
+            ]
+
+        self.start_patch(patch.object(bot, "_tts_one_batch", new=fake_one_batch))
+        scenes = [{"burmese": f"s{i}"} for i in range(20)]
+
+        clips = await bot.synthesize_tts(scenes, str(self.tmp_path), {})
+
+        self.assertEqual(len(clips), 20)
+        self.assertEqual(
+            [float(c[0]) for c in clips],
+            [1.0] * 8 + [2.0] * 8 + [3.0] * 4,
+        )
+        self.assertEqual(state["max"], 2)
 
 
 if __name__ == "__main__":
