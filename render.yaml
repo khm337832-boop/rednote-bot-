@@ -16,6 +16,20 @@ services:
         sync: false
       - key: ADMIN_ID
         sync: false
+      # Default Telegram UX: whole script first, original 2-minute parts
+      # with individual Recap buttons, explicit final join.  Use "auto"
+      # only to restore the old one-shot pipeline/n8n handoff behaviour.
+      - key: RECAP_FLOW
+        value: manual
+      - key: MANUAL_SESSION_TTL_HOURS
+        value: "24"
+      # Optional RedNote/Xiaohongshu access.  Never paste these values in
+      # chat; set them only in Render Environment/Secret Files if a public
+      # link is blocked and needs a browser cookie.
+      - key: XHS_COOKIE
+        sync: false
+      - key: YTDLP_COOKIES_FILE
+        sync: false
       # --- Optional n8n orchestration ---------------------------------
       # မထည့်ရင် PIPELINE_MODE မရှိတဲ့အတွက် direct bot flow ပဲ သုံးမယ်။
       # n8n ကို အပြည့်အဝစစ်ပြီးမှသာ PIPELINE_MODE=n8n ပြောင်းပါ။

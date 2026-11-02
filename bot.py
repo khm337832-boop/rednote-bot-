@@ -1,6 +1,9 @@
 import asyncio
 import gc
 import hmac
+import html
+import importlib.metadata
+import importlib.util
 import json
 import logging
 import math
@@ -10,13 +13,14 @@ import secrets
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unicodedata
 import wave
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 import numpy as np
@@ -28,6 +32,92 @@ from google.genai import types
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rednote-mm-bot")
+
+# httpx/httpcore log full request URLs at INFO.  For Telegram those URLs
+# contain ``/bot<TOKEN>/...``; two production tokens were exposed that way
+# when Render logs were copied.  Keep those libraries at WARNING and also
+# redact any secret-shaped text that reaches a handler.
+for _noisy_logger in ("httpx", "httpcore", "hpack", "h11"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
+
+def _redact_secret_text(value, limit: int = 0) -> str:
+    """Return text safe for logs/Telegram errors without credentials."""
+    text = str(value or "")
+    for name in (
+        "BOT_TOKEN",
+        "GEMINI_API_KEY",
+        "WHISPER_API_KEY",
+        "WORKER_API_KEY",
+        "N8N_WEBHOOK_SECRET",
+        "XHS_COOKIE",
+    ):
+        secret = str(globals().get(name) or "")
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(
+        r"(https?://api\.telegram\.org/(?:file/)?bot)[^/\s'\"]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b", "[REDACTED_BOT_TOKEN]", text)
+    text = re.sub(
+        r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|cookie|token|secret|x-worker-key)\s*[:=]\s*)[^\s,;]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:api[_-]?key|key|token|access_token|xsec_token)=)[^&\s]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    if limit and len(text) > int(limit):
+        text = text[: int(limit)].rstrip() + "…"
+    return text
+
+
+def _safe_error_text(value, limit: int = 1000) -> str:
+    text = _redact_secret_text(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    if limit and len(text) > int(limit):
+        text = text[: int(limit)].rstrip() + "…"
+    return text
+
+
+class _SecretRedactionFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        try:
+            rendered = record.getMessage()
+            redacted = _redact_secret_text(rendered)
+            if redacted != rendered:
+                record.msg = redacted
+                record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+_SECRET_REDACTION_FILTER = _SecretRedactionFilter()
+logger.addFilter(_SECRET_REDACTION_FILTER)
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_SECRET_REDACTION_FILTER)
+
+
+class SourceDownloadError(RuntimeError):
+    """A source-acquisition failure with a safe, user-actionable reason."""
+
+    def __init__(self, message: str, *, detail: str = "", user_message: str = ""):
+        safe_message = _safe_error_text(message, 1000)
+        super().__init__(safe_message)
+        self.detail = _safe_error_text(detail or message, 2000)
+        self.user_message = (
+            _safe_error_text(user_message, 1000) if user_message else safe_message
+        )
 
 
 def setup_ffmpeg() -> str:
@@ -156,6 +246,38 @@ WORKER_API_KEY = os.environ.get("WORKER_API_KEY", "").strip()
 WORKER_JOBS_DIR = os.path.join(WORK_ROOT, "n8n_jobs")
 os.makedirs(WORKER_JOBS_DIR, exist_ok=True)
 
+# Telegram's normal user-facing flow is the manual two-minute-part flow:
+# script the whole item first, send each original part with its own Recap
+# button, render only a clicked part, and join only after an explicit tap.
+# RECAP_FLOW=auto restores the former one-shot behaviour (and n8n handoff
+# for URL jobs when PIPELINE_MODE=n8n).
+RECAP_FLOW = os.environ.get("RECAP_FLOW", "manual").strip().lower()
+MANUAL_PARTS_ENABLED = RECAP_FLOW not in ("auto", "automatic", "direct", "n8n")
+MANUAL_SESSION_TTL_HOURS = max(
+    1, min(168, _parse_int_env("MANUAL_SESSION_TTL_HOURS", 24))
+)
+
+# Source download configuration.  Cookies are optional and must be set in
+# Render's Environment/Secret Files UI, never pasted into chat or logs.
+TELEGRAM_BOT_FILE_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+SOURCE_DOWNLOAD_TIMEOUT_SECONDS = max(
+    60, _parse_int_env("SOURCE_DOWNLOAD_TIMEOUT_SECONDS", 1800)
+)
+YTDLP_USER_AGENT = (
+    os.environ.get("YTDLP_USER_AGENT", "").strip()
+    or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/140.0.0.0 Safari/537.36"
+)
+YTDLP_COOKIES_FILE = (
+    os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    or os.environ.get("YT_DLP_COOKIES_FILE", "").strip()
+)
+XHS_COOKIE = (
+    os.environ.get("XHS_COOKIE", "").strip()
+    or os.environ.get("REDNOTE_COOKIE", "").strip()
+)
+
 # Whisper is called through an OpenAI-compatible transcription API.
 # This works with OpenAI by default; another compatible provider can be
 # selected by changing WHISPER_API_BASE/WHISPER_MODEL/WHISPER_API_KEY.
@@ -188,10 +310,11 @@ WORKER_STAGE_SEMAPHORE = asyncio.Semaphore(1)
 
 SAMPLE_RATE = 24000
 MAX_TG_BYTES = 45 * 1024 * 1024
-# Product rule: download the complete source first, split it into
-# two-minute parts (last part may be shorter), recap the parts one by one,
-# then join all recap parts back into one final video.  This is fixed for
-# every source duration, e.g. 3 hours -> 90 source parts.
+# Product rule: download the complete source first and split it into
+# two-minute parts (last part may be shorter).  In the default Telegram
+# flow the whole script is then written, original parts are sent back with
+# per-part Recap buttons, and joining is a separate explicit tap.  This is
+# fixed for every source duration, e.g. 3 hours -> 90 source parts.
 SOURCE_SEGMENT_SECONDS = 120
 CHUNK_DURATION = SOURCE_SEGMENT_SECONDS
 PAUSE_AFTER_SCENE = 0.20
@@ -225,6 +348,9 @@ os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
 
 CANCELLED_JOBS: set = set()
 BACKGROUND_TASKS: set = set()
+MANUAL_SESSIONS_BY_CHAT: dict = {}
+MANUAL_RENDER_TASKS: dict = {}
+MANUAL_SESSION_LOCK = asyncio.Lock()
 PERSISTENT_KEYBOARD_CHATS: set = set()
 TELEGRAM_WEBHOOK_ALLOWED_UPDATES = [
     "message",
@@ -347,7 +473,7 @@ FEATURES = [
      "desc": "မလိုတဲ့ အပိုင်း ဖြတ်ထုတ်ခွင့် အများဆုံး %",
      "options": [(0, "လုံးဝ မဖြတ်"), (5, "5%"), (8, "8% ⭐"), (15, "15%")]},
     {"key": "chunk", "icon": "📦", "label": "မူရင်းပိုင်းချိန်", "kind": "cycle",
-     "desc": "Source ကို download ပြီးတာနဲ့ အမြဲတမ်း ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်ကာ ပြန်ဆက်သည်",
+     "desc": "Source ကို download ပြီးတာနဲ့ အမြဲတမ်း ၂ မိနစ်စီခွဲပြီး Script အရင်ရေးကာ အပိုင်းတစ်ခုချင်း Recap ခလုတ်ပြမည်",
      "options": [(SOURCE_SEGMENT_SECONDS, "2 မိနစ် ⭐ (အမြဲတမ်း)")]},
     {"key": "rate", "icon": "🗣️", "label": "Script အလျင် ချိန်ညှိ", "kind": "cycle",
      "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — စာသား ပမာဏ တွက်ရန်",
@@ -519,6 +645,30 @@ def job_progress_keyboard() -> dict:
     ]}
 
 
+def manual_part_keyboard(session_id: str, part_index: int, status: str = "ready") -> dict:
+    """Button attached below one original two-minute Telegram video."""
+    callback = f"part:recap:{session_id}:{int(part_index)}"
+    if status == "rendering":
+        rows = [[btn("⏳ Recap လုပ်နေပြီ...", "part:noop")]]
+    elif status == "done":
+        rows = [[btn("✅ Recap ပြီးပြီ", "part:noop")]]
+    elif status == "failed":
+        rows = [[btn("🔁 Recap ပြန်လုပ်မယ်", callback)]]
+    else:
+        rows = [[btn("🎬 Recap လုပ်မယ်", callback)]]
+    return {"inline_keyboard": rows}
+
+
+def manual_control_keyboard(session_id: str) -> dict:
+    return {"inline_keyboard": [
+        [btn("🔗 Recap အားလုံး ပြန်ဆက်မယ်", f"part:join:{session_id}")],
+        [
+            btn("📊 အပိုင်းအခြေအနေ", f"part:status:{session_id}"),
+            btn("🗑️ Session ပယ်မယ်", f"part:discard:{session_id}"),
+        ],
+    ]}
+
+
 PERSISTENT_BUTTON_RECAP = "🎬 Recap စတင်မယ်"
 PERSISTENT_BUTTON_SETTINGS = "⚙️ ဆက်တင်များ"
 PERSISTENT_BUTTON_STATUS = "📊 အလုပ်အခြေအနေ"
@@ -592,25 +742,26 @@ def start_features_text(chat_id=None) -> str:
         "🎬 <b>RedNote Recap Bot — လုပ်ဆောင်ချက်များ</b>\n"
         "━━━━━━━━━━━━━━━\n\n"
         "<b>📥 ပို့နိုင်တာတွေ</b>\n"
-        "• Telegram ထဲ တိုက်ရိုက်ပို့တဲ့ <b>video file</b>\n"
+        "• Telegram ထဲ တိုက်ရိုက်ပို့တဲ့ <b>video file</b> "
+        "(Telegram Bot download ကန့်သတ်ချက် <b>20MB အောက်</b>)\n"
         "• Document အဖြစ် ပို့တဲ့ video file\n"
-        "• <b>RedNote link</b> နှင့် အခြား video link\n\n"
+        "• <b>RedNote link</b>၊ share စာသားထဲက link နှင့် အခြား video link\n\n"
         "<b>⚙️ Bot လုပ်မယ့် အစီအစဉ်</b>\n"
-        "1️⃣ Source video အပြည့်အစုံကို အရင် download လုပ်မယ်။\n"
+        "1️⃣ Source video အပြည့်အစုံကို အရင် download လုပ်မယ်။ "
+        "20MB ထက်ကြီးသော file ကို link အနေနဲ့ ပို့ပါ။\n"
         "2️⃣ ဘယ်လောက်ရှည်ရှည် <b>၂ မိနစ်စီ</b> ခွဲမယ်။ "
         "ဥပမာ ၃ နာရီ = ၉၀ ပိုင်း၊ နောက်ဆုံးပိုင်းက ကျန်ချိန်အတိုင်းပဲ။\n"
-        "3️⃣ အပိုင်းတွေကို တစ်ပိုင်းချင်း အစဉ်အတိုင်း recap လုပ်မယ်။ "
-        "ဇာတ်ကောင်နာမည်တွေ၊ အဓိကဇာတ်ကောင်၊ ကျွန်တော်/ကျွန်မ နာမ်စား၊ "
-        "ရှေ့က ဖြစ်ပျက်မှုအကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းသို့ "
-        "ဆက်သယ်သွားမယ်။\n"
-        "4️⃣ အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် "
-        "<b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် အချိန်လိုက် အပြည့်အဝ ပြန်ပြောမယ်။ "
-        "Scene တိုင်းရဲ့ စာသားအစစ်ကို စစ်ပြီး third-person ဖြစ်နေရင် ပြန်ပြင်မယ်။\n"
-        f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး Final ကြာချိန်ကို မူရင်း၏ "
-        f"<b>{coverage}%</b> ရအောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။\n"
-        "6️⃣ Recap ပြီးတဲ့ အပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး "
-        "final video တစ်ခုလုပ်၍ ပြန်ပို့မယ်။ File က 45MB ကျော်မှသာ "
-        "Telegram ပို့နိုင်အောင် အပိုင်းခွဲပို့မယ်။\n\n"
+        "3️⃣ တစ်ခန်းလုံးရဲ့ <b>Script ကို အရင်ရေးပြီးသိမ်းမယ်</b>။ အကျဉ်းချုပ်"
+        "မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
+        "အချိန်လိုက် ပြန်ပြောမယ်။ ဇာတ်ကောင်နာမည်တွေ၊ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို "
+        "အပိုင်းတိုင်း ဆက်သယ်သွားမယ်။\n"
+        "4️⃣ ပြီးရင် မူရင်း ၂ မိနစ်အပိုင်းတွေကို တစ်ပိုင်းချင်း ပြန်ပို့ပြီး "
+        "အောက်မှာ <b>🎬 Recap လုပ်မယ်</b> ခလုတ်ထားပေးမယ်။ Auto မ Run ဘူး။\n"
+        f"5️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းကိုပဲ သိမ်းထားတဲ့ Script နဲ့ recap လုပ်မယ်။ "
+        f"TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
+        f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။\n"
+        "6️⃣ အပိုင်းအားလုံး Recap ပြီးမှ <b>🔗 ပြန်ဆက်မယ်</b> ခလုတ်ကို နှိပ်ရင် "
+        "Recap အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး final video ပို့မယ်။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။\n\n"
         "<b>⌨️ ခလုတ် / Command တွေ</b>\n"
         "🎬 Recap စတင်မယ် · ⚙️ ဆက်တင်များ · 📊 အခြေအနေ · "
         "🛑 ရပ်မယ် · 📋 အကျဉ်း · ❓ အကူအညီ\n"
@@ -626,10 +777,12 @@ def start_features_text(chat_id=None) -> str:
 HELP_TEXT = (
     "❓ <b>အသုံးပြုနည်း</b>\n"
     "━━━━━━━━━━━━━━━\n"
-    "1️⃣ Telegram video file၊ document video သို့မဟုတ် RedNote/video link ပို့ပါ\n"
-    "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီခွဲ → တစ်ပိုင်းချင်း "
-    "ပထမလူ recap → အပိုင်းအားလုံး ပြန်ဆက် → Final video ပြန်ပို့ပါမယ်\n"
-    "3️⃣ လုပ်နေစဉ်မှာ အပိုင်းနံပါတ် (ဥပမာ 12/90) နဲ့ progress ကို ပြပါမယ်\n\n"
+    "1️⃣ Telegram video file (20MB အောက်)၊ document video သို့မဟုတ် "
+    "RedNote/video link ပို့ပါ\n"
+    "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီခွဲ → တစ်ခန်းလုံးရဲ့ ပထမလူ "
+    "Script အရင်ရေး → မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
+    "3️⃣ Recap လိုချင်တဲ့ အပိုင်းအောက်က ခလုတ်ကို နှိပ်ပါ။ အဲဒီအပိုင်းကိုပဲ လုပ်ပေးပါမယ်\n"
+    "4️⃣ အပိုင်းတိုင်း ပြီးရင် 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်၍ Final ရယူနိုင်ပါတယ်\n\n"
     "⌨️ <b>Commands:</b>\n"
     "/start သို့မဟုတ် /menu — လုပ်ဆောင်ချက် အပြည့်အစုံ + ပင်မ မီနူး\n"
     "/settings — ဆက်တင်များ\n"
@@ -751,6 +904,22 @@ async def edit_text(chat_id: int, message_id: int, text: str, reply_markup: dict
         if not (res or {}).get("ok"):
             payload.pop("parse_mode", None)
             await tg_api("editMessageText", payload)
+    except Exception:
+        pass
+
+
+async def edit_reply_markup(chat_id: int, message_id: int, reply_markup: dict = None):
+    if not message_id:
+        return
+    try:
+        await tg_api(
+            "editMessageReplyMarkup",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": reply_markup or {"inline_keyboard": []},
+            },
+        )
     except Exception:
         pass
 
@@ -926,20 +1095,324 @@ def _telegram_attachment_label(attachment: dict) -> str:
     return name + (f" ({', '.join(details)})" if details else "")
 
 
-async def download_telegram_file(file_id: str, out_path: str, tracker=None) -> float:
-    """Download an uploaded Telegram file to disk and return its duration."""
-    if not file_id or not BOT_TOKEN:
+def _extract_first_url(text: str) -> str:
+    """Extract the first HTTP(S) URL from a bare link or share caption."""
+    match = re.search(r"https?://[^\s<>\"'“”‘’]+", str(text or ""), re.IGNORECASE)
+    if not match:
+        return ""
+    value = match.group(0).strip()
+    # Share text commonly wraps links in punctuation/brackets.
+    while value and value[-1] in ")]}>.,!?;:'\"":
+        # Do not strip a balanced closing parenthesis that belongs to a
+        # Wikipedia-style URL; share links used here do not need one.
+        value = value[:-1]
+    return value
+
+
+def _url_hostname(url: str) -> str:
+    try:
+        return (urlparse(str(url or "")).hostname or "").lower().strip()
+    except Exception:
+        return ""
+
+
+def _is_rednote_url(url: str) -> bool:
+    host = _url_hostname(url)
+    return bool(
+        host == "xiaohongshu.com"
+        or host.endswith(".xiaohongshu.com")
+        or host == "rednote.com"
+        or host.endswith(".rednote.com")
+        or host == "xhslink.com"
+        or host.endswith(".xhslink.com")
+        or host == "xhslink.cn"
+        or host.endswith(".xhslink.cn")
+        or host.endswith(".xhscdn.com")
+    )
+
+
+def _is_direct_media_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or ""))
+        path = (parsed.path or "").lower()
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        return False
+    return bool(
+        path.endswith(tuple(TELEGRAM_VIDEO_EXTENSIONS))
+        or path.endswith(".m3u8")
+        or host.endswith(".xhscdn.com")
+        or host.endswith("googlevideo.com")
+        or "sns-video" in host
+    )
+
+
+def _configured_cookie_file_path() -> str:
+    configured = str(globals().get("YTDLP_COOKIES_FILE") or "").strip()
+    candidates = [configured] if configured else []
+    candidates.extend(
+        ["/etc/secrets/yt-dlp-cookies.txt", "/etc/secrets/cookies.txt"]
+    )
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _normalise_cookie_domain(domain: str = "") -> str:
+    value = str(domain or "").strip().lower()
+    if not value or "xiaohongshu.com" in value or "rednote.com" in value or "xhslink" in value:
+        return ".xiaohongshu.com"
+    if "xhscdn.com" in value:
+        return ".xhscdn.com"
+    return value if value.startswith(".") or "." in value else ".xiaohongshu.com"
+
+
+def _cookie_records_from_value(value) -> list[tuple[str, str, str, str]]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+
+    if raw[:1] in ("[", "{"):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = None
+        if data is not None:
+            if isinstance(data, dict) and isinstance(data.get("cookies"), list):
+                items = data["cookies"]
+            elif isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                return [
+                    (str(name), str(cookie_value), ".xiaohongshu.com", "/")
+                    for name, cookie_value in data.items()
+                    if str(name).strip() and not isinstance(cookie_value, (dict, list))
+                ]
+            else:
+                items = []
+            records = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("key") or "").strip()
+                cookie_value = item.get("value")
+                if name and cookie_value is not None:
+                    records.append(
+                        (
+                            name,
+                            str(cookie_value),
+                            _normalise_cookie_domain(str(item.get("domain") or "")),
+                            str(item.get("path") or "/") or "/",
+                        )
+                    )
+            if records:
+                return records
+
+    records = []
+    for line in raw.splitlines():
+        clean = line.strip()
+        if clean.startswith("#HttpOnly_"):
+            clean = clean[len("#HttpOnly_") :]
+        elif not clean or clean.startswith("#"):
+            continue
+        fields = clean.split("\t")
+        if len(fields) < 7:
+            continue
+        name = str(fields[5] or "").strip()
+        if name:
+            records.append(
+                (
+                    name,
+                    "\t".join(fields[6:]),
+                    _normalise_cookie_domain(fields[0]),
+                    str(fields[2] or "/") or "/",
+                )
+            )
+    if records:
+        return records
+
+    return [
+        (name, cookie_value, ".xiaohongshu.com", "/")
+        for name, cookie_value in _parse_cookie_header(raw).items()
+    ]
+
+
+def _source_cookie_records() -> list[tuple[str, str, str, str]]:
+    records = _cookie_records_from_value(globals().get("XHS_COOKIE") or "")
+    if records:
+        return records
+    cookie_file = _configured_cookie_file_path()
+    if not cookie_file:
+        return []
+    try:
+        with open(cookie_file, "r", encoding="utf-8", errors="ignore") as fh:
+            return _cookie_records_from_value(fh.read(1024 * 1024))
+    except OSError:
+        return []
+
+
+def _yt_dlp_cookies_file() -> str:
+    configured_file = _configured_cookie_file_path()
+    if configured_file:
+        return configured_file
+    records = _cookie_records_from_value(globals().get("XHS_COOKIE") or "")
+    if not records:
+        return ""
+    lines = ["# Netscape HTTP Cookie File"]
+    for name, cookie_value, domain, path in records:
+        safe_name = str(name).replace("\t", "").replace("\r", "").replace("\n", "")
+        safe_value = (
+            str(cookie_value).replace("\t", "").replace("\r", "").replace("\n", "")
+        )
+        if not safe_name:
+            continue
+        lines.append(
+            "\t".join(
+                [
+                    domain,
+                    "TRUE" if domain.startswith(".") else "FALSE",
+                    path or "/",
+                    "FALSE",
+                    "0",
+                    safe_name,
+                    safe_value,
+                ]
+            )
+        )
+    if len(lines) <= 1:
+        return ""
+    content = "\n".join(lines) + "\n"
+    target = os.path.join(str(globals().get("WORK_ROOT") or "/tmp"), ".yt-dlp-cookies.txt")
+    try:
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        existing = ""
+        if os.path.isfile(target):
+            with open(target, "r", encoding="utf-8", errors="ignore") as fh:
+                existing = fh.read()
+        if existing != content:
+            temp_target = f"{target}.tmp"
+            with open(temp_target, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            try:
+                os.chmod(temp_target, 0o600)
+            except OSError:
+                pass
+            os.replace(temp_target, target)
+        return target
+    except OSError:
+        return ""
+
+
+def _rednote_cookie_configured() -> bool:
+    return bool(
+        str(globals().get("XHS_COOKIE") or "").strip()
+        or _configured_cookie_file_path()
+    )
+
+
+def _parse_cookie_header(value: str) -> dict:
+    cookies = {}
+    for item in str(value or "").split(";"):
+        if "=" not in item:
+            continue
+        name, cookie_value = item.split("=", 1)
+        name = name.strip()
+        if name:
+            cookies[name] = cookie_value.strip()
+    return cookies
+
+
+def _source_browser_headers(url: str = "", referer: str = "") -> dict:
+    headers = {
+        "User-Agent": YTDLP_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,my;q=0.7",
+    }
+    if referer:
+        headers["Referer"] = referer
+    elif _is_rednote_url(url):
+        headers["Referer"] = "https://www.xiaohongshu.com/"
+    return headers
+
+
+def _rednote_httpx_cookies() -> httpx.Cookies:
+    jar = httpx.Cookies()
+    for name, value, domain, path in _source_cookie_records():
+        # xhslink starts on another host and redirects to Xiaohongshu.
+        # Bind configured cookies explicitly to the destination domain so
+        # they survive that redirect instead of being attached only to the
+        # short-link host.
+        jar.set(name, value, domain=domain, path=path or "/")
+    return jar
+
+
+async def download_telegram_file(
+    file_id: str,
+    out_path: str,
+    tracker=None,
+    *,
+    expected_size: int = 0,
+    raise_on_error: bool = False,
+) -> float:
+    """Download an uploaded Telegram file to disk and return its duration.
+
+    The public Telegram Bot API can only download files up to 20MB through
+    ``getFile``.  Previously every failure here collapsed to ``0`` and the
+    user only saw the generic “source download failed”.  When
+    ``raise_on_error`` is set, return the actionable reason instead.
+    """
+
+    def fail(message: str, detail: str = "") -> float:
+        logger.warning("Telegram file download failed: %s", _safe_error_text(detail or message))
+        if raise_on_error:
+            raise SourceDownloadError(message, detail=detail or message, user_message=message)
         return 0.0
+
+    try:
+        known_size = int(expected_size or 0)
+    except (TypeError, ValueError):
+        known_size = 0
+    if known_size > TELEGRAM_BOT_FILE_DOWNLOAD_LIMIT_BYTES:
+        size_mb = known_size / (1024 * 1024)
+        return fail(
+            "Telegram video file က 20MB ထက်ကြီးလို့ Bot က တိုက်ရိုက် download မလုပ်နိုင်ပါ။ "
+            f"ပို့ထားတဲ့ file က {size_mb:.1f}MB ပါ။ Video link အနေနဲ့ပို့ပါ၊ သို့မဟုတ် "
+            "20MB အောက် compress/split လုပ်၍ ပြန်ပို့ပါ။",
+            f"Telegram Bot API getFile limit exceeded: {known_size} bytes",
+        )
+    if not file_id:
+        return fail("Telegram file_id မရပါ။ Video ကို ပြန်ပို့ကြည့်ပါ။")
+    if not BOT_TOKEN:
+        return fail("BOT_TOKEN မသတ်မှတ်ရသေးလို့ Telegram file download မလုပ်နိုင်ပါ။")
+
     result = await tg_api("getFile", {"file_id": file_id}, timeout=120.0)
     if not (result or {}).get("ok"):
-        logger.warning(
-            "Telegram getFile failed: %s",
-            (result or {}).get("description") or "unknown error",
+        description = _safe_error_text((result or {}).get("description") or "unknown error")
+        if "file is too big" in description.lower() or "too big" in description.lower():
+            return fail(
+                "Telegram video file က 20MB ထက်ကြီးလို့ Bot က တိုက်ရိုက် download မလုပ်နိုင်ပါ။ "
+                "Video link အနေနဲ့ပို့ပါ၊ သို့မဟုတ် 20MB အောက် compress/split လုပ်၍ ပြန်ပို့ပါ။",
+                description,
+            )
+        return fail(
+            "Telegram file ကို download လုပ်ဖို့ getFile မအောင်မြင်ပါ။ Video ကို ပြန်ပို့ကြည့်ပါ။",
+            description,
         )
-        return 0.0
-    file_path = str(((result or {}).get("result") or {}).get("file_path") or "")
+    result_data = (result or {}).get("result") or {}
+    file_path = str(result_data.get("file_path") or "")
+    try:
+        remote_size = int(result_data.get("file_size") or 0)
+    except (TypeError, ValueError):
+        remote_size = 0
+    if remote_size > TELEGRAM_BOT_FILE_DOWNLOAD_LIMIT_BYTES:
+        return fail(
+            "Telegram video file က 20MB ထက်ကြီးလို့ Bot က တိုက်ရိုက် download မလုပ်နိုင်ပါ။ "
+            f"File အရွယ်က {remote_size / (1024 * 1024):.1f}MB ပါ။ Video link အနေနဲ့ပို့ပါ။",
+            f"Telegram Bot API getFile limit exceeded: {remote_size} bytes",
+        )
     if not file_path:
-        return 0.0
+        return fail("Telegram getFile က file path မပြန်ပေးပါ။ Video ကို ပြန်ပို့ကြည့်ပါ။")
 
     # Never log this URL: it contains the bot token.
     download_url = (
@@ -951,11 +1424,16 @@ async def download_telegram_file(file_id: str, out_path: str, tracker=None) -> f
     try:
         async with httpx.AsyncClient(timeout=1800.0, follow_redirects=True) as client:
             async with client.stream("GET", download_url) as response:
-                if int(getattr(response, "status_code", 0) or 0) >= 400:
-                    logger.warning(
-                        "Telegram file download HTTP %s", response.status_code
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code >= 400:
+                    if known_size > TELEGRAM_BOT_FILE_DOWNLOAD_LIMIT_BYTES or status_code == 400:
+                        detail = f"Telegram file download HTTP {status_code}; likely over the 20MB Bot API limit"
+                    else:
+                        detail = f"Telegram file download HTTP {status_code}"
+                    return fail(
+                        "Telegram file download မအောင်မြင်ပါ။ File က 20MB ထက်ကြီးရင် link အနေနဲ့ပို့ပါ။",
+                        detail,
                     )
-                    return 0.0
                 with open(out_path, "wb") as fh:
                     async for chunk in response.aiter_bytes(1024 * 1024):
                         if not chunk:
@@ -969,13 +1447,28 @@ async def download_telegram_file(file_id: str, out_path: str, tracker=None) -> f
                                 f"📦 {downloaded / (1024 * 1024):.1f} MB",
                                 force=True,
                             )
+    except SourceDownloadError:
+        raise
     except Exception as e:
-        logger.warning(f"Telegram file download failed: {type(e).__name__}: {e}")
-        return 0.0
+        return fail(
+            "Telegram file download ကြားဖြတ်ပျက်သွားပါသည်။ ခဏနေမှ ပြန်ပို့ကြည့်ပါ။",
+            f"{type(e).__name__}: {_safe_error_text(e)}",
+        )
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
-        return 0.0
-    return float(probe_video_info(out_path)[0] or 0)
+        size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+        return fail(
+            "Telegram က ရလာတဲ့ video file က အလွန်သေး/မပြည့်စုံလို့ ဖတ်မရပါ။ ပြန်ပို့ကြည့်ပါ။",
+            f"downloaded Telegram file is only {size} bytes",
+        )
+    duration = float(probe_video_info(out_path)[0] or 0)
+    if duration <= 0:
+        return fail(
+            "Telegram file ကို download ရသော်လည်း video duration ဖတ်မရပါ။ "
+            "File ပျက်နေခြင်း သို့မဟုတ် codec/container မထောက်ပံ့ခြင်း ဖြစ်နိုင်ပါတယ်။ MP4 အဖြစ် ပြန်ပို့ကြည့်ပါ။",
+            f"ffprobe/ffmpeg could not read a duration from {os.path.getsize(out_path)} bytes",
+        )
+    return duration
 
 
 def probe_video_info(path: str) -> tuple[float, int, int]:
@@ -1002,64 +1495,797 @@ def compute_output_dims(src_w: int, src_h: int, long_edge_target: int = 1280) ->
     return out_w, out_h
 
 
-async def get_source_duration(url: str) -> float:
+def _yt_dlp_command_prefix() -> list[str]:
     try:
-        cmd = ["yt-dlp", "-j", "--no-warnings", url]
+        if importlib.util.find_spec("yt_dlp") is not None:
+            return [sys.executable, "-m", "yt_dlp"]
+    except Exception:
+        pass
+    return ["yt-dlp"]
+
+
+def _installed_yt_dlp_version() -> str:
+    try:
+        return importlib.metadata.version("yt-dlp")
+    except Exception:
+        return "unknown"
+
+
+def _yt_dlp_impersonation_available() -> bool:
+    try:
+        return importlib.util.find_spec("curl_cffi") is not None
+    except Exception:
+        return False
+
+
+def _yt_dlp_base_args(url: str, *, impersonate: bool = False) -> list[str]:
+    args = [
+        "--no-playlist",
+        "--no-warnings",
+        "--socket-timeout",
+        "30",
+        "--retries",
+        "3",
+        "--fragment-retries",
+        "3",
+        "--user-agent",
+        YTDLP_USER_AGENT,
+    ]
+    cookies_file = _yt_dlp_cookies_file()
+    if cookies_file:
+        args.extend(["--cookies", cookies_file])
+    if _is_rednote_url(url):
+        args.extend(["--referer", "https://www.xiaohongshu.com/"])
+    if impersonate and _yt_dlp_impersonation_available():
+        args.extend(["--impersonate", "chrome"])
+    return args
+
+
+def _download_error_from_detail(detail: str, url: str = "") -> SourceDownloadError:
+    raw_lines = [
+        _safe_error_text(line, 700)
+        for line in str(detail or "").splitlines()
+        if str(line or "").strip()
+    ]
+    error_lines = [
+        line
+        for line in raw_lines
+        if "error" in line.lower() or "unable" in line.lower() or "failed" in line.lower()
+    ]
+    concise = (error_lines[-1] if error_lines else (raw_lines[-1] if raw_lines else "unknown download error"))
+    concise = re.sub(r"^ERROR:\s*", "", concise, flags=re.IGNORECASE).strip()
+    lowered = concise.lower()
+    if "unsupported url" in lowered or "no suitable extractor" in lowered:
+        user_message = (
+            "ဒီ link ကို download extractor က မဖတ်နိုင်ပါ။ "
+            "Video page link အပြည့်အစုံ သို့မဟုတ် direct video link ကို ပြန်ပို့ကြည့်ပါ။"
+        )
+    elif any(
+        token in lowered
+        for token in ("http error 403", "403 forbidden", "forbidden", "captcha", "blocked")
+    ):
+        user_message = (
+            "Website က server download ကို ပိတ်ထားပါတယ် (403/anti-bot)။ "
+            "Public link အသစ်ပြန်ကူးပို့ကြည့်ပါ။ RedNote ဆိုရင် cookie လိုအပ်နိုင်ပါတယ်။"
+        )
+    elif any(
+        token in lowered
+        for token in (
+            "login",
+            "sign in",
+            "cookies",
+            "private",
+            "http error 401",
+            "unauthorized",
+            "authentication",
+        )
+    ):
+        user_message = (
+            "ဒီ link က private ဖြစ်နေ၍ဖြစ်စေ login/cookie လိုအပ်၍ဖြစ်စေ download မရပါ။ "
+            "Public ဖွင့်ထားတဲ့ link ကို ပြန်ပို့ကြည့်ပါ။"
+        )
+    elif any(
+        token in lowered
+        for token in ("requested format is not available", "no video formats", "no formats")
+    ):
+        user_message = "ဒီ link မှာ download လုပ်နိုင်တဲ့ video format မတွေ့ပါ။"
+    elif any(
+        token in lowered
+        for token in ("timed out", "timeout", "connection", "network", "name resolution", "temporary failure")
+    ):
+        user_message = "Download server/network ကြောင့် အချိန်ကုန်သွားပါတယ်။ ခဏနေမှ ပြန်ပို့ကြည့်ပါ။"
+    elif any(
+        token in lowered
+        for token in ("http error 404", "not found", "removed", "deleted", "unavailable")
+    ):
+        user_message = "ဒီ video link က မရှိတော့/ဖျက်ခံရ/သက်တမ်းကုန်နေပါတယ်။ Link အသစ်ပြန်ကူးပို့ပါ။"
+    else:
+        user_message = "မူရင်းဗီဒီယို download မရပါ။"
+    return SourceDownloadError(user_message, detail=concise, user_message=user_message)
+
+
+async def _resolve_source_url(url: str) -> str:
+    original = _extract_first_url(url) or str(url or "").strip()
+    if not original.startswith(("http://", "https://")):
+        return original
+    host = _url_hostname(original)
+    should_resolve = _is_rednote_url(original) or host in {
+        "bit.ly",
+        "t.co",
+        "tinyurl.com",
+        "shorturl.at",
+    }
+    if not should_resolve:
+        return original
+    try:
+        cookies = _rednote_httpx_cookies() if _is_rednote_url(original) else None
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            headers=_source_browser_headers(original),
+            cookies=cookies,
+        ) as client:
+            async with client.stream("GET", original) as response:
+                resolved = str(response.url or original)
+        return resolved or original
+    except Exception as e:
+        logger.warning(
+            "source URL resolve failed for host=%s: %s",
+            host or "unknown",
+            _safe_error_text(e),
+        )
+        return original
+
+
+def _source_url_candidates(original: str, resolved: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: str):
+        clean = _extract_first_url(value) or str(value or "").strip()
+        if clean.startswith(("http://", "https://")) and clean not in candidates:
+            candidates.append(clean)
+
+    add(resolved)
+    add(original)
+    for value in list(candidates):
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        if host == "rednote.com" or host.endswith(".rednote.com"):
+            add(parsed._replace(netloc="www.xiaohongshu.com").geturl())
+    return candidates
+
+
+def _extract_direct_video_urls_from_text(text: str, base_url: str = "") -> list[str]:
+    raw = html.unescape(str(text or ""))
+    raw = raw.replace("\\/", "/")
+    raw = re.sub(r"\\u002[fF]", "/", raw)
+    raw = re.sub(r"\\u0026", "&", raw)
+    candidates: list[str] = []
+
+    def add(value: str):
+        clean = str(value or "").strip().strip("\"'")
+        if not clean:
+            return
+        clean = urljoin(base_url or "", clean)
+        if clean.startswith(("http://", "https://")) and clean not in candidates:
+            candidates.append(clean)
+
+    for match in re.finditer(
+        r"(?:masterUrl|master_url|videoUrl|video_url|playUrl|play_url)"
+        r"[\"']?\s*[:=]\s*[\"']([^\"']+)",
+        raw,
+        re.IGNORECASE,
+    ):
+        add(match.group(1))
+    for match in re.finditer(
+        r"originVideoKey[\"']?\s*[:=]\s*[\"']([^\"']+)", raw, re.IGNORECASE
+    ):
+        key = str(match.group(1) or "").lstrip("/")
+        if key:
+            add(f"https://sns-video-bd.xhscdn.com/{key}")
+    media_suffixes = tuple(TELEGRAM_VIDEO_EXTENSIONS) + (".m3u8",)
+    for match in re.finditer(r"https?://[^\s\"'<>\\]+", raw, re.IGNORECASE):
+        value = match.group(0).rstrip("),.;")
+        path = (urlparse(value).path or "").lower()
+        if path.endswith(media_suffixes) or "sns-video" in value.lower():
+            add(value)
+    return candidates[:10]
+
+
+async def _extract_rednote_direct_urls(url: str) -> list[str]:
+    if not _is_rednote_url(url):
+        return []
+    try:
+        async with httpx.AsyncClient(
+            timeout=60.0,
+            follow_redirects=True,
+            headers=_source_browser_headers(url),
+            cookies=_rednote_httpx_cookies(),
+        ) as client:
+            async with client.stream("GET", url) as response:
+                if int(getattr(response, "status_code", 0) or 0) >= 400:
+                    logger.warning(
+                        "RedNote page fallback HTTP %s host=%s",
+                        response.status_code,
+                        _url_hostname(url),
+                    )
+                    return []
+                final_url = str(response.url or url)
+                content_type = str(response.headers.get("content-type") or "").lower()
+                if content_type.startswith("video/"):
+                    return [final_url]
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes(1024 * 256):
+                    if not chunk:
+                        continue
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= 4 * 1024 * 1024:
+                        break
+        text = b"".join(chunks).decode(errors="ignore")
+        return _extract_direct_video_urls_from_text(text, final_url)
+    except Exception as e:
+        logger.warning(
+            "RedNote direct URL extraction failed host=%s: %s",
+            _url_hostname(url),
+            _safe_error_text(e),
+        )
+        return []
+
+
+async def _download_direct_media(
+    url: str,
+    out_path: str,
+    tracker=None,
+    total_dur: float = 0,
+    *,
+    referer: str = "",
+) -> float:
+    clean_url = _extract_first_url(url) or str(url or "").strip()
+    path = (urlparse(clean_url).path or "").lower()
+    if path.endswith(".m3u8"):
+        raise SourceDownloadError(
+            "HLS playlist ကို yt-dlp ဖြင့် download လုပ်ရန် လိုအပ်ပါတယ်။",
+            detail="direct downloader does not handle .m3u8 playlists",
+        )
+    downloaded = 0
+    last_report = time.monotonic()
+    content_type = ""
+    try:
+        cookies = _rednote_httpx_cookies() if _is_rednote_url(clean_url) else None
+        async with httpx.AsyncClient(
+            timeout=1800.0,
+            follow_redirects=True,
+            headers=_source_browser_headers(clean_url, referer=referer),
+            cookies=cookies,
+        ) as client:
+            async with client.stream("GET", clean_url) as response:
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code >= 400:
+                    raise _download_error_from_detail(
+                        f"HTTP Error {status_code} while downloading direct media",
+                        clean_url,
+                    )
+                content_type = str(response.headers.get("content-type") or "").lower()
+                is_known_media = bool(
+                    content_type.startswith("video/")
+                    or "octet-stream" in content_type
+                    or _is_direct_media_url(clean_url)
+                    or "sns-video" in clean_url.lower()
+                )
+                if content_type and not is_known_media:
+                    raise SourceDownloadError(
+                        "Link က video file မဟုတ်ဘဲ web page ပြန်ပေးနေပါတယ်။",
+                        detail=f"direct URL returned content-type {content_type}",
+                    )
+                try:
+                    content_length = int(response.headers.get("content-length") or 0)
+                except (TypeError, ValueError):
+                    content_length = 0
+                with open(out_path, "wb") as fh:
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        if not chunk:
+                            continue
+                        fh.write(chunk)
+                        downloaded += len(chunk)
+                        if tracker and time.monotonic() - last_report >= 4.0:
+                            last_report = time.monotonic()
+                            pct = (
+                                min(95, int(downloaded * 100 / content_length))
+                                if content_length > downloaded
+                                else min(95, int(downloaded / (10 * 1024 * 1024)))
+                            )
+                            await tracker.update(
+                                "📥 မူရင်းဗီဒီယို ဒေါင်းနေသည်...\n"
+                                f"📦 {downloaded / (1024 * 1024):.0f} MB\n"
+                                f"📊 {fmt_progress_bar(pct)}",
+                                force=True,
+                            )
+    except SourceDownloadError:
+        raise
+    except Exception as e:
+        raise _download_error_from_detail(
+            f"{type(e).__name__}: {_safe_error_text(e)}", clean_url
+        ) from e
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
+        size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+        raise SourceDownloadError(
+            "Direct video download က မပြည့်စုံပါ။",
+            detail=f"direct download produced only {size} bytes; content-type={content_type}",
+        )
+    duration = float(probe_video_info(out_path)[0] or 0)
+    if duration <= 0:
+        raise SourceDownloadError(
+            "Download ရလာတဲ့ file ကို video အဖြစ် ဖတ်မရပါ။",
+            detail=(
+                f"direct download produced unreadable media "
+                f"({os.path.getsize(out_path)} bytes, content-type={content_type})"
+            ),
+        )
+    return duration
+
+
+async def _read_stream_tail(stream, max_bytes: int = 65536) -> bytes:
+    if stream is None:
+        return b""
+    buffer = bytearray()
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > max_bytes:
+            del buffer[: len(buffer) - max_bytes]
+    return bytes(buffer)
+
+
+async def _run_ytdlp_info(url: str, *, impersonate: bool = False) -> dict:
+    cmd = [*_yt_dlp_command_prefix(), *_yt_dlp_base_args(url, impersonate=impersonate), "-j", url]
+    try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        out, _ = await proc.communicate()
-        if out:
-            data = json.loads(out.decode().strip().split("\n")[0])
-            dur = data.get("duration")
-            if dur:
-                return float(dur)
-    except Exception as e:
-        logger.warning(f"get_source_duration error: {e}")
-    return 0
-
-
-async def download_full(url: str, out_path: str, tracker=None, total_dur: float = 0) -> float:
-    cmd = [
-        "yt-dlp", "--no-warnings", "--no-part",
-        "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "--merge-output-format", "mp4",
-        "-o", out_path, url,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
+    except FileNotFoundError as e:
+        raise SourceDownloadError(
+            "yt-dlp downloader မတွေ့ပါ။",
+            detail="yt-dlp executable is not installed",
+        ) from e
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+    except asyncio.TimeoutError:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        raise _download_error_from_detail("yt-dlp info timed out", url) from None
+    stdout_text = (out or b"").decode(errors="ignore")
+    stderr_text = (err or b"").decode(errors="ignore")
+    if proc.returncode != 0:
+        raise _download_error_from_detail(stderr_text or stdout_text, url)
+    for line in stdout_text.splitlines():
+        clean = line.strip()
+        if not clean.startswith("{"):
+            continue
+        try:
+            data = json.loads(clean)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise SourceDownloadError(
+        "Video အချက်အလက်ကို yt-dlp က မပြန်ပေးပါ။",
+        detail=_safe_error_text(stderr_text or stdout_text[-1000:]),
     )
 
-    last_report = time.monotonic()
-    while True:
+
+def _duration_from_ytdlp_info(data: dict) -> float:
+    candidates = [data] if isinstance(data, dict) else []
+    entries = data.get("entries") if isinstance(data, dict) else []
+    if isinstance(entries, list):
+        candidates.extend(item for item in entries if isinstance(item, dict))
+    for item in candidates:
         try:
-            await asyncio.wait_for(proc.wait(), timeout=3.0)
-            break
-        except asyncio.TimeoutError:
-            if tracker and time.monotonic() - last_report >= 4.0:
-                last_report = time.monotonic()
-                if os.path.exists(out_path):
-                    mb = os.path.getsize(out_path) / (1024 * 1024)
+            duration = float(item.get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration > 0:
+            return duration
+        formats = item.get("formats") or []
+        format_durations = []
+        if isinstance(formats, list):
+            for fmt in formats:
+                if not isinstance(fmt, dict):
+                    continue
+                try:
+                    value = float(fmt.get("duration") or 0)
+                except (TypeError, ValueError):
+                    value = 0.0
+                if value > 0:
+                    format_durations.append(value)
+        if format_durations:
+            return max(format_durations)
+    return 0.0
+
+
+async def get_source_duration(url: str, *, raise_on_error: bool = False) -> float:
+    original = _extract_first_url(url) or str(url or "").strip()
+    if not original.startswith(("http://", "https://")):
+        error = SourceDownloadError(
+            "Video link မမှန်ပါ။ http/https link အပြည့်အစုံ ပို့ပါ။",
+            detail="source URL is empty or not http/https",
+        )
+        if raise_on_error:
+            raise error
+        return 0.0
+    resolved = await _resolve_source_url(original)
+    candidates = _source_url_candidates(original, resolved)
+    attempts: list[tuple[str, bool]] = [(item, False) for item in candidates]
+    if candidates and _is_rednote_url(candidates[0]) and _yt_dlp_impersonation_available():
+        attempts.append((candidates[0], True))
+    errors: list[SourceDownloadError] = []
+    for candidate, impersonate in attempts:
+        try:
+            info = await _run_ytdlp_info(candidate, impersonate=impersonate)
+            duration = _duration_from_ytdlp_info(info)
+            if duration > 0:
+                return duration
+            errors.append(
+                SourceDownloadError(
+                    "Video duration ကို link က မရပါ။",
+                    detail="yt-dlp info did not include a duration",
+                )
+            )
+        except SourceDownloadError as e:
+            errors.append(e)
+        except Exception as e:
+            errors.append(
+                _download_error_from_detail(
+                    f"{type(e).__name__}: {_safe_error_text(e)}", candidate
+                )
+            )
+    if errors:
+        logger.warning(
+            "get_source_duration failed host=%s: %s",
+            _url_hostname(original),
+            errors[0].detail,
+        )
+        if raise_on_error:
+            raise errors[0]
+    return 0.0
+
+
+def _normalize_downloaded_video(produced_path: str, out_path: str) -> bool:
+    if os.path.abspath(produced_path) == os.path.abspath(out_path):
+        return os.path.exists(out_path)
+    parent = os.path.dirname(os.path.abspath(out_path))
+    os.makedirs(parent, exist_ok=True)
+    if os.path.exists(out_path):
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+    result = run_cmd(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            produced_path,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            out_path,
+        ],
+        1200,
+    )
+    if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        try:
+            os.remove(produced_path)
+        except Exception:
+            pass
+        return True
+    try:
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        shutil.move(produced_path, out_path)
+        return bool(os.path.exists(out_path) and os.path.getsize(out_path) > 0)
+    except Exception:
+        return False
+
+
+async def _download_with_ytdlp_once(
+    url: str,
+    out_path: str,
+    tracker=None,
+    total_dur: float = 0,
+    *,
+    format_selector: str = "bestvideo[height<=720]+bestaudio/best[height<=720]",
+    impersonate: bool = False,
+) -> float:
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    os.makedirs(out_dir, exist_ok=True)
+    filename = os.path.basename(out_path) or "source.mp4"
+    stem = os.path.splitext(filename)[0] or "source"
+    download_prefix = f"{stem}_download."
+    template = os.path.join(out_dir, f"{stem}_download.%(ext)s")
+
+    def current_files() -> list[str]:
+        try:
+            names = os.listdir(out_dir)
+        except Exception:
+            return []
+        paths = []
+        for name in names:
+            if not name.startswith(download_prefix):
+                continue
+            path = os.path.join(out_dir, name)
+            try:
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    paths.append(path)
+            except Exception:
+                continue
+        return sorted(paths, key=lambda p: os.path.getsize(p), reverse=True)
+
+    def cleanup_files(except_path: str = ""):
+        for path in current_files():
+            if except_path and os.path.abspath(path) == os.path.abspath(except_path):
+                continue
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+    cleanup_files()
+    if os.path.exists(out_path):
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+
+    cmd = [
+        *_yt_dlp_command_prefix(),
+        *_yt_dlp_base_args(url, impersonate=impersonate),
+        "--no-part",
+        "-f",
+        format_selector,
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        template,
+        url,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except FileNotFoundError as e:
+        raise SourceDownloadError(
+            "yt-dlp downloader မတွေ့ပါ။",
+            detail="yt-dlp executable is not installed",
+        ) from e
+    stdout_task = asyncio.create_task(_read_stream_tail(proc.stdout))
+    stderr_task = asyncio.create_task(_read_stream_tail(proc.stderr))
+    started = time.monotonic()
+    last_report = started
+    try:
+        while True:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+                break
+            except asyncio.TimeoutError:
+                if time.monotonic() - started > SOURCE_DOWNLOAD_TIMEOUT_SECONDS:
+                    raise _download_error_from_detail(
+                        "yt-dlp download timed out", url
+                    ) from None
+                if tracker and time.monotonic() - last_report >= 4.0:
+                    last_report = time.monotonic()
+                    files = current_files()
+                    mb = (
+                        os.path.getsize(files[0]) / (1024 * 1024)
+                        if files
+                        else 0.0
+                    )
                     if total_dur > 0:
                         pct = min(95, int((mb / max(1, total_dur)) * 100 / 4))
                     else:
                         pct = min(95, int(mb / 10))
                     await tracker.update(
-                        f"📥 မူရင်းဗီဒီယို ဒေါင်းနေသည်...\n"
+                        "📥 မူရင်းဗီဒီယို ဒေါင်းနေသည်...\n"
                         f"📦 {mb:.0f} MB\n"
                         f"📊 {fmt_progress_bar(pct)}",
                         force=True,
                     )
+    except BaseException:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        stdout_task.cancel()
+        stderr_task.cancel()
+        raise
+    stdout_tail, stderr_tail = await asyncio.gather(stdout_task, stderr_task)
+    combined_output = (
+        (stderr_tail or b"").decode(errors="ignore")
+        + "\n"
+        + (stdout_tail or b"").decode(errors="ignore")
+    )
+    files = current_files()
+    if proc.returncode != 0 or not files:
+        cleanup_files()
+        raise _download_error_from_detail(combined_output, url)
 
-    if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
-        return 0
-    actual_dur, _, _ = probe_video_info(out_path)
+    produced = files[0]
+    normalized = await asyncio.to_thread(
+        _normalize_downloaded_video, produced, out_path
+    )
+    cleanup_files(except_path=out_path)
+    if not normalized or not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
+        size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+        detail = _safe_error_text(combined_output[-1000:])
+        raise SourceDownloadError(
+            "Download ရလာတဲ့ video file က မပြည့်စုံ/ဖတ်မရပါ။",
+            detail=f"yt-dlp produced {size} bytes. {detail}",
+        )
+    actual_dur = float(probe_video_info(out_path)[0] or 0)
+    if actual_dur <= 0:
+        raise SourceDownloadError(
+            "Download ရလာတဲ့ file ကို video အဖြစ် ဖတ်မရပါ။",
+            detail=(
+                f"yt-dlp output was {os.path.getsize(out_path)} bytes but "
+                "ffmpeg could not read a video duration"
+            ),
+        )
     return actual_dur
+
+
+async def download_full(
+    url: str,
+    out_path: str,
+    tracker=None,
+    total_dur: float = 0,
+    *,
+    raise_on_error: bool = False,
+) -> float:
+    original = _extract_first_url(url) or str(url or "").strip()
+    if not original.startswith(("http://", "https://")):
+        error = SourceDownloadError(
+            "Video link မမှန်ပါ။ http/https link အပြည့်အစုံ ပို့ပါ။",
+            detail="source URL is empty or not http/https",
+        )
+        if raise_on_error:
+            raise error
+        return 0.0
+
+    resolved = await _resolve_source_url(original)
+    candidates = _source_url_candidates(original, resolved)
+    direct_errors: list[SourceDownloadError] = []
+    ytdlp_errors: list[SourceDownloadError] = []
+    fallback_errors: list[SourceDownloadError] = []
+
+    # A direct media/CDN URL is often faster and more reliable than asking
+    # yt-dlp's generic extractor to rediscover the same URL.
+    for candidate in candidates:
+        candidate_path = (urlparse(candidate).path or "").lower()
+        if _is_direct_media_url(candidate) and not candidate_path.endswith(".m3u8"):
+            try:
+                return await _download_direct_media(
+                    candidate, out_path, tracker, total_dur
+                )
+            except SourceDownloadError as e:
+                direct_errors.append(e)
+                logger.warning(
+                    "direct media download failed host=%s: %s",
+                    _url_hostname(candidate),
+                    e.detail,
+                )
+
+    selectors = [
+        "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "best[height<=720]/best",
+        "best",
+    ]
+    attempts: list[tuple[str, str, bool]] = []
+    if candidates:
+        for selector in selectors:
+            attempts.append((candidates[0], selector, False))
+        for candidate in candidates[1:]:
+            attempts.append((candidate, selectors[0], False))
+            attempts.append((candidate, "best", False))
+        if _is_rednote_url(candidates[0]) and _yt_dlp_impersonation_available():
+            attempts.append((candidates[0], selectors[0], True))
+            attempts.append((candidates[0], "best", True))
+
+    for candidate, selector, impersonate in attempts:
+        try:
+            return await _download_with_ytdlp_once(
+                candidate,
+                out_path,
+                tracker,
+                total_dur,
+                format_selector=selector,
+                impersonate=impersonate,
+            )
+        except SourceDownloadError as e:
+            ytdlp_errors.append(e)
+            logger.warning(
+                "yt-dlp download failed host=%s selector=%s impersonate=%s: %s",
+                _url_hostname(candidate),
+                selector,
+                impersonate,
+                e.detail,
+            )
+
+    # Last RedNote fallback: the page's initial state normally contains
+    # masterUrl/backupUrls/originVideoKey.  Parsing those direct CDN URLs
+    # can still work when the extractor or an anti-bot layer fails.
+    if any(_is_rednote_url(candidate) for candidate in candidates):
+        for candidate in candidates:
+            direct_urls = await _extract_rednote_direct_urls(candidate)
+            for direct_url in direct_urls[:5]:
+                try:
+                    direct_path = (urlparse(direct_url).path or "").lower()
+                    if direct_path.endswith(".m3u8") or not _is_direct_media_url(direct_url):
+                        return await _download_with_ytdlp_once(
+                            direct_url,
+                            out_path,
+                            tracker,
+                            total_dur,
+                            format_selector="best",
+                        )
+                    return await _download_direct_media(
+                        direct_url,
+                        out_path,
+                        tracker,
+                        total_dur,
+                        referer=candidate,
+                    )
+                except SourceDownloadError as e:
+                    fallback_errors.append(e)
+                    logger.warning(
+                        "RedNote direct fallback failed host=%s: %s",
+                        _url_hostname(direct_url),
+                        e.detail,
+                    )
+
+    error = (
+        ytdlp_errors[0]
+        if ytdlp_errors
+        else (
+            direct_errors[0]
+            if direct_errors
+            else (
+                fallback_errors[0]
+                if fallback_errors
+                else SourceDownloadError(
+                    "မူရင်းဗီဒီယို download မရပါ။",
+                    detail="all source download attempts failed without a detailed error",
+                )
+            )
+        )
+    )
+    logger.warning(
+        "download_full failed host=%s: %s",
+        _url_hostname(original),
+        error.detail,
+    )
+    if raise_on_error:
+        raise error
+    return 0.0
 
 
 def build_source_segment_plan(
@@ -1758,6 +2984,31 @@ def _parse_direct_scene_replacements(data, allowed_indexes) -> dict:
     return replacements
 
 
+async def _upload_video_to_gemini(client, chunk_path: str):
+    video_file = await asyncio.to_thread(client.files.upload, file=chunk_path)
+    for _ in range(40):
+        state_obj = getattr(video_file, "state", None)
+        state = getattr(state_obj, "name", str(state_obj or ""))
+        if state in ("ACTIVE", "FAILED"):
+            break
+        await asyncio.sleep(2)
+        video_file = await asyncio.to_thread(client.files.get, name=video_file.name)
+    state_obj = getattr(video_file, "state", None)
+    state = getattr(state_obj, "name", str(state_obj or ""))
+    if state != "ACTIVE":
+        raise RuntimeError("Gemini က ဗီဒီယိုကို စစ်ဆေး၍မရပါ။")
+    return video_file
+
+
+async def _delete_gemini_file(client, video_file) -> None:
+    if not video_file:
+        return
+    try:
+        await asyncio.to_thread(client.files.delete, name=video_file.name)
+    except Exception as e:
+        logger.warning(f"Gemini delete error: {e}")
+
+
 async def build_chunk_recap(
     chunk_path: str,
     chunk_dur: float,
@@ -1767,8 +3018,19 @@ async def build_chunk_recap(
     chunk_index: int,
     tracker: ProgressTracker,
     settings: dict = None,
+    *,
+    script_only: bool = False,
+    prepared_script: dict = None,
+    extract_summary: bool = True,
+    keep_source_chunk: bool = False,
+    output_path: str = "",
 ):
     st = _with_required_coverage(settings)
+    has_prepared_script = bool(
+        isinstance(prepared_script, dict) and prepared_script.get("scenes")
+    )
+    if script_only and has_prepared_script:
+        raise ValueError("script_only cannot be combined with prepared_script")
     coverage_ratio = _settings_coverage_ratio(st)
     chars_rate = _settings_script_rate(st)
     client = genai.Client(api_key=GEMINI_API_KEY)
@@ -1893,46 +3155,55 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 }}
 """.strip()
 
-    await tracker.update("🎧 Gemini ဆီ ဗီဒီယိုတင်ပြီး ဇာတ်လမ်းစာသား ရေးနေပါသည်...", force=True)
-    video_file = await asyncio.to_thread(client.files.upload, file=chunk_path)
-
-    for _ in range(40):
-        state_obj = getattr(video_file, "state", None)
-        state = getattr(state_obj, "name", str(state_obj or ""))
-        if state in ("ACTIVE", "FAILED"):
-            break
-        await asyncio.sleep(2)
-        video_file = await asyncio.to_thread(client.files.get, name=video_file.name)
-
-    state_obj = getattr(video_file, "state", None)
-    state = getattr(state_obj, "name", str(state_obj or ""))
-    if state != "ACTIVE":
-        raise RuntimeError("Gemini က ဗီဒီယိုကို စစ်ဆေး၍မရပါ။")
-
+    video_file = None
     scenes = []
     cuts = []
     new_protagonist = protagonist
     new_pronoun = pronoun
 
-    try:
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model=PREFERRED_MODELS[0],
-            contents=[video_file, prompt],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
+    if has_prepared_script:
+        # Manual per-part flow: the script was already generated and stored
+        # before the original part was sent.  Rendering starts from those
+        # exact scenes; Gemini is only asked for more text later if the
+        # measured TTS duration proves the stored script is too short.
+        scenes = json.loads(
+            json.dumps(prepared_script.get("scenes") or [], ensure_ascii=False)
         )
-        parsed = json.loads(resp.text.strip())
-        if isinstance(parsed, dict):
-            scenes = parsed.get("scenes", [])
-            cuts = parsed.get("cuts", [])
-            if not protagonist:
-                new_protagonist = parsed.get("protagonist", "") or protagonist
-            if parsed.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
-                new_pronoun = parsed["pronoun"]
-        elif isinstance(parsed, list):
-            scenes = parsed
-    except Exception as e:
-        logger.error(f"AI script error: {e}")
+        cuts = json.loads(
+            json.dumps(prepared_script.get("cuts") or [], ensure_ascii=False)
+        )
+        new_protagonist = str(
+            prepared_script.get("protagonist") or protagonist or ""
+        )
+        prepared_pronoun = str(prepared_script.get("pronoun") or "")
+        if prepared_pronoun in ("ကျွန်တော်", "ကျွန်မ"):
+            new_pronoun = prepared_pronoun
+        await tracker.update(
+            "📝 သိမ်းထားပြီးသား Script ကို သုံး၍ Recap ပြင်ဆင်နေပါသည်...",
+            force=True,
+        )
+    else:
+        await tracker.update("🎧 Gemini ဆီ ဗီဒီယိုတင်ပြီး ဇာတ်လမ်းစာသား ရေးနေပါသည်...", force=True)
+        video_file = await _upload_video_to_gemini(client, chunk_path)
+        try:
+            resp = await asyncio.to_thread(
+                client.models.generate_content,
+                model=PREFERRED_MODELS[0],
+                contents=[video_file, prompt],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            parsed = json.loads(resp.text.strip())
+            if isinstance(parsed, dict):
+                scenes = parsed.get("scenes", [])
+                cuts = parsed.get("cuts", [])
+                if not protagonist:
+                    new_protagonist = parsed.get("protagonist", "") or protagonist
+                if parsed.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
+                    new_pronoun = parsed["pronoun"]
+            elif isinstance(parsed, list):
+                scenes = parsed
+        except Exception as e:
+            logger.error(f"AI script error: {e}")
 
     scenes = sort_scenes(scenes)
     new_pronoun = _choose_first_person_pronoun(
@@ -1950,7 +3221,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # Top up repeatedly until the script reaches 90% of the input.
     # (Previously only ONE top-up ran, so short scripts slipped through
     # and the remaining video played with silent narration gaps.)
-    for attempt in range(SCRIPT_TOPUP_ATTEMPTS):
+    # A prepared/manual script was already topped up when it was written;
+    # measured-TTS calibration below is the only stage allowed to add more.
+    for attempt in range(0 if has_prepared_script else SCRIPT_TOPUP_ATTEMPTS):
         if total_chars >= target_chars:
             break
         missing = target_chars - total_chars
@@ -1998,7 +3271,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 
     # Cap an initially over-long script proportionally so the ending is not
     # simply deleted.  Actual duration is corrected again after TTS below.
-    scenes = trim_scenes_to_target(scenes, target_chars)
+    # Do not silently rewrite a stored manual script before measuring it.
+    if not has_prepared_script:
+        scenes = trim_scenes_to_target(scenes, target_chars)
     new_pronoun = _choose_first_person_pronoun(
         [str(s.get("burmese") or "") for s in scenes],
         preferred=new_pronoun or pronoun,
@@ -2008,7 +3283,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # Prompt-only first-person instructions are not sufficient.  Validate
     # every scene's actual Burmese text and ask Gemini to rewrite only the
     # scenes that still sound like a third-person summary.
-    for repair_round in range(FIRST_PERSON_REPAIR_ROUNDS):
+    for repair_round in range(0 if has_prepared_script else FIRST_PERSON_REPAIR_ROUNDS):
         bad_indexes = _first_person_bad_scene_indexes(scenes, new_pronoun)
         if not bad_indexes:
             break
@@ -2068,10 +3343,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     minimum_chars = _minimum_script_chars(target_chars)
     bad_first_person = first_person_metrics.get("bad_scene_indexes") or []
     if not scenes or total_chars < minimum_chars or bad_first_person:
-        try:
-            await asyncio.to_thread(client.files.delete, name=video_file.name)
-        except Exception as e:
-            logger.warning(f"Gemini delete error: {e}")
+        await _delete_gemini_file(client, video_file)
         raise RuntimeError(
             "Script failed duration/first-person validation after repairs: "
             f"{total_chars}/{target_chars} chars "
@@ -2085,6 +3357,48 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         f"📝 Script ပြီးပါပြီ — input ၏ {coverage_pct:.0f}% (ပစ်မှတ် {st['coverage']}%)၊ {total_chars} လုံး",
         force=True,
     )
+
+    if script_only:
+        await _delete_gemini_file(client, video_file)
+        if extract_summary:
+            script_summary = await extract_story_summary(scenes, client)
+        else:
+            script_summary = {
+                "characters": list((story_context or {}).get("characters") or []),
+                "summary": str((story_context or {}).get("summary") or ""),
+                "last_scene": str((scenes[-1].get("burmese") or "")) if scenes else "",
+                "protagonist": new_protagonist,
+                "pronoun": new_pronoun,
+            }
+        if new_protagonist and not script_summary.get("protagonist"):
+            script_summary["protagonist"] = new_protagonist
+        if new_pronoun and not script_summary.get("pronoun"):
+            script_summary["pronoun"] = new_pronoun
+        script_payload = {
+            "version": 1,
+            "part_index": int(chunk_index),
+            "global_start": round(float(global_start or 0), 3),
+            "global_end": round(float(global_end or 0), 3),
+            "duration": round(float(chunk_dur or 0), 3),
+            "scenes": json.loads(json.dumps(scenes, ensure_ascii=False)),
+            "cuts": json.loads(json.dumps(cuts, ensure_ascii=False)),
+            "protagonist": new_protagonist,
+            "pronoun": new_pronoun,
+            "story_context_before": json.loads(
+                json.dumps(story_context or {}, ensure_ascii=False)
+            ),
+            "story_context_after": script_summary,
+            "settings": json.loads(json.dumps(st, ensure_ascii=False)),
+            "metrics": {
+                "target_chars": int(target_chars),
+                "actual_chars": int(total_chars),
+                "estimated_spoken_seconds": round(float(spoken_est), 3),
+                "estimated_coverage_percent": round(float(coverage_pct), 2),
+                "target_final_seconds": round(float(target_seconds), 3),
+                "first_person": first_person_metrics,
+            },
+        }
+        return script_payload, script_summary
 
     target_final_seconds, duration_low, duration_high = _final_duration_window(
         chunk_dur, st
@@ -2165,6 +3479,8 @@ JSON ကိုသာပြန်ပေးပါ:
 {{"pronoun": "{new_pronoun}", "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော ပထမလူစာသား"}}], "cuts": []}}
 """.strip()
                 try:
+                    if video_file is None:
+                        video_file = await _upload_video_to_gemini(client, chunk_path)
                     resp2 = await asyncio.to_thread(
                         client.models.generate_content,
                         model=PREFERRED_MODELS[0],
@@ -2213,10 +3529,7 @@ JSON ကိုသာပြန်ပေးပါ:
 
             clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
     finally:
-        try:
-            await asyncio.to_thread(client.files.delete, name=video_file.name)
-        except Exception as e:
-            logger.warning(f"Gemini delete error: {e}")
+        await _delete_gemini_file(client, video_file)
 
     if duration_status != "on_target":
         raise RuntimeError(
@@ -2311,7 +3624,9 @@ JSON ကိုသာပြန်ပေးပါ:
     if result.returncode != 0 or not os.path.exists(video_only):
         raise RuntimeError("direct video concat failed")
 
-    out_chunk = chunk_path.replace(".mp4", "_recap.mp4")
+    out_chunk = str(output_path or "") or chunk_path.replace(".mp4", "_recap.mp4")
+    if os.path.dirname(os.path.abspath(out_chunk)):
+        os.makedirs(os.path.dirname(os.path.abspath(out_chunk)), exist_ok=True)
     result = await asyncio.to_thread(run_cmd, [
         FFMPEG_BIN, "-y",
         "-i", video_only,
@@ -2342,19 +3657,128 @@ JSON ကိုသာပြန်ပေးပါ:
         f"{final_chunk_duration / chunk_dur * 100 if chunk_dur else 0:.1f}%"
     )
 
-    for f in [chunk_path, video_only, master_wav, concat_txt] + seg_files:
+    cleanup_files = [video_only, master_wav, concat_txt] + seg_files
+    if not keep_source_chunk:
+        cleanup_files.insert(0, chunk_path)
+    for f in cleanup_files:
         if os.path.exists(f):
             try:
                 os.remove(f)
             except Exception:
                 pass
 
-    new_summary = await extract_story_summary(scenes, client)
+    if extract_summary:
+        new_summary = await extract_story_summary(scenes, client)
+    else:
+        prepared_summary = (
+            (prepared_script or {}).get("story_context_after")
+            if isinstance(prepared_script, dict)
+            else {}
+        )
+        new_summary = (
+            dict(prepared_summary)
+            if isinstance(prepared_summary, dict)
+            else {
+                "characters": list((story_context or {}).get("characters") or []),
+                "summary": str((story_context or {}).get("summary") or ""),
+                "last_scene": str((scenes[-1].get("burmese") or "")) if scenes else "",
+                "protagonist": new_protagonist,
+                "pronoun": new_pronoun,
+            }
+        )
     if new_protagonist and not new_summary.get("protagonist"):
         new_summary["protagonist"] = new_protagonist
     if new_pronoun and not new_summary.get("pronoun"):
         new_summary["pronoun"] = new_pronoun
+
+    if isinstance(prepared_script, dict):
+        # Let the manual-session caller persist any measured-TTS changes
+        # made during this render back into the stored per-part script.
+        prepared_script.update(
+            {
+                "scenes": json.loads(json.dumps(scenes, ensure_ascii=False)),
+                "cuts": json.loads(json.dumps(cuts, ensure_ascii=False)),
+                "protagonist": new_protagonist,
+                "pronoun": new_pronoun,
+                "story_context_after": new_summary,
+            }
+        )
+        metrics = dict(prepared_script.get("metrics") or {})
+        metrics.update(
+            {
+                "actual_chars_after_calibration": int(script_total_chars(scenes)),
+                "measured_narration_seconds": round(float(audio_seconds), 3),
+                "rendered_duration_seconds": round(float(final_chunk_duration), 3),
+                "duration_calibration_history": calibration_history,
+            }
+        )
+        prepared_script["metrics"] = metrics
     return out_chunk, new_summary
+
+
+async def generate_chunk_script(
+    chunk_path: str,
+    chunk_dur: float,
+    global_start: float,
+    global_end: float,
+    story_context: dict,
+    chunk_index: int,
+    tracker: ProgressTracker,
+    settings: dict = None,
+) -> dict:
+    """Write and validate one part's first-person script, without TTS/render."""
+    script, _summary = await build_chunk_recap(
+        chunk_path,
+        chunk_dur,
+        global_start,
+        global_end,
+        story_context,
+        chunk_index,
+        tracker,
+        settings,
+        script_only=True,
+        extract_summary=True,
+        keep_source_chunk=True,
+    )
+    return script
+
+
+async def render_chunk_recap_from_script(
+    chunk_path: str,
+    chunk_dur: float,
+    global_start: float,
+    global_end: float,
+    script: dict,
+    chunk_index: int,
+    tracker: ProgressTracker,
+    settings: dict = None,
+    *,
+    output_path: str = "",
+) -> tuple[str, dict]:
+    """Render one clicked manual part from its previously stored script."""
+    working_script = json.loads(json.dumps(script or {}, ensure_ascii=False))
+    story_context = working_script.get("story_context_before") or {
+        "characters": [],
+        "summary": "",
+        "last_scene": "",
+        "protagonist": working_script.get("protagonist") or "",
+        "pronoun": working_script.get("pronoun") or "",
+    }
+    out_chunk, _summary = await build_chunk_recap(
+        chunk_path,
+        chunk_dur,
+        global_start,
+        global_end,
+        story_context,
+        chunk_index,
+        tracker,
+        settings,
+        prepared_script=working_script,
+        extract_summary=False,
+        keep_source_chunk=True,
+        output_path=output_path,
+    )
+    return out_chunk, working_script
 
 
 def _extract_source_segment_file(
@@ -2506,6 +3930,121 @@ async def _prepare_source_segments(
     except Exception as e:
         logger.warning(f"source segment manifest write failed: {e}")
     return prepared
+
+
+async def _acquire_source_file(
+    source_spec: dict,
+    work_dir: str,
+    tracker=None,
+) -> tuple[str, float]:
+    """Download either a Telegram upload or a URL and return path+duration."""
+    source_spec = dict(source_spec or {})
+    source_kind = str(source_spec.get("kind") or "url")
+    os.makedirs(work_dir, exist_ok=True)
+    if source_kind == "telegram_file":
+        extension = _safe_video_extension(
+            str(source_spec.get("file_name") or ""),
+            str(source_spec.get("mime_type") or ""),
+        )
+        source_path = os.path.join(work_dir, f"source{extension}")
+        if tracker:
+            await tracker.update(
+                f"📥 Telegram video ကို လက်ခံနေပါသည်... ({_telegram_attachment_label(source_spec)})",
+                force=True,
+            )
+        try:
+            expected_size = int(source_spec.get("file_size") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+        duration = await download_telegram_file(
+            str(source_spec.get("file_id") or ""),
+            source_path,
+            tracker,
+            expected_size=expected_size,
+            raise_on_error=True,
+        )
+        return source_path, float(duration or 0)
+
+    url = _extract_first_url(str(source_spec.get("url") or ""))
+    if not url:
+        raise SourceDownloadError(
+            "Video link မတွေ့ပါ။ http/https link အပြည့်အစုံ ပို့ပါ။",
+            detail="no http/https URL found in source spec",
+        )
+    if tracker:
+        await tracker.update("🔍 ဗီဒီယို အချိန်စစ်ဆေးနေပါသည်...", force=True)
+    # A failed duration probe is not fatal by itself: download_full has
+    # additional direct/RedNote fallbacks and will surface the real error.
+    try:
+        probe_duration = await get_source_duration(url)
+    except Exception as e:
+        logger.warning("source duration probe failed: %s", _safe_error_text(e))
+        probe_duration = 0.0
+    source_path = os.path.join(work_dir, "source.mp4")
+    if tracker:
+        await tracker.update("📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...", force=True)
+    duration = await download_full(
+        url,
+        source_path,
+        tracker,
+        probe_duration,
+        raise_on_error=True,
+    )
+    return source_path, float(duration or 0)
+
+
+def _make_telegram_preview_copy(source_path: str, output_path: str) -> bool:
+    """Create a <=45MB preview for an original segment Telegram cannot accept."""
+    duration, src_w, src_h = probe_video_info(source_path)
+    if duration <= 0:
+        return False
+    target_bytes = int(MAX_TG_BYTES * 0.92)
+    total_bps = int(target_bytes * 8 / max(1.0, duration))
+    audio_bps = 96_000 if total_bps > 320_000 else 64_000
+    video_bps = max(180_000, total_bps - audio_bps)
+    out_w, out_h = compute_output_dims(src_w, src_h, 1280)
+    video_filter = (
+        f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
+    )
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    result = run_cmd(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            source_path,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-vf",
+            video_filter,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            str(video_bps),
+            "-maxrate",
+            str(video_bps),
+            "-bufsize",
+            str(video_bps * 2),
+            "-c:a",
+            "aac",
+            "-b:a",
+            str(audio_bps),
+            "-movflags",
+            "+faststart",
+            output_path,
+        ],
+        1200,
+    )
+    return bool(
+        result.returncode == 0
+        and os.path.exists(output_path)
+        and 0 < os.path.getsize(output_path) <= MAX_TG_BYTES
+    )
 
 
 def _concat_video_parts(parts: list[str], output_path: str, concat_path: str) -> bool:
@@ -2801,7 +4340,7 @@ def _create_worker_job(
         chat_id = int(chat_id)
     except (TypeError, ValueError) as e:
         raise WorkerJobError("invalid chat_id") from e
-    url = str(url or "").strip()
+    url = _extract_first_url(str(url or "")) or str(url or "").strip()
     if not url.startswith(("http://", "https://")):
         raise WorkerJobError("invalid url")
 
@@ -2905,6 +4444,17 @@ def request_cancel_active_job(chat_id) -> str:
     if not job_id:
         return ""
     CANCELLED_JOBS.add(job_id)
+    try:
+        manual_state = _load_manual_session(job_id)
+        if int(manual_state.get("chat_id") or 0) == chat_key:
+            manual_state["cancel_requested"] = True
+            _save_manual_session(manual_state)
+            manual_task = MANUAL_RENDER_TASKS.get(job_id)
+            if manual_task and not manual_task.done():
+                manual_task.cancel()
+            return job_id
+    except Exception:
+        pass
     try:
         state = _load_worker_job(job_id)
         if int(state.get("chat_id") or 0) == chat_key:
@@ -3212,12 +4762,22 @@ async def _worker_stage_download(state: dict, tracker=None):
         _worker_check_cancelled(state)
         await _worker_progress(state, WORKER_STAGE_LABELS["download"], tracker)
         probe_duration = await get_source_duration(str(state.get("url") or ""))
-        duration = await download_full(
-            str(state.get("url") or ""), source_path, tracker, probe_duration
-        )
+        try:
+            duration = await download_full(
+                str(state.get("url") or ""),
+                source_path,
+                tracker,
+                probe_duration,
+                raise_on_error=True,
+            )
+        except SourceDownloadError as e:
+            detail = e.detail or e.user_message
+            raise WorkerJobError(
+                f"source download failed: {e.user_message} ({detail})"
+            ) from e
         _worker_check_cancelled(state)
         if duration <= 0 or not os.path.exists(source_path):
-            raise WorkerJobError("source download failed")
+            raise WorkerJobError("source download failed: no readable video duration")
         _, width, height = probe_video_info(source_path)
 
     metrics = {
@@ -5396,6 +6956,1627 @@ async def _forward_job_to_n8n(state: dict) -> bool:
     return False
 
 
+# =====================================================================
+# Manual two-minute-part Telegram flow
+# =====================================================================
+
+class ManualSessionError(RuntimeError):
+    pass
+
+
+def _user_error_text(exc: Exception) -> str:
+    if isinstance(exc, SourceDownloadError):
+        text = exc.user_message or str(exc)
+        if exc.detail and exc.detail != text:
+            text += f"\nအသေးစိတ်: {exc.detail}"
+    else:
+        text = f"{type(exc).__name__} - {_safe_error_text(exc, 900)}"
+    return html.escape(_safe_error_text(text, 1400), quote=False)
+
+
+def _manual_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _manual_sessions_root() -> str:
+    root = os.path.join(WORK_ROOT, "manual_sessions")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _is_safe_manual_session_id(session_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(session_id or "")))
+
+
+def _manual_session_dir(session_id: str) -> str:
+    if not _is_safe_manual_session_id(session_id):
+        raise ManualSessionError("invalid manual session id")
+    root = os.path.abspath(_manual_sessions_root())
+    path = os.path.abspath(os.path.join(root, str(session_id)))
+    if os.path.commonpath([root, path]) != root:
+        raise ManualSessionError("invalid manual session path")
+    return path
+
+
+def _manual_state_file(session_id: str) -> str:
+    return os.path.join(_manual_session_dir(session_id), "state.json")
+
+
+def _save_manual_session(state: dict, *, allow_clear_cancel: bool = False) -> dict:
+    session_id = str(state.get("session_id") or "")
+    session_dir = _manual_session_dir(session_id)
+    os.makedirs(session_dir, exist_ok=True)
+    state["session_dir"] = session_dir
+    if session_id and not state.get("cancel_requested") and not allow_clear_cancel:
+        try:
+            existing_path = _manual_state_file(session_id)
+            if os.path.exists(existing_path):
+                with open(existing_path, encoding="utf-8") as existing_file:
+                    existing = json.load(existing_file)
+                if existing.get("cancel_requested"):
+                    state["cancel_requested"] = True
+                    CANCELLED_JOBS.add(session_id)
+        except Exception:
+            pass
+    state["updated_at"] = _manual_now()
+    tmp_path = _manual_state_file(session_id) + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as state_file:
+        json.dump(state, state_file, ensure_ascii=False, indent=2)
+        state_file.flush()
+        os.fsync(state_file.fileno())
+    os.replace(tmp_path, _manual_state_file(session_id))
+    try:
+        MANUAL_SESSIONS_BY_CHAT[int(state.get("chat_id") or 0)] = session_id
+    except (TypeError, ValueError):
+        pass
+    return state
+
+
+def _load_manual_session(session_id: str) -> dict:
+    path = _manual_state_file(session_id)
+    if not os.path.exists(path):
+        raise ManualSessionError("manual session not found")
+    with open(path, encoding="utf-8") as state_file:
+        state = json.load(state_file)
+    if not isinstance(state, dict):
+        raise ManualSessionError("manual session state is not an object")
+    state["session_id"] = str(state.get("session_id") or session_id)
+    state["session_dir"] = _manual_session_dir(state["session_id"])
+    if not isinstance(state.get("parts"), list):
+        state["parts"] = []
+    if not isinstance(state.get("source"), dict):
+        state["source"] = {}
+    if not isinstance(state.get("settings"), dict):
+        state["settings"] = get_user_settings(state.get("chat_id"))
+    state["settings"] = _with_required_coverage(state.get("settings") or {})
+    if not isinstance(state.get("story_context"), dict):
+        state["story_context"] = {
+            "characters": [],
+            "summary": "",
+            "last_scene": "",
+            "protagonist": "",
+            "pronoun": "",
+        }
+    return state
+
+
+def _manual_path(state: dict, relative_path: str) -> str:
+    session_dir = os.path.abspath(
+        state.get("session_dir") or _manual_session_dir(str(state.get("session_id") or ""))
+    )
+    path = os.path.abspath(os.path.join(session_dir, str(relative_path or "")))
+    if os.path.commonpath([session_dir, path]) != session_dir:
+        raise ManualSessionError("invalid manual artifact path")
+    return path
+
+
+def _manual_part(state: dict, part_index: int) -> dict | None:
+    try:
+        wanted = int(part_index)
+    except (TypeError, ValueError):
+        return None
+    for part in state.get("parts") or []:
+        if isinstance(part, dict) and int(part.get("index") or 0) == wanted:
+            return part
+    return None
+
+
+def _manual_session_expired(state: dict) -> bool:
+    try:
+        expires_at = float(state.get("expires_at_unix") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    return bool(expires_at and time.time() > expires_at)
+
+
+def _delete_manual_session(
+    session_id: str,
+    *,
+    clear_active: bool = True,
+) -> bool:
+    session_id = str(session_id or "")
+    if not _is_safe_manual_session_id(session_id):
+        return False
+    chat_id = None
+    try:
+        state = _load_manual_session(session_id)
+        chat_id = int(state.get("chat_id") or 0) or None
+    except Exception:
+        state = None
+    MANUAL_RENDER_TASKS.pop(session_id, None)
+    CANCELLED_JOBS.discard(session_id)
+    if chat_id and MANUAL_SESSIONS_BY_CHAT.get(chat_id) == session_id:
+        MANUAL_SESSIONS_BY_CHAT.pop(chat_id, None)
+    if clear_active and chat_id and ACTIVE_JOBS.get(chat_id) == session_id:
+        ACTIVE_JOBS.pop(chat_id, None)
+    existed = os.path.isdir(_manual_session_dir(session_id))
+    shutil.rmtree(_manual_session_dir(session_id), ignore_errors=True)
+    return bool(existed or state)
+
+
+def _find_manual_session_for_chat(
+    chat_id,
+    *,
+    include_terminal: bool = False,
+) -> dict | None:
+    try:
+        chat_key = int(chat_id)
+    except (TypeError, ValueError):
+        return None
+    root = _manual_sessions_root()
+    candidate_ids: list[str] = []
+    mapped = str(MANUAL_SESSIONS_BY_CHAT.get(chat_key) or "")
+    if mapped:
+        candidate_ids.append(mapped)
+    try:
+        entries = []
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if os.path.isdir(path):
+                try:
+                    entries.append((os.path.getmtime(path), name))
+                except Exception:
+                    entries.append((0.0, name))
+        for _mtime, name in sorted(entries, reverse=True):
+            if name not in candidate_ids:
+                candidate_ids.append(name)
+    except Exception:
+        pass
+
+    terminal = {"completed", "cancelled", "expired"}
+    for session_id in candidate_ids:
+        try:
+            state = _load_manual_session(session_id)
+        except Exception:
+            continue
+        if int(state.get("chat_id") or 0) != chat_key:
+            continue
+        if _manual_session_expired(state):
+            if not include_terminal:
+                _delete_manual_session(session_id)
+                continue
+            state["status"] = "expired"
+        if not include_terminal and state.get("status") in terminal:
+            continue
+        MANUAL_SESSIONS_BY_CHAT[chat_key] = session_id
+        return state
+    return None
+
+
+def _cleanup_expired_manual_sessions() -> int:
+    removed = 0
+    root = _manual_sessions_root()
+    try:
+        names = os.listdir(root)
+    except Exception:
+        return 0
+    for name in names:
+        if name in MANUAL_RENDER_TASKS:
+            continue
+        try:
+            state = _load_manual_session(name)
+        except Exception:
+            continue
+        if _manual_session_expired(state) and _delete_manual_session(name):
+            removed += 1
+    return removed
+
+
+def _reset_stale_manual_sessions_after_restart() -> int:
+    """Make state left by a previous process actionable after a restart.
+
+    Render tasks exist only in process memory.  At startup, therefore, a
+    persisted ``rendering``/``joining`` status cannot still be running in
+    this process.  Reset only that unit of work for a retry click; an
+    interrupted script-first intake cannot safely resume and is marked
+    failed so its status/discard controls remain available.
+    """
+    reset_count = 0
+    root = _manual_sessions_root()
+    try:
+        names = os.listdir(root)
+    except Exception:
+        return 0
+    for name in names:
+        if name in MANUAL_RENDER_TASKS:
+            continue
+        try:
+            state = _load_manual_session(name)
+        except Exception:
+            continue
+        status = str(state.get("status") or "")
+        changed = False
+        if status == "rendering":
+            for part in state.get("parts") or []:
+                if isinstance(part, dict) and part.get("status") == "rendering":
+                    part["status"] = "failed"
+                    part["error"] = "Server restart ဖြစ်သွား၍ ဒီအပိုင်းကို ထပ်နှိပ်ပါ။"
+                    changed = True
+            counts = _manual_counts(state)
+            state["status"] = (
+                "ready_to_join"
+                if counts["total"] and counts["done"] == counts["total"]
+                else "ready"
+            )
+            state["active_render_part"] = None
+            changed = True
+        elif status == "joining":
+            state["status"] = "ready_to_join"
+            state["error"] = "Server restart ဖြစ်သွား၍ ပြန်ဆက်ရန် ထပ်နှိပ်ပါ။"
+            changed = True
+        elif status in ("preparing", "splitting", "scripting", "sending_parts"):
+            state["status"] = "failed"
+            state["error"] = (
+                "Server restart ဖြစ်သွား၍ ဒီလုပ်ငန်းစဉ်ကို ဆက်မလုပ်နိုင်တော့ပါ။ "
+                "Session ကို ပယ်၍ Source ကို ပြန်ပို့ပါ။"
+            )
+            changed = True
+        if changed:
+            state["cancel_requested"] = False
+            CANCELLED_JOBS.discard(str(state.get("session_id") or name))
+            try:
+                _save_manual_session(state, allow_clear_cancel=True)
+                reset_count += 1
+            except Exception:
+                continue
+    return reset_count
+
+
+def _create_manual_session(
+    *,
+    session_id: str,
+    chat_id: int,
+    reply_msg_id: int,
+    status_message_id: int,
+    source_spec: dict,
+    settings: dict,
+) -> dict:
+    source_spec = dict(source_spec or {})
+    source_kind = str(source_spec.get("kind") or "url")
+    url = _extract_first_url(str(source_spec.get("url") or ""))
+    if source_kind == "telegram_file":
+        label = _telegram_attachment_label(source_spec)
+    elif url:
+        label = _url_hostname(url) or "Video link"
+    else:
+        label = "Video"
+    now_unix = time.time()
+    state = {
+        "session_id": str(session_id),
+        "session_dir": _manual_session_dir(str(session_id)),
+        "chat_id": int(chat_id),
+        "reply_msg_id": int(reply_msg_id) if reply_msg_id else None,
+        "status_message_id": int(status_message_id) if status_message_id else None,
+        "control_message_id": None,
+        "status": "preparing",
+        "source": {
+            "kind": source_kind,
+            "url": url,
+            "label": label,
+            "file_name": str(source_spec.get("file_name") or ""),
+        },
+        "source_duration_seconds": 0.0,
+        "source_size_bytes": 0,
+        "segment_seconds": SOURCE_SEGMENT_SECONDS,
+        "settings": _with_required_coverage(settings or {}),
+        "parts": [],
+        "story_context": {
+            "characters": [],
+            "summary": "",
+            "last_scene": "",
+            "protagonist": "",
+            "pronoun": "",
+        },
+        "full_script_file": "",
+        "active_render_part": None,
+        "cancel_requested": False,
+        "terminal_stat_counted": False,
+        "error": "",
+        "created_at": _manual_now(),
+        "updated_at": _manual_now(),
+        "created_at_unix": now_unix,
+        "expires_at_unix": now_unix + MANUAL_SESSION_TTL_HOURS * 3600,
+    }
+    return _save_manual_session(state)
+
+
+def _manual_counts(state: dict) -> dict:
+    parts = [p for p in (state.get("parts") or []) if isinstance(p, dict)]
+    counts = {
+        "total": len(parts),
+        "done": 0,
+        "ready": 0,
+        "rendering": 0,
+        "failed": 0,
+        "pending": 0,
+    }
+    for part in parts:
+        status = str(part.get("status") or "")
+        if status == "done":
+            counts["done"] += 1
+        elif status == "rendering":
+            counts["rendering"] += 1
+        elif status == "failed":
+            counts["failed"] += 1
+        elif status in ("ready", "script_ready"):
+            counts["ready"] += 1
+        else:
+            counts["pending"] += 1
+    return counts
+
+
+def _manual_status_text(state: dict) -> str:
+    counts = _manual_counts(state)
+    settings = state.get("settings") or {}
+    source = state.get("source") or {}
+    source_label = html.escape(
+        str(source.get("label") or source.get("url") or "Video"), quote=False
+    )
+    done_indexes = []
+    ready_indexes = []
+    failed_indexes = []
+    rendering_indexes = []
+    for part in state.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        index = int(part.get("index") or 0)
+        status = str(part.get("status") or "")
+        if status == "done":
+            done_indexes.append(index)
+        elif status == "rendering":
+            rendering_indexes.append(index)
+        elif status == "failed":
+            failed_indexes.append(index)
+        elif status in ("ready", "script_ready"):
+            ready_indexes.append(index)
+
+    def fmt_indexes(values: list[int]) -> str:
+        return ", ".join(str(v) for v in values) if values else "မရှိ"
+
+    try:
+        remaining_hours = max(
+            0.0, (float(state.get("expires_at_unix") or 0) - time.time()) / 3600.0
+        )
+    except (TypeError, ValueError):
+        remaining_hours = 0.0
+    return (
+        "🎬 <b>၂ မိနစ်အပိုင်းများ အခြေအနေ</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"📥 Source: {source_label} ({fmt_time(float(state.get('source_duration_seconds') or 0))})\n"
+        f"✂️ အပိုင်း: {counts['total']} · ✅ Recap ပြီး: {counts['done']} · "
+        f"🎬 စောင့်နေ: {counts['ready']} · ❌ Failed: {counts['failed']}\n"
+        f"✅ ပြီးသောအပိုင်းများ: {fmt_indexes(done_indexes)}\n"
+        f"🎬 Recap မလုပ်ရသေးသောအပိုင်းများ: {fmt_indexes(ready_indexes)}\n"
+        f"⏳ လုပ်နေဆဲ: {fmt_indexes(rendering_indexes)} · ❌ Failed: {fmt_indexes(failed_indexes)}\n"
+        f"🎯 တစ်ပိုင်းချင်း Final duration: မူရင်းအပိုင်း၏ {settings.get('coverage', 90)}%\n"
+        f"🕒 Session ကျန်ချိန်ခန့်မှန်း: {remaining_hours:.1f} နာရီ\n\n"
+        "မူရင်းအပိုင်းတစ်ခုအောက်က <b>🎬 Recap လုပ်မယ်</b> ကို နှိပ်ပါ။ "
+        "အပိုင်းတိုင်းပြီးမှ 🔗 ပြန်ဆက်နိုင်ပါမယ်။"
+    )
+
+
+def _manual_script_relative(part_index: int) -> str:
+    return f"scripts/script_part_{int(part_index):04d}.json"
+
+
+def _write_manual_json(state: dict, relative_path: str, data: dict) -> str:
+    path = _manual_path(state, relative_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as json_file:
+        json.dump(data, json_file, ensure_ascii=False, indent=2)
+        json_file.flush()
+        os.fsync(json_file.fileno())
+    os.replace(tmp_path, path)
+    return path
+
+
+def _enrich_manual_script(state: dict, part: dict, script: dict) -> dict:
+    enriched = json.loads(json.dumps(script or {}, ensure_ascii=False))
+    part_start = float(part.get("start") or 0)
+    enriched["session_id"] = str(state.get("session_id") or "")
+    enriched["part_index"] = int(part.get("index") or enriched.get("part_index") or 0)
+    enriched["global_start"] = round(part_start, 3)
+    enriched["global_end"] = round(float(part.get("end") or part_start), 3)
+    enriched["duration"] = round(float(part.get("duration") or 0), 3)
+    scenes = []
+    for scene in enriched.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        item = dict(scene)
+        try:
+            local_start = float(item.get("start") or 0)
+        except (TypeError, ValueError):
+            local_start = 0.0
+        try:
+            local_end = float(item.get("end") or local_start)
+        except (TypeError, ValueError):
+            local_end = local_start
+        item["global_start"] = round(part_start + local_start, 3)
+        item["global_end"] = round(part_start + local_end, 3)
+        scenes.append(item)
+    enriched["scenes"] = scenes
+    return enriched
+
+
+def _save_manual_script(state: dict, part: dict, script: dict) -> dict:
+    enriched = _enrich_manual_script(state, part, script)
+    relative = _manual_script_relative(int(part.get("index") or 0))
+    _write_manual_json(state, relative, enriched)
+    part["script_file"] = relative
+    part["script_chars"] = int(script_total_chars(enriched.get("scenes") or []))
+    metrics = enriched.get("metrics") or {}
+    part["script_target_chars"] = int(metrics.get("target_chars") or 0)
+    return enriched
+
+
+def _load_manual_script(state: dict, part: dict) -> dict:
+    relative = str(part.get("script_file") or _manual_script_relative(int(part.get("index") or 0)))
+    path = _manual_path(state, relative)
+    if not os.path.exists(path):
+        raise ManualSessionError("stored script for this part is missing")
+    with open(path, encoding="utf-8") as script_file:
+        script = json.load(script_file)
+    if not isinstance(script, dict) or not script.get("scenes"):
+        raise ManualSessionError("stored script for this part is empty")
+    return script
+
+
+def _write_manual_full_script(state: dict, scripts: list[dict]) -> None:
+    payload = {
+        "version": 1,
+        "session_id": state.get("session_id"),
+        "chat_id": state.get("chat_id"),
+        "source": state.get("source") or {},
+        "source_duration_seconds": state.get("source_duration_seconds"),
+        "segment_seconds": state.get("segment_seconds"),
+        "settings": state.get("settings") or {},
+        "story_context": state.get("story_context") or {},
+        "parts": scripts,
+    }
+    _write_manual_json(state, "full_script.json", payload)
+    state["full_script_file"] = "full_script.json"
+
+
+async def _send_manual_original_part(state: dict, part: dict) -> int | None:
+    session_id = str(state.get("session_id") or "")
+    chat_id = int(state.get("chat_id") or 0)
+    index = int(part.get("index") or 0)
+    total_parts = len(state.get("parts") or [])
+    source_path = _manual_path(state, str(part.get("source_file") or ""))
+    if not os.path.exists(source_path) or os.path.getsize(source_path) <= 0:
+        raise ManualSessionError(f"original part {index} is missing")
+
+    send_path = source_path
+    preview_path = ""
+    files_to_send: list[str] = []
+    try:
+        if os.path.getsize(send_path) > MAX_TG_BYTES:
+            preview_relative = f"previews/source_part_{index:04d}_preview.mp4"
+            preview_path = _manual_path(state, preview_relative)
+            preview_ok = await asyncio.to_thread(
+                _make_telegram_preview_copy, source_path, preview_path
+            )
+            if preview_ok:
+                send_path = preview_path
+
+        files_to_send = [send_path]
+        if os.path.getsize(send_path) > MAX_TG_BYTES:
+            split_files = await split_for_telegram(
+                send_path, str(state.get("session_dir") or "")
+            )
+            if split_files:
+                files_to_send = list(split_files)
+
+        base_caption = (
+            f"🎬 မူရင်းအပိုင်း {index}/{total_parts} "
+            f"({fmt_time(float(part.get('start') or 0))}–{fmt_time(float(part.get('end') or 0))})\n"
+            "📝 Script အသင့်ရှိပြီ — Recap လုပ်ရန် အောက်ကခလုတ်ကို နှိပ်ပါ။"
+        )
+        message_id = None
+        for file_index, path_to_send in enumerate(files_to_send, start=1):
+            if not os.path.exists(path_to_send) or os.path.getsize(path_to_send) <= 0:
+                raise RuntimeError(f"original part {index} upload file is missing")
+            if os.path.getsize(path_to_send) > MAX_TG_BYTES:
+                raise RuntimeError(
+                    f"original part {index} is still too large for Telegram"
+                )
+            caption = base_caption
+            if len(files_to_send) > 1:
+                caption += f"\n📤 Telegram upload အပိုင်း {file_index}/{len(files_to_send)}"
+                if file_index < len(files_to_send):
+                    caption += " — Recap ခလုတ်ကို နောက်ဆုံး upload အောက်မှာ ထားပါတယ်။"
+            payload = {"chat_id": str(chat_id), "caption": caption}
+            if file_index == len(files_to_send):
+                payload["reply_markup"] = json.dumps(
+                    manual_part_keyboard(session_id, index, "ready"),
+                    ensure_ascii=False,
+                )
+            result = await tg_upload_media(
+                "sendVideo",
+                payload,
+                "video",
+                f"original_part_{index:04d}.mp4",
+                path_to_send,
+                "video/mp4",
+            )
+            if not (result or {}).get("ok"):
+                description = _safe_error_text(
+                    (result or {}).get("description") or "Telegram upload failed"
+                )
+                raise RuntimeError(
+                    f"Telegram original part {index} upload failed: {description}"
+                )
+            if file_index == len(files_to_send):
+                result_data = (result or {}).get("result") or {}
+                if isinstance(result_data, dict) and result_data.get("message_id"):
+                    try:
+                        message_id = int(result_data["message_id"])
+                    except (TypeError, ValueError):
+                        message_id = None
+        return message_id
+    finally:
+        for candidate in files_to_send:
+            if candidate and os.path.abspath(candidate) != os.path.abspath(source_path):
+                try:
+                    os.remove(candidate)
+                except Exception:
+                    pass
+        if preview_path and os.path.exists(preview_path):
+            try:
+                os.remove(preview_path)
+            except Exception:
+                pass
+
+
+async def _handle_manual_source_job(
+    chat_id: int,
+    reply_msg_id: int,
+    source_spec: dict,
+    session_id: str,
+    status_id: int,
+    job_settings: dict,
+) -> None:
+    """Script a whole source first, then send original parts with buttons."""
+    tracker = ProgressTracker(chat_id, status_id, job_id=session_id)
+    state: dict | None = None
+    sent_any_original = False
+    try:
+        state = _create_manual_session(
+            session_id=session_id,
+            chat_id=chat_id,
+            reply_msg_id=reply_msg_id,
+            status_message_id=status_id,
+            source_spec=source_spec,
+            settings=job_settings,
+        )
+        session_dir = str(state.get("session_dir") or "")
+        source_path, total_dur = await _acquire_source_file(
+            source_spec, session_dir, tracker
+        )
+        if session_id in CANCELLED_JOBS:
+            raise Exception("cancelled")
+        if total_dur <= 0:
+            raise SourceDownloadError(
+                "မူရင်းဗီဒီယို download မရပါ။",
+                detail="acquired source has no readable duration",
+            )
+        source_size = os.path.getsize(source_path) if os.path.exists(source_path) else 0
+        state["source_duration_seconds"] = round(float(total_dur), 3)
+        state["source_size_bytes"] = int(source_size)
+        state["status"] = "splitting"
+        _save_manual_session(state)
+        logger.info(
+            "Full source: %.1fs = %s, %.0fMB",
+            total_dur,
+            fmt_time(total_dur),
+            source_size / (1024 * 1024),
+        )
+        segment_plan = build_source_segment_plan(total_dur, SOURCE_SEGMENT_SECONDS)
+        await tracker.update(
+            f"✅ မူရင်းရယူပြီး ({fmt_time(total_dur)}, {source_size / (1024 * 1024):.0f}MB)\n"
+            f"✂️ ၂ မိနစ်စီ {len(segment_plan)} ပိုင်းခွဲနေပါသည်...",
+            force=True,
+        )
+        source_segments = await _prepare_source_segments(
+            source_path, session_dir, total_dur, SOURCE_SEGMENT_SECONDS
+        )
+        if not source_segments:
+            raise RuntimeError("မူရင်းဗီဒီယိုကို ၂ မိနစ်ပိုင်းများ ခွဲ၍မရပါ။")
+        parts = []
+        for segment in source_segments:
+            segment_path = str(segment.get("path") or "")
+            parts.append(
+                {
+                    "index": int(segment.get("index") or len(parts) + 1),
+                    "start": round(float(segment.get("start") or 0), 3),
+                    "end": round(float(segment.get("end") or 0), 3),
+                    "duration": round(float(segment.get("duration") or 0), 3),
+                    "source_file": os.path.relpath(segment_path, session_dir),
+                    "script_file": "",
+                    "status": "pending_script",
+                    "message_id": None,
+                    "recap_file": "",
+                    "recap_duration_seconds": 0.0,
+                    "attempts": 0,
+                    "error": "",
+                }
+            )
+        state["parts"] = parts
+        state["status"] = "scripting"
+        _save_manual_session(state)
+        try:
+            os.remove(source_path)
+        except Exception:
+            pass
+        total_parts = len(parts)
+        await tracker.update(
+            f"✅ ၂ မိနစ်ပိုင်း {total_parts} ခုရပါပြီ\n"
+            "📝 အခု တစ်ခန်းလုံးရဲ့ Script ကို အစဉ်အတိုင်း အရင်ရေးပြီးသိမ်းပါမယ်။ "
+            "ပြီးမှ မူရင်းအပိုင်းတွေကို Recap ခလုတ်တွေနဲ့ တစ်ပိုင်းချင်း ပို့ပါမယ်။",
+            force=True,
+        )
+
+        story_context = {
+            "characters": [],
+            "summary": "",
+            "last_scene": "",
+            "protagonist": "",
+            "pronoun": "",
+        }
+        scripts: list[dict] = []
+        for part in parts:
+            if session_id in CANCELLED_JOBS or state.get("cancel_requested"):
+                raise Exception("cancelled")
+            part_num = int(part.get("index") or 0)
+            chunk_path = _manual_path(state, str(part.get("source_file") or ""))
+            actual_dur = float(probe_video_info(chunk_path)[0] or 0)
+            if actual_dur <= 0:
+                actual_dur = float(part.get("duration") or 0)
+            if not os.path.exists(chunk_path) or actual_dur <= 0:
+                raise RuntimeError(f"၂ မိနစ်ပိုင်း {part_num} ကြာချိန် မရပါ။")
+            part["duration"] = round(actual_dur, 3)
+            if float(part.get("end") or 0) <= float(part.get("start") or 0):
+                part["end"] = round(float(part.get("start") or 0) + actual_dur, 3)
+            part["status"] = "scripting"
+            state["story_context"] = story_context
+            _save_manual_session(state)
+            await tracker.update(
+                f"📝 Script ရေးနေသည် — အပိုင်း {part_num}/{total_parts} "
+                f"({fmt_time(float(part.get('start') or 0))}–{fmt_time(float(part.get('end') or 0))})\n"
+                "👤 အဓိကဇာတ်ကောင် ကိုယ်တိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် အပြည့်အဝ ပြန်ပြောပါမယ်။",
+                force=True,
+            )
+            script = await generate_chunk_script(
+                chunk_path,
+                actual_dur,
+                float(part.get("start") or 0),
+                float(part.get("end") or 0),
+                story_context,
+                part_num,
+                tracker,
+                job_settings,
+            )
+            script = _save_manual_script(state, part, script)
+            scripts.append(script)
+            next_context = script.get("story_context_after") or {}
+            if isinstance(next_context, dict) and next_context:
+                story_context = {
+                    "characters": list(next_context.get("characters") or []),
+                    "summary": str(next_context.get("summary") or ""),
+                    "last_scene": str(next_context.get("last_scene") or ""),
+                    "protagonist": str(
+                        next_context.get("protagonist")
+                        or script.get("protagonist")
+                        or story_context.get("protagonist")
+                        or ""
+                    ),
+                    "pronoun": str(
+                        next_context.get("pronoun")
+                        or script.get("pronoun")
+                        or story_context.get("pronoun")
+                        or ""
+                    ),
+                }
+            state["story_context"] = story_context
+            part["status"] = "script_ready"
+            _save_manual_session(state)
+            logger.info(
+                "Manual script part %s/%s ready for session %s (%s chars)",
+                part_num,
+                total_parts,
+                session_id,
+                part.get("script_chars"),
+            )
+
+        _write_manual_full_script(state, scripts)
+        state["status"] = "sending_parts"
+        _save_manual_session(state)
+        await tracker.update(
+            f"✅ တစ်ခန်းလုံး Script {total_parts} ပိုင်းစလုံး ရေးပြီး သိမ်းပြီးပါပြီ\n"
+            "📤 အခု မူရင်း ၂ မိနစ်အပိုင်းတွေကို တစ်ပိုင်းချင်း 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့နေပါသည်...",
+            force=True,
+        )
+
+        for position, part in enumerate(parts, start=1):
+            if session_id in CANCELLED_JOBS or state.get("cancel_requested"):
+                raise Exception("cancelled")
+            part_num = int(part.get("index") or position)
+            await tracker.update(
+                f"📤 မူရင်းအပိုင်း {part_num}/{total_parts} ကို ပို့နေပါသည်...",
+                force=True,
+            )
+            message_id = await _send_manual_original_part(state, part)
+            sent_any_original = True
+            part["message_id"] = message_id
+            part["status"] = "ready"
+            part["error"] = ""
+            _save_manual_session(state)
+            if position < total_parts:
+                await asyncio.sleep(0.2)
+
+        state["status"] = "ready"
+        state["error"] = ""
+        _save_manual_session(state)
+        await edit_text(
+            chat_id,
+            status_id,
+            f"✅ Script နှင့် မူရင်း ၂ မိနစ်အပိုင်း {total_parts} ခု အသင့်ဖြစ်ပါပြီ။\n"
+            "Recap လုပ်ချင်တဲ့ အပိုင်းအောက်က 🎬 Recap လုပ်မယ် ကို နှိပ်ပါ။",
+            reply_markup=main_menu_keyboard(chat_id),
+        )
+        control_id = await send_text(
+            chat_id,
+            _manual_status_text(state),
+            reply_markup=manual_control_keyboard(session_id),
+        )
+        if control_id:
+            state["control_message_id"] = int(control_id)
+            _save_manual_session(state)
+    except Exception as e:
+        logger.exception("Manual source job error")
+        if str(e) == "cancelled" or session_id in CANCELLED_JOBS:
+            bump_stat(chat_id, "cancelled")
+            if state is not None:
+                _delete_manual_session(session_id)
+            await edit_text(
+                chat_id,
+                status_id,
+                "🛑 အလုပ်ကို ရပ်လိုက်ပါပြီ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+        else:
+            bump_stat(chat_id, "failed")
+            message = _user_error_text(e)
+            if state is not None:
+                has_sent_part = sent_any_original or any(
+                    isinstance(p, dict) and p.get("message_id")
+                    for p in state.get("parts") or []
+                )
+                state["status"] = "failed"
+                state["error"] = message
+                try:
+                    _save_manual_session(state)
+                except Exception:
+                    pass
+                if not has_sent_part:
+                    _delete_manual_session(session_id)
+            await edit_text(
+                chat_id,
+                status_id,
+                f"❌ အမှား: {message}",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+    finally:
+        if ACTIVE_JOBS.get(chat_id) == session_id:
+            ACTIVE_JOBS.pop(chat_id, None)
+        gc.collect()
+
+
+class _NullProgressTracker:
+    async def update(self, _text: str, force: bool = False) -> None:
+        return None
+
+
+async def _claim_manual_part(
+    session_id: str,
+    part_index: int,
+    chat_id: int,
+) -> tuple[dict | None, str]:
+    async with MANUAL_SESSION_LOCK:
+        try:
+            state = _load_manual_session(session_id)
+        except Exception:
+            return None, "expired"
+        if int(state.get("chat_id") or 0) != int(chat_id):
+            return None, "wrong_chat"
+        if _manual_session_expired(state):
+            _delete_manual_session(session_id)
+            return None, "expired"
+        if state.get("status") in ("cancelled", "completed"):
+            return state, "closed"
+        if state.get("cancel_requested"):
+            current_task = MANUAL_RENDER_TASKS.get(session_id)
+            if (current_task and not current_task.done()) or state.get("status") in (
+                "preparing",
+                "splitting",
+                "scripting",
+                "sending_parts",
+                "rendering",
+                "joining",
+            ):
+                return state, "busy"
+            # A cancelled one-part render should not permanently close an
+            # otherwise ready session if cleanup was interrupted.
+            state["cancel_requested"] = False
+            CANCELLED_JOBS.discard(session_id)
+            _save_manual_session(state, allow_clear_cancel=True)
+        part = _manual_part(state, part_index)
+        if not part:
+            return state, "missing_part"
+        if str(part.get("status") or "") == "done":
+            return state, "done"
+        task = MANUAL_RENDER_TASKS.get(session_id)
+        if task and not task.done():
+            return state, "busy"
+        if any(
+            isinstance(item, dict) and item.get("status") == "rendering"
+            for item in state.get("parts") or []
+        ):
+            return state, "busy"
+        active = ACTIVE_JOBS.get(int(chat_id))
+        if active and active != session_id:
+            return state, "active_other"
+        if str(part.get("status") or "") not in ("ready", "script_ready", "failed"):
+            return state, "not_ready"
+        try:
+            source_path = _manual_path(state, str(part.get("source_file") or ""))
+            script_path = _manual_path(
+                state,
+                str(part.get("script_file") or _manual_script_relative(part_index)),
+            )
+        except Exception:
+            return state, "missing"
+        if not os.path.exists(source_path) or not os.path.exists(script_path):
+            return state, "missing"
+        part["status"] = "rendering"
+        part["attempts"] = int(part.get("attempts") or 0) + 1
+        part["error"] = ""
+        part["started_at"] = _manual_now()
+        state["status"] = "rendering"
+        state["active_render_part"] = int(part_index)
+        state["error"] = ""
+        ACTIVE_JOBS[int(chat_id)] = session_id
+        _save_manual_session(state)
+        return state, "claimed"
+
+
+async def _run_manual_part_recap(
+    session_id: str,
+    part_index: int,
+    progress_message_id: int = None,
+    original_message_id: int = None,
+) -> None:
+    current_task = asyncio.current_task()
+    chat_id_value = 0
+    state: dict | None = None
+    part: dict | None = None
+    split_files: list[str] = []
+    rendered_path = ""
+    try:
+        state = _load_manual_session(session_id)
+        chat_id_value = int(state.get("chat_id") or 0)
+        part = _manual_part(state, part_index)
+        if not part:
+            raise ManualSessionError("manual part not found")
+        settings = _with_required_coverage(state.get("settings") or {})
+        total_parts = len(state.get("parts") or [])
+        tracker = (
+            ProgressTracker(chat_id_value, int(progress_message_id), job_id=session_id)
+            if progress_message_id
+            else _NullProgressTracker()
+        )
+        source_path = _manual_path(state, str(part.get("source_file") or ""))
+        if not os.path.exists(source_path):
+            raise ManualSessionError(
+                "ဒီအပိုင်းရဲ့ မူရင်း file က session ထဲမှာ မရှိတော့ပါ။ Source ကို ပြန်ပို့ကြည့်ပါ။"
+            )
+        script = _load_manual_script(state, part)
+        actual_dur = float(probe_video_info(source_path)[0] or 0)
+        if actual_dur <= 0:
+            actual_dur = float(part.get("duration") or 0)
+        if actual_dur <= 0:
+            raise RuntimeError(f"အပိုင်း {part_index} ကြာချိန် မရပါ။")
+
+        output_relative = f"recaps/recap_part_{int(part_index):04d}.mp4"
+        output_path = _manual_path(state, output_relative)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        existing_duration = (
+            float(probe_video_info(output_path)[0] or 0)
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0
+            else 0.0
+        )
+        updated_script = script
+        if existing_duration > 0 and _duration_is_on_target(
+            existing_duration, actual_dur, settings
+        ):
+            rendered_path = output_path
+            rendered_duration = existing_duration
+            await tracker.update(
+                f"✅ အပိုင်း {part_index}/{total_parts} Recap file အသင့်ရှိနေပြီ — ပြန်ပို့နေပါသည်...",
+                force=True,
+            )
+        else:
+            async with video_render_semaphore:
+                rendered_path, updated_script = await render_chunk_recap_from_script(
+                    source_path,
+                    actual_dur,
+                    float(part.get("start") or 0),
+                    float(part.get("end") or 0),
+                    script,
+                    int(part_index),
+                    tracker,
+                    settings,
+                    output_path=output_path,
+                )
+            rendered_duration = float(probe_video_info(rendered_path)[0] or 0)
+            if not _duration_is_on_target(rendered_duration, actual_dur, settings):
+                raise RuntimeError(
+                    "Rendered part duration is outside target: "
+                    f"{rendered_duration:.1f}s from {actual_dur:.1f}s source part"
+                )
+            _save_manual_script(state, part, updated_script)
+
+        if session_id in CANCELLED_JOBS:
+            raise asyncio.CancelledError()
+
+        files_to_send = [rendered_path]
+        if settings.get("split_tg", True) and os.path.getsize(rendered_path) > MAX_TG_BYTES:
+            split_files = await split_for_telegram(
+                rendered_path, str(state.get("session_dir") or "")
+            )
+            if split_files:
+                files_to_send = list(split_files)
+        await tracker.update(
+            f"📤 Recap အပိုင်း {part_index}/{total_parts} ကို ပို့နေပါသည်...",
+            force=True,
+        )
+        for file_index, path_to_send in enumerate(files_to_send, start=1):
+            if not os.path.exists(path_to_send) or os.path.getsize(path_to_send) <= 0:
+                raise RuntimeError("Recap file မတွေ့ပါ။")
+            if os.path.getsize(path_to_send) > MAX_TG_BYTES:
+                raise RuntimeError("Recap file က Telegram limit ထက် ကြီးနေပါတယ်။")
+            caption = ""
+            if settings.get("caption", True):
+                caption = (
+                    f"✅ Recap အပိုင်း {part_index}/{total_parts} "
+                    f"({fmt_time(rendered_duration)})"
+                )
+                if len(files_to_send) > 1:
+                    caption += f" — upload {file_index}/{len(files_to_send)}"
+            result = await tg_upload_media(
+                "sendVideo",
+                {"chat_id": str(chat_id_value), "caption": caption},
+                "video",
+                f"recap_part_{int(part_index):04d}.mp4",
+                path_to_send,
+                "video/mp4",
+            )
+            if not (result or {}).get("ok"):
+                description = _safe_error_text(
+                    (result or {}).get("description") or "Telegram upload failed"
+                )
+                raise RuntimeError(f"Recap upload failed: {description}")
+
+        async with MANUAL_SESSION_LOCK:
+            fresh = _load_manual_session(session_id)
+            fresh_part = _manual_part(fresh, part_index)
+            if not fresh_part:
+                raise ManualSessionError("manual part disappeared")
+            fresh_part["status"] = "done"
+            fresh_part["recap_file"] = output_relative
+            fresh_part["recap_duration_seconds"] = round(float(rendered_duration), 3)
+            fresh_part["finished_at"] = _manual_now()
+            fresh_part["error"] = ""
+            counts = _manual_counts(fresh)
+            fresh["status"] = (
+                "ready_to_join" if counts["done"] >= counts["total"] and counts["total"] else "ready"
+            )
+            fresh["active_render_part"] = None
+            fresh["error"] = ""
+            _save_manual_session(fresh)
+            state = fresh
+            part = fresh_part
+
+        try:
+            os.remove(source_path)
+        except Exception:
+            pass
+        for split_file in split_files:
+            if split_file and os.path.abspath(split_file) != os.path.abspath(rendered_path):
+                try:
+                    os.remove(split_file)
+                except Exception:
+                    pass
+
+        button_message_id = int(original_message_id or part.get("message_id") or 0) or None
+        if button_message_id:
+            await edit_reply_markup(
+                chat_id_value,
+                button_message_id,
+                manual_part_keyboard(session_id, int(part_index), "done"),
+            )
+        counts = _manual_counts(state)
+        if progress_message_id:
+            await edit_text(
+                chat_id_value,
+                int(progress_message_id),
+                f"✅ <b>Recap အပိုင်း {part_index}/{total_parts} ပြီးပါပြီ</b> "
+                f"({fmt_time(rendered_duration)})\n"
+                f"📊 ပြီးသောအပိုင်း: {counts['done']}/{counts['total']} · "
+                f"ကျန်အပိုင်း: {counts['total'] - counts['done']}",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+        if counts["done"] >= counts["total"] and counts["total"]:
+            await send_text(
+                chat_id_value,
+                "🎉 <b>အပိုင်းအားလုံး Recap ပြီးပါပြီ!</b>\n"
+                "အခု 🔗 <b>Recap အားလုံး ပြန်ဆက်မယ်</b> ကို နှိပ်ပြီး Final video ရယူနိုင်ပါတယ်။",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+    except asyncio.CancelledError:
+        try:
+            async with MANUAL_SESSION_LOCK:
+                fresh = _load_manual_session(session_id)
+                fresh_part = _manual_part(fresh, part_index)
+                if fresh_part and fresh_part.get("status") == "rendering":
+                    fresh_part["status"] = "ready"
+                    fresh_part["error"] = ""
+                fresh["status"] = "ready"
+                fresh["active_render_part"] = None
+                fresh["cancel_requested"] = False
+                _save_manual_session(fresh, allow_clear_cancel=True)
+                CANCELLED_JOBS.discard(session_id)
+                state = fresh
+                chat_id_value = int(fresh.get("chat_id") or chat_id_value)
+        except Exception:
+            pass
+        if chat_id_value:
+            button_message_id = int(original_message_id or 0) or None
+            if button_message_id:
+                await edit_reply_markup(
+                    chat_id_value,
+                    button_message_id,
+                    manual_part_keyboard(session_id, int(part_index), "ready"),
+                )
+            if progress_message_id:
+                await edit_text(
+                    chat_id_value,
+                    int(progress_message_id),
+                    "🛑 ဒီအပိုင်း Recap ကို ရပ်လိုက်ပါပြီ။ ပြန်လုပ်ချင်ရင် Recap ခလုတ်ကို ထပ်နှိပ်ပါ။",
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+        raise
+    except Exception as e:
+        logger.exception("Manual part recap failed")
+        message = _user_error_text(e)
+        try:
+            async with MANUAL_SESSION_LOCK:
+                fresh = _load_manual_session(session_id)
+                fresh_part = _manual_part(fresh, part_index)
+                if fresh_part:
+                    fresh_part["status"] = "failed"
+                    fresh_part["error"] = message
+                fresh["status"] = "ready"
+                fresh["active_render_part"] = None
+                fresh["error"] = message
+                _save_manual_session(fresh)
+                state = fresh
+                chat_id_value = int(fresh.get("chat_id") or chat_id_value)
+        except Exception:
+            pass
+        if chat_id_value:
+            button_message_id = int(original_message_id or 0) or None
+            if button_message_id:
+                await edit_reply_markup(
+                    chat_id_value,
+                    button_message_id,
+                    manual_part_keyboard(session_id, int(part_index), "failed"),
+                )
+            if progress_message_id:
+                await edit_text(
+                    chat_id_value,
+                    int(progress_message_id),
+                    f"❌ <b>အပိုင်း {part_index} Recap မအောင်မြင်ပါ</b>\n{message}\n\n"
+                    "မူရင်းအပိုင်းအောက်က 🔁 Recap ပြန်လုပ်မယ် ကို နှိပ်ပြီး ပြန်ကြိုးစားနိုင်ပါတယ်။",
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+            else:
+                await send_text(
+                    chat_id_value,
+                    f"❌ <b>အပိုင်း {part_index} Recap မအောင်မြင်ပါ</b>\n{message}",
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+    finally:
+        if MANUAL_RENDER_TASKS.get(session_id) is current_task:
+            MANUAL_RENDER_TASKS.pop(session_id, None)
+        if chat_id_value and ACTIVE_JOBS.get(chat_id_value) == session_id:
+            should_clear = True
+            try:
+                fresh = _load_manual_session(session_id)
+                should_clear = not any(
+                    isinstance(item, dict) and item.get("status") == "rendering"
+                    for item in fresh.get("parts") or []
+                ) and fresh.get("status") != "joining"
+            except Exception:
+                should_clear = True
+            if should_clear:
+                ACTIVE_JOBS.pop(chat_id_value, None)
+        gc.collect()
+
+
+async def _claim_manual_join(
+    session_id: str,
+    chat_id: int,
+) -> tuple[dict | None, str]:
+    async with MANUAL_SESSION_LOCK:
+        try:
+            state = _load_manual_session(session_id)
+        except Exception:
+            return None, "expired"
+        if int(state.get("chat_id") or 0) != int(chat_id):
+            return None, "wrong_chat"
+        if _manual_session_expired(state):
+            _delete_manual_session(session_id)
+            return None, "expired"
+        task = MANUAL_RENDER_TASKS.get(session_id)
+        if (task and not task.done()) or state.get("status") in ("rendering", "joining"):
+            return state, "busy"
+        if state.get("cancel_requested"):
+            state["cancel_requested"] = False
+            CANCELLED_JOBS.discard(session_id)
+            _save_manual_session(state, allow_clear_cancel=True)
+        active = ACTIVE_JOBS.get(int(chat_id))
+        if active and active != session_id:
+            return state, "active_other"
+        counts = _manual_counts(state)
+        if not counts["total"] or counts["done"] < counts["total"]:
+            return state, "not_all_done"
+        for part in state.get("parts") or []:
+            if not isinstance(part, dict):
+                return state, "missing"
+            try:
+                recap_path = _manual_path(state, str(part.get("recap_file") or ""))
+            except Exception:
+                return state, "missing"
+            if not os.path.exists(recap_path) or os.path.getsize(recap_path) <= 0:
+                return state, "missing"
+        state["status"] = "joining"
+        state["error"] = ""
+        ACTIVE_JOBS[int(chat_id)] = session_id
+        _save_manual_session(state)
+        return state, "claimed"
+
+
+async def _run_manual_join(
+    session_id: str,
+    progress_message_id: int = None,
+) -> None:
+    current_task = asyncio.current_task()
+    chat_id_value = 0
+    state: dict | None = None
+    split_files: list[str] = []
+    try:
+        state = _load_manual_session(session_id)
+        chat_id_value = int(state.get("chat_id") or 0)
+        settings = _with_required_coverage(state.get("settings") or {})
+        tracker = (
+            ProgressTracker(chat_id_value, int(progress_message_id), job_id=session_id)
+            if progress_message_id
+            else _NullProgressTracker()
+        )
+        parts = sorted(
+            [p for p in (state.get("parts") or []) if isinstance(p, dict)],
+            key=lambda p: int(p.get("index") or 0),
+        )
+        recap_paths = [
+            _manual_path(state, str(part.get("recap_file") or "")) for part in parts
+        ]
+        if not recap_paths or any(
+            not os.path.exists(path) or os.path.getsize(path) <= 0
+            for path in recap_paths
+        ):
+            raise ManualSessionError("Recap အပိုင်းအားလုံး မရှိသေးလို့ ပြန်ဆက်၍မရပါ။")
+
+        final_relative = "final/final_recap.mp4"
+        concat_relative = "final/final_concat.txt"
+        final_path = _manual_path(state, final_relative)
+        concat_path = _manual_path(state, concat_relative)
+        os.makedirs(os.path.dirname(final_path), exist_ok=True)
+        source_duration = float(state.get("source_duration_seconds") or 0)
+        final_duration = (
+            float(probe_video_info(final_path)[0] or 0)
+            if os.path.exists(final_path) and os.path.getsize(final_path) > 0
+            else 0.0
+        )
+        if not (
+            final_duration > 0
+            and source_duration > 0
+            and _duration_is_on_target(final_duration, source_duration, settings)
+        ):
+            await tracker.update(
+                f"🔗 Recap ပြီးတဲ့ {len(recap_paths)} ပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်နေပါသည်...",
+                force=True,
+            )
+            concat_ok = await asyncio.to_thread(
+                _concat_video_parts, recap_paths, final_path, concat_path
+            )
+            if not concat_ok:
+                raise RuntimeError("Recap အပိုင်းအားလုံးကို final video တစ်ခုအဖြစ် ပြန်ဆက်၍မရပါ။")
+            final_duration = float(probe_video_info(final_path)[0] or 0)
+
+        target_final, final_low, final_high = _final_duration_window(
+            source_duration, settings
+        )
+        if source_duration <= 0 or not _duration_is_on_target(
+            final_duration, source_duration, settings
+        ):
+            raise RuntimeError(
+                "Final joined video duration is outside target: "
+                f"{final_duration:.1f}s actual, target {target_final:.1f}s "
+                f"(acceptable {final_low:.1f}-{final_high:.1f}s)"
+            )
+        if session_id in CANCELLED_JOBS:
+            raise asyncio.CancelledError()
+
+        files_to_send = [final_path]
+        if settings.get("split_tg", True) and os.path.getsize(final_path) > MAX_TG_BYTES:
+            split_files = await split_for_telegram(
+                final_path, str(state.get("session_dir") or "")
+            )
+            if split_files:
+                files_to_send = list(split_files)
+        await tracker.update(
+            f"📤 Final Recap ဗီဒီယို ပို့နေပါသည်... ({fmt_time(final_duration)})",
+            force=True,
+        )
+        for file_index, path_to_send in enumerate(files_to_send, start=1):
+            if not os.path.exists(path_to_send) or os.path.getsize(path_to_send) <= 0:
+                raise RuntimeError("Final video file မတွေ့ပါ။")
+            if os.path.getsize(path_to_send) > MAX_TG_BYTES:
+                raise RuntimeError("Final video က Telegram limit ထက် ကြီးနေပါတယ်။")
+            caption = ""
+            if settings.get("caption", True):
+                caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_duration)})"
+                if len(files_to_send) > 1:
+                    caption += f" - အပိုင်း {file_index}/{len(files_to_send)}"
+            result = await tg_upload_media(
+                "sendVideo",
+                {"chat_id": str(chat_id_value), "caption": caption},
+                "video",
+                f"recap_final_{file_index}.mp4",
+                path_to_send,
+                "video/mp4",
+            )
+            if not (result or {}).get("ok"):
+                description = _safe_error_text(
+                    (result or {}).get("description") or "Telegram upload failed"
+                )
+                raise RuntimeError(f"Final upload failed: {description}")
+
+        if not state.get("terminal_stat_counted"):
+            bump_stat(chat_id_value, "done")
+        if progress_message_id:
+            try:
+                await tg_api(
+                    "deleteMessage",
+                    {
+                        "chat_id": chat_id_value,
+                        "message_id": int(progress_message_id),
+                    },
+                )
+            except Exception:
+                pass
+        ratio_text = (
+            f" (အမှန် {final_duration / source_duration * 100:.1f}%)"
+            if source_duration > 0
+            else ""
+        )
+        await send_text(
+            chat_id_value,
+            f"✅ <b>Final Recap ပြီးပါပြီ!</b> ({fmt_time(final_duration)})\n"
+            f"🎯 Final duration {settings.get('coverage')}%{ratio_text} · "
+            f"🎙️ {settings.get('voice')}",
+            reply_markup=main_menu_keyboard(chat_id_value),
+        )
+        _delete_manual_session(session_id)
+    except asyncio.CancelledError:
+        try:
+            async with MANUAL_SESSION_LOCK:
+                fresh = _load_manual_session(session_id)
+                fresh["status"] = "ready_to_join"
+                fresh["active_render_part"] = None
+                fresh["cancel_requested"] = False
+                _save_manual_session(fresh, allow_clear_cancel=True)
+                CANCELLED_JOBS.discard(session_id)
+                chat_id_value = int(fresh.get("chat_id") or chat_id_value)
+        except Exception:
+            pass
+        if chat_id_value and progress_message_id:
+            await edit_text(
+                chat_id_value,
+                int(progress_message_id),
+                "🛑 Final ပြန်ဆက်တာကို ရပ်လိုက်ပါပြီ။ ပြန်နှိပ်၍ ထပ်လုပ်နိုင်ပါတယ်။",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+        raise
+    except Exception as e:
+        logger.exception("Manual final join failed")
+        message = _user_error_text(e)
+        try:
+            async with MANUAL_SESSION_LOCK:
+                fresh = _load_manual_session(session_id)
+                fresh["status"] = "ready_to_join"
+                fresh["error"] = message
+                fresh["active_render_part"] = None
+                _save_manual_session(fresh)
+                chat_id_value = int(fresh.get("chat_id") or chat_id_value)
+        except Exception:
+            pass
+        if chat_id_value and progress_message_id:
+            await edit_text(
+                chat_id_value,
+                int(progress_message_id),
+                f"❌ <b>Final ပြန်ဆက်၍ မရပါ</b>\n{message}",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+        elif chat_id_value:
+            await send_text(
+                chat_id_value,
+                f"❌ <b>Final ပြန်ဆက်၍ မရပါ</b>\n{message}",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+    finally:
+        if MANUAL_RENDER_TASKS.get(session_id) is current_task:
+            MANUAL_RENDER_TASKS.pop(session_id, None)
+        if chat_id_value and ACTIVE_JOBS.get(chat_id_value) == session_id:
+            should_clear = True
+            try:
+                fresh = _load_manual_session(session_id)
+                should_clear = fresh.get("status") not in ("rendering", "joining")
+            except Exception:
+                should_clear = True
+            if should_clear:
+                ACTIVE_JOBS.pop(chat_id_value, None)
+        gc.collect()
+
+
+async def _handle_manual_part_callback(
+    data: str,
+    chat_id: int,
+    message_id: int = None,
+) -> bool:
+    if data == "part:noop":
+        return True
+    if not data.startswith("part:"):
+        return False
+    bits = data.split(":")
+    if len(bits) < 3:
+        await send_text(
+            chat_id,
+            "⌛ ဒီ Recap session က မရှိတော့ပါ။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+            reply_markup=main_menu_keyboard(chat_id),
+        )
+        return True
+    action = bits[1]
+    session_id = bits[2]
+
+    if action == "recap":
+        if len(bits) != 4:
+            await send_text(
+                chat_id,
+                "⌛ ဒီခလုတ်က သက်တမ်းကုန်နေပါတယ်။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+            return True
+        try:
+            part_index = int(bits[3])
+        except ValueError:
+            return True
+        state, code = await _claim_manual_part(session_id, part_index, int(chat_id))
+        if code != "claimed":
+            messages = {
+                "expired": "⌛ ဒီ session က သက်တမ်းကုန်/ပျောက်သွားပါပြီ။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+                "wrong_chat": "⛔ ဒီအပိုင်းက အခြား chat ရဲ့ session ပါ။",
+                "closed": "⚪ ဒီ session က ပိတ်သွားပါပြီ။",
+                "missing_part": "⚠️ ဒီအပိုင်းကို မတွေ့ပါ။",
+                "done": f"✅ အပိုင်း {part_index} Recap က ပြီးပြီးသားပါ။",
+                "busy": "⏳ အပိုင်းတစ်ခုကို Recap လုပ်နေဆဲပါ။ ပြီးမှ နောက်တစ်ခု နှိပ်ပါ။",
+                "active_other": "⚠️ အခြားအလုပ်တစ်ခု လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ။",
+                "not_ready": "⏳ ဒီအပိုင်းရဲ့ Script/Original က အသင့်မဖြစ်သေးပါ။",
+                "missing": "⌛ ဒီအပိုင်းရဲ့ မူရင်း file သို့မဟုတ် Script မရှိတော့ပါ။ Source ကို ပြန်ပို့ကြည့်ပါ။",
+            }
+            await send_text(
+                chat_id,
+                messages.get(code, "⚠️ Recap စ၍မရသေးပါ။"),
+                reply_markup=(
+                    manual_control_keyboard(session_id)
+                    if state
+                    else main_menu_keyboard(chat_id)
+                ),
+            )
+            return True
+        if message_id:
+            await edit_reply_markup(
+                chat_id,
+                int(message_id),
+                manual_part_keyboard(session_id, part_index, "rendering"),
+            )
+        total_parts = len((state or {}).get("parts") or [])
+        progress_id = await send_text(
+            chat_id,
+            f"🎬 <b>အပိုင်း {part_index}/{total_parts} Recap စတင်လိုက်ပါပြီ</b>\n"
+            "ဒီအပိုင်းတစ်ခုကိုပဲ သိမ်းထားတဲ့ Script နဲ့ လုပ်ပါမယ်။",
+            reply_markup=job_progress_keyboard(),
+        )
+        task = _spawn_background(
+            _run_manual_part_recap(
+                session_id,
+                part_index,
+                progress_id,
+                int(message_id) if message_id else None,
+            ),
+            name=f"manual-part-{session_id}-{part_index}",
+        )
+        MANUAL_RENDER_TASKS[session_id] = task
+        return True
+
+    if action == "status":
+        try:
+            state = _load_manual_session(session_id)
+        except Exception:
+            await send_text(
+                chat_id,
+                "⌛ ဒီ session က မရှိတော့ပါ။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+            return True
+        if int(state.get("chat_id") or 0) != int(chat_id):
+            await send_text(chat_id, "⛔ ဒီ session က ဒီ chat အတွက် မဟုတ်ပါ။", reply_markup=main_menu_keyboard(chat_id))
+            return True
+        if _manual_session_expired(state):
+            _delete_manual_session(session_id)
+            await send_text(
+                chat_id,
+                "⌛ ဒီ session က သက်တမ်းကုန်သွားပါပြီ။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+            return True
+        await send_text(
+            chat_id,
+            _manual_status_text(state),
+            reply_markup=manual_control_keyboard(session_id),
+        )
+        return True
+
+    if action == "discard":
+        deleted = False
+        busy = False
+        should_count_cancelled = False
+        async with MANUAL_SESSION_LOCK:
+            try:
+                state = _load_manual_session(session_id)
+            except Exception:
+                state = None
+            if state and int(state.get("chat_id") or 0) == int(chat_id):
+                task = MANUAL_RENDER_TASKS.get(session_id)
+                busy = bool(
+                    (task and not task.done())
+                    or state.get("status")
+                    in (
+                        "preparing",
+                        "splitting",
+                        "scripting",
+                        "sending_parts",
+                        "rendering",
+                        "joining",
+                    )
+                    or any(
+                        isinstance(p, dict) and p.get("status") == "rendering"
+                        for p in state.get("parts") or []
+                    )
+                )
+                if not busy:
+                    should_count_cancelled = bool(
+                        not state.get("terminal_stat_counted")
+                        and state.get("status") != "completed"
+                    )
+                    deleted = _delete_manual_session(session_id)
+        if busy:
+            await send_text(
+                chat_id,
+                "⏳ အလုပ်/Recap လုပ်နေဆဲ ဖြစ်လို့ session တန်းပယ်၍မရပါ။ အရင်ဆုံး 🛑 ရပ်မယ် ကို နှိပ်ပါ။",
+                reply_markup=manual_control_keyboard(session_id),
+            )
+        elif deleted:
+            if should_count_cancelled:
+                bump_stat(chat_id, "cancelled")
+            await send_text(
+                chat_id,
+                "🗑️ ဒီ ၂ မိနစ်အပိုင်း session ကို ပယ်လိုက်ပါပြီ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+        else:
+            await send_text(
+                chat_id,
+                "⌛ ဒီ session က မရှိတော့ပါ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+        return True
+
+    if action == "join":
+        state, code = await _claim_manual_join(session_id, int(chat_id))
+        if code != "claimed":
+            if code == "not_all_done" and state:
+                await send_text(
+                    chat_id,
+                    "⚠️ <b>အပိုင်းအားလုံး Recap မပြီးသေးပါ</b>\n\n"
+                    + _manual_status_text(state),
+                    reply_markup=manual_control_keyboard(session_id),
+                )
+                return True
+            messages = {
+                "expired": "⌛ ဒီ session က သက်တမ်းကုန်/ပျောက်သွားပါပြီ။ Video/Link ကို ပြန်ပို့ကြည့်ပါ။",
+                "wrong_chat": "⛔ ဒီ session က ဒီ chat အတွက် မဟုတ်ပါ။",
+                "busy": "⏳ အပိုင်းတစ်ခု သို့မဟုတ် Final join လုပ်နေဆဲပါ။",
+                "active_other": "⚠️ အခြားအလုပ် လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ။",
+                "missing": "⚠️ Recap file အချို့ မရှိတော့လို့ Final ဆက်၍မရပါ။",
+            }
+            await send_text(
+                chat_id,
+                messages.get(code, "⚠️ Final ဆက်၍မရသေးပါ။"),
+                reply_markup=(
+                    manual_control_keyboard(session_id)
+                    if state
+                    else main_menu_keyboard(chat_id)
+                ),
+            )
+            return True
+        progress_id = await send_text(
+            chat_id,
+            "🔗 <b>Recap အပိုင်းအားလုံးကို Final video အဖြစ် ပြန်ဆက်နေပါသည်...</b>",
+            reply_markup=job_progress_keyboard(),
+        )
+        task = _spawn_background(
+            _run_manual_join(session_id, progress_id),
+            name=f"manual-join-{session_id}",
+        )
+        MANUAL_RENDER_TASKS[session_id] = task
+        return True
+
+    return True
+
+
 async def handle_link_job(chat_id: int, reply_msg_id: int, url: str):
     await _handle_source_job(
         chat_id, reply_msg_id, {"kind": "url", "url": str(url or "")}
@@ -5414,7 +8595,9 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
     job_settings = _with_required_coverage(get_user_settings(chat_id))
     source_spec = dict(source_spec or {})
     source_kind = str(source_spec.get("kind") or "url")
-    url = str(source_spec.get("url") or "")
+    url = _extract_first_url(str(source_spec.get("url") or ""))
+    if source_kind == "url" and url:
+        source_spec["url"] = url
     # Fixed product rule: first split every downloaded source into
     # two-minute parts, regardless of any stale user chunk setting.
     segment_seconds = SOURCE_SEGMENT_SECONDS
@@ -5424,13 +8607,51 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         await send_text(chat_id, "⚠️ အလုပ်တစ်ခု လုပ်နေဆဲပါ။ ပြီးအောင်စောင့်ပါ သို့မဟုတ် 🛑 ရပ်မယ် ခလုတ်နှိပ်ပါ။",
                         reply_to=reply_msg_id, reply_markup=main_menu_keyboard(chat_id))
         return
+    if MANUAL_PARTS_ENABLED:
+        existing_manual = _find_manual_session_for_chat(chat_id)
+        if existing_manual:
+            existing_id = str(existing_manual.get("session_id") or "")
+            await send_text(
+                chat_id,
+                "⚠️ <b>မပြီးသေးတဲ့ ၂ မိနစ်အပိုင်း session တစ်ခု ရှိနေပါသေးတယ်။</b>\n\n"
+                + _manual_status_text(existing_manual)
+                + "\n\nအသစ်မစခင် အဲဒီ session ကို ဆက်လုပ်ပါ၊ သို့မဟုတ် 🗑️ Session ပယ်မယ် ကို နှိပ်ပါ။",
+                reply_to=reply_msg_id,
+                reply_markup=manual_control_keyboard(existing_id),
+            )
+            return
     ACTIVE_JOBS[chat_id] = job_id
+    if MANUAL_PARTS_ENABLED:
+        initial_text = (
+            f"⚡ Recap ပြင်ဆင်နေပါပြီ...\n"
+            "📝 Source တစ်ခုလုံးရဲ့ Script ကို အရင်ရေးပြီး၊ မူရင်းကို ၂ မိနစ်စီခွဲကာ "
+            "တစ်ပိုင်းချင်း 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ် (Auto မ Run ပါ)\n"
+            f"🎯 တစ်ပိုင်းချင်း Final duration: မူရင်းအပိုင်း၏ {job_settings['coverage']}% · "
+            f"🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p"
+        )
+    else:
+        initial_text = (
+            f"⚡ Recap စတင်နေပါပြီ...\n"
+            "✂️ မူရင်းကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ ပြန်ဆက်ပါမယ်\n"
+            f"🎯 Final duration: မူရင်း၏ {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p"
+        )
     status_id = await send_text(
         chat_id,
-        f"⚡ Recap စတင်နေပါပြီ...\n✂️ မူရင်းကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ ပြန်ဆက်ပါမယ်\n🎯 Final duration: မူရင်း၏ {job_settings['coverage']}% · 🎙️ {job_settings['voice']} · 📐 {job_settings['resolution']}p",
+        initial_text,
         reply_to=reply_msg_id,
         reply_markup=job_progress_keyboard(),
     )
+
+    if MANUAL_PARTS_ENABLED:
+        await _handle_manual_source_job(
+            chat_id,
+            reply_msg_id,
+            source_spec,
+            job_id,
+            status_id,
+            job_settings,
+        )
+        return
 
     # Optional n8n orchestration.  The Telegram webhook/menu/status remain
     # here; n8n only calls this service's authenticated stage endpoints.
@@ -5486,28 +8707,14 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
     story_context = {"characters": [], "summary": "", "last_scene": "", "protagonist": "", "pronoun": ""}
 
     try:
-        if source_kind == "telegram_file":
-            extension = _safe_video_extension(
-                str(source_spec.get("file_name") or ""),
-                str(source_spec.get("mime_type") or ""),
-            )
-            source_path = os.path.join(work_dir, f"source{extension}")
-            await tracker.update(
-                f"📥 Telegram video ကို လက်ခံနေပါသည်... ({_telegram_attachment_label(source_spec)})",
-                force=True,
-            )
-            total_dur = await download_telegram_file(
-                str(source_spec.get("file_id") or ""), source_path, tracker
-            )
-        else:
-            await tracker.update("🔍 ဗီဒီယို အချိန်စစ်ဆေးနေပါသည်...", force=True)
-            probe_dur = await get_source_duration(url)
-            source_path = os.path.join(work_dir, "source.mp4")
-            await tracker.update("📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...", force=True)
-            total_dur = await download_full(url, source_path, tracker, probe_dur)
-
+        source_path, total_dur = await _acquire_source_file(
+            source_spec, work_dir, tracker
+        )
         if total_dur <= 0:
-            raise RuntimeError("မူရင်းဗီဒီယို ဒေါင်းမရပါ။")
+            raise SourceDownloadError(
+                "မူရင်းဗီဒီယို download မရပါ။",
+                detail="acquired source has no readable duration",
+            )
 
         size_mb = os.path.getsize(source_path) / (1024 * 1024)
         logger.info(f"Full source: {total_dur:.1f}s = {fmt_time(total_dur)}, {size_mb:.0f}MB")
@@ -5684,7 +8891,7 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
             await edit_text(chat_id, status_id, "🛑 အလုပ်ကို ရပ်လိုက်ပါပြီ။", reply_markup=main_menu_keyboard(chat_id))
         else:
             bump_stat(chat_id, "failed")
-            await edit_text(chat_id, status_id, f"❌ အမှား: {type(e).__name__} - {str(e)[:120]}", reply_markup=main_menu_keyboard(chat_id))
+            await edit_text(chat_id, status_id, f"❌ အမှား: {_user_error_text(e)}", reply_markup=main_menu_keyboard(chat_id))
     finally:
         ACTIVE_JOBS.pop(chat_id, None)
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -5695,10 +8902,33 @@ def job_status_text(chat_id) -> str:
     job = ACTIVE_JOBS.get(chat_id)
     s = get_user_settings(chat_id)
     if job:
+        manual_note = ""
+        try:
+            manual_state = _load_manual_session(str(job))
+            if int(manual_state.get("chat_id") or 0) == int(chat_id):
+                counts = _manual_counts(manual_state)
+                manual_note = (
+                    f"\n🎬 Manual အပိုင်းများ: {counts['done']}/{counts['total']} ပြီး"
+                )
+        except Exception:
+            pass
         return (f"📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n🟢 လုပ်နေဆဲ (Job: <code>{job}</code>)\n"
-                f"🎯 Final duration: မူရင်း၏ {s['coverage']}% · 🎙️ {s['voice']}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
+                f"🎯 Final duration: မူရင်း၏ {s['coverage']}% · 🎙️ {s['voice']}"
+                f"{manual_note}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
+    if MANUAL_PARTS_ENABLED:
+        manual_state = _find_manual_session_for_chat(chat_id)
+        if manual_state:
+            return _manual_status_text(manual_state)
     return ("📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n⚪ လက်ရှိ လုပ်နေတာ မရှိပါ။\n\n"
-            "🎬 Recap စဖို့ link ပို့လိုက်ပါ (သို့) ခလုတ်နှိပ်ပါ။")
+            "🎬 Recap စဖို့ video file သို့မဟုတ် link ပို့လိုက်ပါ (သို့) ခလုတ်နှိပ်ပါ။")
+
+
+def _status_keyboard(chat_id) -> dict:
+    if MANUAL_PARTS_ENABLED:
+        manual_state = _find_manual_session_for_chat(chat_id)
+        if manual_state:
+            return manual_control_keyboard(str(manual_state.get("session_id") or ""))
+    return main_menu_keyboard(chat_id)
 
 
 async def handle_callback(cb: dict):
@@ -5716,6 +8946,10 @@ async def handle_callback(cb: dict):
     # without ever sending /start again.  Install the persistent bottom
     # buttons once for that chat as well.
     await ensure_persistent_keyboard(chat_id)
+
+    if data.startswith("part:"):
+        await _handle_manual_part_callback(data, int(chat_id), message_id)
+        return
 
     async def show(text, markup):
         # While a job is running, the callback may come from the live
@@ -5738,9 +8972,9 @@ async def handle_callback(cb: dict):
     elif data == "menu:settings":
         await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
     elif data == "menu:recap":
-        await show("🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Source ကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ အားလုံးပြန်ဆက်ပို့ပါမယ်။", main_menu_keyboard(chat_id))
+        await show("🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Bot က ၂ မိနစ်စီခွဲပြီး တစ်ခန်းလုံး Script အရင်ရေးမယ်၊ ပြီးရင် မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ တစ်ပိုင်းချင်း ပြန်ပို့ပါမယ်။", main_menu_keyboard(chat_id))
     elif data == "menu:status":
-        await show(job_status_text(chat_id), main_menu_keyboard(chat_id))
+        await show(job_status_text(chat_id), _status_keyboard(chat_id))
     elif data == "menu:summary":
         await show(settings_summary_text(chat_id), main_menu_keyboard(chat_id))
     elif data == "menu:help":
@@ -5819,6 +9053,7 @@ async def process_admin_update(update: dict):
     # metadata and an optional caption.  Treat captions like text for links
     # or commands, while the attachment itself takes priority as the source.
     text = (msg.get("text") or msg.get("caption") or "").strip()
+    source_url = _extract_first_url(text)
     attachment = _telegram_video_attachment(msg)
     if not is_allowed(from_id):
         await send_text(chat_id, "⛔ ဒီ bot ကို သုံးခွင့် မရှိပါ။", reply_to=msg_id)
@@ -5838,8 +9073,8 @@ async def process_admin_update(update: dict):
     if text == PERSISTENT_BUTTON_RECAP:
         await send_text(
             chat_id,
-            "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file၊ document video သို့မဟုတ် RedNote/video link ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n"
-            "✂️ Source ကို ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ အားလုံးပြန်ဆက်ပို့ပါမယ်။",
+            "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n"
+            "✂️ Bot က ၂ မိနစ်စီခွဲပြီး တစ်ခန်းလုံး Script အရင်ရေးကာ မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်။",
             reply_to=msg_id,
             reply_markup=main_menu_keyboard(chat_id),
         )
@@ -5861,7 +9096,7 @@ async def process_admin_update(update: dict):
     elif cmd == "/settings":
         await send_text(chat_id, "⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။", reply_to=msg_id, reply_markup=settings_keyboard(chat_id))
     elif cmd == "/status":
-        await send_text(chat_id, job_status_text(chat_id), reply_to=msg_id, reply_markup=main_menu_keyboard(chat_id))
+        await send_text(chat_id, job_status_text(chat_id), reply_to=msg_id, reply_markup=_status_keyboard(chat_id))
     elif cmd == "/cancel":
         job = await request_cancel_active_job_async(chat_id)
         if job:
@@ -5882,18 +9117,18 @@ async def process_admin_update(update: dict):
                 chat_id,
                 "🎬 <b>ဒီ video ကို Recap လုပ်မလား?</b>\n"
                 f"{_telegram_attachment_label(attachment)}\n"
-                "✂️ ၂ မိနစ်စီခွဲပြီး တစ်ပိုင်းချင်း recap လုပ်၍ အားလုံးပြန်ဆက်ပို့ပါမယ်။",
+                "✂️ ၂ မိနစ်စီခွဲပြီး Script အရင်ရေးကာ မူရင်းအပိုင်းတွေကို 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်။",
                 reply_to=msg_id,
                 reply_markup=confirm_keyboard(),
             )
-    elif text.startswith("http"):
+    elif source_url:
         s = get_user_settings(chat_id)
         if s.get("auto_start"):
-            await handle_link_job(chat_id, msg_id, text)
+            await handle_link_job(chat_id, msg_id, source_url)
         else:
-            PENDING_LINKS[chat_id] = text
-            PENDING_INPUTS[chat_id] = {"kind": "url", "url": text}
-            await send_text(chat_id, "🎬 <b>ဒီ link ကို Recap လုပ်မလား?</b>\n" + text[:200], reply_to=msg_id, reply_markup=confirm_keyboard())
+            PENDING_LINKS[chat_id] = source_url
+            PENDING_INPUTS[chat_id] = {"kind": "url", "url": source_url}
+            await send_text(chat_id, "🎬 <b>ဒီ link ကို Recap လုပ်မလား?</b>\n" + html.escape(source_url[:200], quote=False), reply_to=msg_id, reply_markup=confirm_keyboard())
     elif text:
         await send_main_menu(
             chat_id, reply_to=msg_id, with_persistent_keyboard=True
@@ -5921,6 +9156,22 @@ async def lifespan(_app: FastAPI):
         RENDER_GIT_COMMIT or "unknown",
         RENDER_GIT_BRANCH or "unknown",
     )
+    try:
+        removed_sessions = _cleanup_expired_manual_sessions()
+        if removed_sessions:
+            logger.info("Cleaned %s expired manual part sessions", removed_sessions)
+        reset_sessions = _reset_stale_manual_sessions_after_restart()
+        if reset_sessions:
+            logger.info("Reset %s stale manual part sessions after restart", reset_sessions)
+    except Exception as e:
+        logger.warning("manual session cleanup failed: %s", _safe_error_text(e))
+    logger.info(
+        "Source downloader: yt-dlp=%s impersonation=%s rednote_cookie_configured=%s recap_flow=%s",
+        _installed_yt_dlp_version(),
+        _yt_dlp_impersonation_available(),
+        _rednote_cookie_configured(),
+        "manual_per_part" if MANUAL_PARTS_ENABLED else "auto",
+    )
     setup_task = _spawn_background(_setup_bot(), name="telegram-setup")
     try:
         yield
@@ -5935,7 +9186,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v3.7-live-deploy-webhook-fix"
+BUILD_VERSION = "v3.8-manual-parts-download-fix"
 BUILD_FEATURES = 20
 
 
@@ -5947,6 +9198,8 @@ async def root():
         "features": BUILD_FEATURES,
         "status": "online",
         "pipeline_mode": PIPELINE_MODE,
+        "recap_flow": "manual_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
+        "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -5954,9 +9207,18 @@ async def root():
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "first_person_enforcement": "per_scene_validated",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
-        "segment_pipeline": "download_split_120s_recap_each_concat_send",
+        "segment_pipeline": (
+            "download_split_120s_script_first_send_originals_click_recap_explicit_join"
+            if MANUAL_PARTS_ENABLED
+            else "download_split_120s_recap_each_concat_send"
+        ),
         "input_types": ["telegram_video", "telegram_document_video", "video_link"],
-        "telegram_buttons": "inline_persistent_and_menu",
+        "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_and_rednote_fallbacks",
+        "telegram_file_download_limit_mb": 20,
+        "yt_dlp_version": _installed_yt_dlp_version(),
+        "yt_dlp_impersonation_available": _yt_dlp_impersonation_available(),
+        "rednote_cookie_configured": _rednote_cookie_configured(),
+        "telegram_buttons": "inline_persistent_menu_and_per_part_recap",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
         "public_base_url": PUBLIC_BASE_URL,
         "public_host": urlparse(PUBLIC_BASE_URL).netloc,
@@ -5984,14 +9246,25 @@ async def health():
         "app": "rednote-bot",
         "version": BUILD_VERSION,
         "pipeline_mode": PIPELINE_MODE,
+        "recap_flow": "manual_per_part" if MANUAL_PARTS_ENABLED else "auto_concat",
+        "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "first_person_enforcement": "per_scene_validated",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
-        "segment_pipeline": "download_split_120s_recap_each_concat_send",
+        "segment_pipeline": (
+            "download_split_120s_script_first_send_originals_click_recap_explicit_join"
+            if MANUAL_PARTS_ENABLED
+            else "download_split_120s_recap_each_concat_send"
+        ),
         "input_types": ["telegram_video", "telegram_document_video", "video_link"],
-        "telegram_buttons": "inline_persistent_and_menu",
+        "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_and_rednote_fallbacks",
+        "telegram_file_download_limit_mb": 20,
+        "yt_dlp_version": _installed_yt_dlp_version(),
+        "yt_dlp_impersonation_available": _yt_dlp_impersonation_available(),
+        "rednote_cookie_configured": _rednote_cookie_configured(),
+        "telegram_buttons": "inline_persistent_menu_and_per_part_recap",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
         "public_base_url": PUBLIC_BASE_URL,
         "public_host": urlparse(PUBLIC_BASE_URL).netloc,
