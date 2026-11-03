@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.7-tts-voice-fix` is a **one-shot automatic flow**: the user
+Version `v5.8-tts-quota-memory` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -58,11 +58,19 @@ TTS requests use the current `voice_config.voice` shape (alternating
 with the legacy `prebuilt_voice_config` shape per attempt, since
 model generations accept different shapes), send plain text only
 (current models recite verbatim -- instructions would be read
-aloud), scan all response parts for the audio, and fall back across
-`gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts`,
-`gemini-3.1-flash-tts-preview` and `gemini-2.5-flash-preview-tts`;
-the most recent TTS error is remembered, appended to silent-scene
-failures, and exposed as `last_tts_error` on `/healthz`.
+aloud), scan all response parts for the audio (WAV responses are
+detected and decoded as WAV, legacy headerless PCM as raw s16le),
+and fall back across `gemini-3.8-flash-tts`,
+`gemini-3.8-flash-lite-tts`, `gemini-3.1-flash-tts-preview`,
+`gemini-2.5-flash-tts`, `gemini-2.5-pro-tts` and
+`gemini-2.5-flash-preview-tts`. Models that answer 404 are
+remembered and skipped process-wide; models that answer a
+plan-quota 429 ("exceeded your current quota") are remembered for
+`GEMINI_QUOTA_SKIP_SECONDS` (30 min) and skipped without retry
+storms. The latest TTS error per model is remembered, appended to
+silent-scene failures, and exposed on `/healthz` as
+`last_tts_error`, `last_tts_error_by_model` and
+`quota_exhausted_models`.
 It
 installs the persistent bottom buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
@@ -278,7 +286,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.7-tts-voice-fix"`,
+URLs must show `"version":"v5.8-tts-quota-memory"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
