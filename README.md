@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.16-tts-retry` is a **one-shot automatic flow**: the user
+Version `v5.17-script-recovery` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -343,6 +343,40 @@ anywhere in the pipeline with `get_user_settings(chat_id)["my_feature"]`
 (job code already receives the full settings snapshot as `job_settings` /
 `st` in `build_chunk_recap`).
 
+## v5.17 — when Gemini answers but the answer has no scenes
+
+A production job died with
+`GeminiScriptError … သုံးနိုင်သော scene မရပါ … Gemini retry response also
+contained no usable Burmese scenes`. That message blamed the Gemini quota,
+but both calls had **answered and parsed as JSON** — the payload simply
+carried nothing the normalizer can use (empty `scenes`, text under an
+unknown key, a truncated object, or a safety-shortened reply). Nothing
+about it was debuggable: the diagnostics were discarded and only a generic
+sentence reached the user.
+
+v5.17 changes three things:
+
+- **The budget can no longer be eaten silently.** Script calls ask for
+  `SCRIPT_JSON_MAX_TOKENS` (16384, was 8192) output tokens, so a reasoning
+  model cannot spend the whole allowance on hidden thinking and return an
+  empty or half-written JSON object.
+- **Two extra salvages before the job fails.** First the longest Burmese
+  string inside the JSON answer already received is turned into timed
+  scenes; then one more call asks for a **plain spoken retelling with no
+  JSON envelope**, which is split on sentence boundaries and laid out over
+  the window locally (`_scenes_from_plain_narration`). Only the model's own
+  words are used and only Burmese sentences survive, so nothing is
+  invented. A call that never answered at all (400/429/503) still fails
+  fast instead of repeating the same wait.
+- **The failure is honest and inspectable.** `last_script_error`,
+  `last_script_raw_preview` (first 1200 characters of what Gemini actually
+  returned), `last_script_error_by_model`, and `last_script_recovery`
+  (`plain_text_retelling`, `prose_salvaged_from_json_answer`, or empty)
+  are on `/health`, and the Telegram error carries the diagnostics plus
+  the start of the reply — so the next report is actionable instead of
+  guesswork. The message no longer claims the quota is exhausted when the
+  models clearly answered.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -374,14 +408,17 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.16-tts-retry"`,
+URLs must show `"version":"v5.17-script-recovery"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"script_trim_policy":"sentence_boundaries_only"`,
 `"tts_resilience":"per_scene_retries_then_sentence_pieces_then_fresh_pass"`,
-`"last_tts_retry_recovered_scenes":0`, `"edge_tts_timeout_seconds":45`, a `script_length_rate`
+`"last_tts_retry_recovered_scenes":0`, `"edge_tts_timeout_seconds":45`,
+`"script_plain_text_fallback":"plain_text_retelling_split_locally_then_prose_salvage"`,
+`"last_script_error":""`, `"last_script_raw_preview":""`,
+`"last_script_recovery":""`, a `script_length_rate`
 object (`"active_provider":"edge"`, `"learned_chars_per_second"` near 2.3
 on a fresh process, `"clamp":[1.2,9.0]`,
 `"learning_source":"measured_tts_effective_chars_per_second"`),

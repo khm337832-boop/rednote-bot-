@@ -2581,6 +2581,14 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "per_scene_retries_then_sentence_pieces_then_fresh_pass",
             )
             self.assertIn("last_tts_retry_recovered_scenes", health.json())
+            self.assertIn("last_script_error", health.json())
+            self.assertIn("last_script_raw_preview", health.json())
+            self.assertIn("last_script_error_by_model", health.json())
+            self.assertEqual(health.json()["last_script_recovery"], "")
+            self.assertEqual(
+                health.json()["script_plain_text_fallback"],
+                "plain_text_retelling_split_locally_then_prose_salvage",
+            )
             self.assertEqual(health.json()["last_tts_silenced_scenes"], 0)
             self.assertEqual(
                 health.json()["final_duration_enforcement"],
@@ -5503,6 +5511,231 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # Only the initial call ran (one pass over the models); the
         # retry prompt would have doubled this to 4 calls.
         self.assertEqual(calls, ["m1", "m2"])
+
+    # --- v5.17: script recovery (production "no usable Burmese scenes") ---
+    def test_scenes_from_plain_narration_builds_timed_burmese_scenes(self):
+        prose = (
+            "ကျွန်တော် မနက်စာ စားနေတုန်း တံခါးခေါက်သံ ကြားလိုက်တယ်။ "
+            "ထွက်ကြည့်တော့ အိမ်နီးချင်း က စာအိတ်တစ်လုံး ပေးခဲ့တယ်။ "
+            "အထဲမှာ ကျွန်တော် မမျှော်လင့်ထားတဲ့ စာတစ်စောင် ပါနေတယ်။ "
+            "အဲဒီစာက ကျွန်တော့်ဘဝကို လုံးဝ ပြောင်းလဲပစ်လိုက်တယ်။"
+        )
+
+        scenes = bot._scenes_from_plain_narration(prose, 60.0, 4)
+
+        self.assertEqual(len(scenes), 4)
+        joined = " ".join(scene["burmese"] for scene in scenes)
+        for sentence in prose.split("။"):
+            sentence = sentence.strip()
+            if sentence:
+                self.assertIn(sentence, joined)
+        self.assertEqual(scenes[0]["start"], 0.0)
+        self.assertAlmostEqual(scenes[-1]["end"], 60.0, places=2)
+        for scene in scenes:
+            self.assertGreaterEqual(scene["start"], 0.0)
+            self.assertLessEqual(scene["end"], 60.0)
+            self.assertGreaterEqual(scene["end"], scene["start"])
+            self.assertGreaterEqual(bot._burmese_ratio(scene["burmese"]), 0.35)
+        for previous, current in zip(scenes, scenes[1:]):
+            self.assertLessEqual(previous["end"], current["start"] + 0.001)
+
+    def test_scenes_from_plain_narration_rejects_non_burmese_text(self):
+        english = (
+            "I woke up early and made some coffee before the meeting. "
+            "Then I walked to the office and talked to my team about it."
+        )
+        self.assertEqual(bot._scenes_from_plain_narration(english, 60.0, 3), [])
+        self.assertEqual(bot._scenes_from_plain_narration("", 60.0, 3), [])
+        self.assertEqual(
+            bot._scenes_from_plain_narration("ကျွန်တော်", 60.0, 3), []
+        )
+
+    def test_prose_from_direct_payload_finds_longest_burmese_string(self):
+        payload = {
+            "protagonist": "ကိုအောင်",
+            "note": "short",
+            "summary": (
+                "ကျွန်တော် မနက်စာ စားနေတုန်း တံခါးခေါက်သံ ကြားလိုက်တယ်။ "
+                "ထွက်ကြည့်တော့ အိမ်နီးချင်း က စာအိတ်တစ်လုံး ပေးခဲ့တယ်။"
+            ),
+        }
+        prose = bot._prose_from_direct_payload(payload)
+        self.assertTrue(prose.startswith("ကျွန်တော်"))
+        self.assertEqual(bot._prose_from_direct_payload({"a": 1}), "")
+
+    async def test_direct_gemini_json_plain_text_mode_returns_prose(self):
+        prose = (
+            "ကျွန်တော် မနက်စာ စားနေတုန်း တံခါးခေါက်သံ ကြားလိုက်တယ်။ "
+            "ထွက်ကြည့်တော့ အိမ်နီးချင်း က စာအိတ်တစ်လုံး ပေးခဲ့တယ်။"
+        )
+        configs = []
+
+        def gen(model, contents, config):
+            configs.append(config)
+            return SimpleNamespace(text=prose)
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1"]))
+        self._patch_gemini_json_types()
+
+        data = await bot._generate_direct_gemini_json(
+            fake_client,
+            ["contents"],
+            purpose="test script plain text",
+            tracker=None,
+            plain_text=True,
+        )
+
+        self.assertEqual(data, prose)
+        # No JSON envelope is requested: the whole point is to stop
+        # fighting with response_mime_type when scenes come back empty.
+        self.assertFalse(getattr(configs[0], "response_mime_type", ""))
+
+    async def test_direct_recap_recovers_from_empty_json_scenes_with_plain_text(
+        self,
+    ):
+        # Real failure: every model answered JSON, the payload parsed,
+        # but it carried scene 0 -> the job died with "no usable
+        # Burmese scenes".  The plain-text retelling must rescue it.
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+        prose = (
+            "ကျွန်တော် မနက်စာ စားနေတုန်း တံခါးခေါက်သံ ကြားလိုက်တယ်။ "
+            "ထွက်ကြည့်တော့ အိမ်နီးချင်း က စာအိတ်တစ်လုံး ပေးခဲ့တယ်။ "
+            "အထဲမှာ ကျွန်တော် မမျှော်လင့်ထားတဲ့ စာတစ်စောင် ပါနေတယ်။"
+        )
+        mime_types = []
+
+        def gen(model, contents, config):
+            mime_types.append(getattr(config, "response_mime_type", ""))
+            if getattr(config, "response_mime_type", ""):
+                return SimpleNamespace(
+                    text=json.dumps(
+                        {"protagonist": "", "scenes": [], "cuts": []},
+                        ensure_ascii=False,
+                    )
+                )
+            return SimpleNamespace(text=prose)
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=gen),
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1"]))
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self._patch_gemini_json_types()
+        self.start_patch(patch.object(bot, "SCRIPT_TOPUP_ATTEMPTS", 0))
+        self.start_patch(
+            patch.object(bot.asyncio, "sleep", new=AsyncMock(return_value=None))
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+        captured = []
+
+        class _StopAfterScript(Exception):
+            pass
+
+        def stop(scenes):
+            captured.extend(scenes)
+            raise _StopAfterScript()
+
+        self.start_patch(patch.object(bot, "sort_scenes", new=stop))
+        self.addCleanup(setattr, bot, "_LAST_SCRIPT_RECOVERY", "")
+        self.addCleanup(setattr, bot, "_LAST_SCRIPT_RAW_PREVIEW", "")
+        self.addCleanup(setattr, bot, "_LAST_SCRIPT_ERROR", "")
+
+        with self.assertRaises(_StopAfterScript):
+            await bot.build_chunk_recap(
+                str(self.tmp_path / "chunk.mp4"),
+                60,
+                0,
+                60,
+                {},
+                1,
+                tracker,
+                settings={"coverage": 50, "rate": 10.0},
+            )
+
+        self.assertTrue(captured, "plain-text fallback produced no scenes")
+        self.assertGreaterEqual(len(captured), 1)
+        self.assertTrue(
+            all(bot._burmese_ratio(scene["burmese"]) >= 0.35 for scene in captured)
+        )
+        self.assertEqual(bot._LAST_SCRIPT_RECOVERY, "plain_text_retelling")
+        self.assertIn("", mime_types)
+        self.assertEqual(bot._LAST_SCRIPT_ERROR, "")
+
+    async def test_direct_recap_error_shows_what_gemini_answered(self):
+        # The terminal message must not blame quota when the models
+        # actually answered: it has to carry the diagnostics and a
+        # snippet of the response so the failure is debuggable.
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+
+        def gen(model, contents, config):
+            return SimpleNamespace(
+                text=json.dumps(
+                    {"protagonist": "ကိုအောင်", "scenes": [], "cuts": []},
+                    ensure_ascii=False,
+                )
+            )
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=gen),
+        )
+        self.start_patch(patch.object(bot, "PREFERRED_MODELS", ["m1"]))
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self._patch_gemini_json_types()
+        self.addCleanup(setattr, bot, "_LAST_SCRIPT_ERROR", "")
+        self.addCleanup(setattr, bot, "_LAST_SCRIPT_RECOVERY", "")
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        with self.assertRaises(bot.GeminiScriptError) as ctx:
+            await bot.build_chunk_recap(
+                str(self.tmp_path / "chunk.mp4"),
+                60,
+                0,
+                60,
+                {},
+                1,
+                tracker,
+                settings={"coverage": 50, "rate": 10.0},
+            )
+
+        message = str(ctx.exception)
+        self.assertIn("no usable", message)
+        self.assertIn("plain text", message)
+        self.assertNotIn("quota ပြည့်တာ", message)
+        self.assertIn("ကိုအောင်", message)
+        self.assertIn("scenes", bot._LAST_SCRIPT_RAW_PREVIEW)
+        self.assertEqual(bot._LAST_SCRIPT_RECOVERY, "")
+        self.assertIn("no usable", bot._LAST_SCRIPT_ERROR)
 
     async def test_synthesize_tts_runs_two_batches_concurrently_in_order(self):
         state = {"active": 0, "max": 0}

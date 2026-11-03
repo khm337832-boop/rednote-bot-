@@ -468,6 +468,33 @@ _LAST_TTS_SILENCED_SCENES = 0
 # free Edge voice is flaky right now, even when jobs still succeed).
 _LAST_TTS_RETRY_RECOVERED = 0
 
+# Script-stage diagnostics.  Render logs are not reachable from the chat,
+# so the last script failure (and the start of what Gemini actually
+# answered) is kept and exposed on /healthz -- "no usable scenes" is
+# otherwise impossible to tell apart from a blocked/empty/truncated reply.
+_LAST_SCRIPT_ERROR = ""
+_LAST_SCRIPT_RAW_PREVIEW = ""
+_LAST_SCRIPT_ERROR_BY_MODEL: dict = {}
+_LAST_SCRIPT_RECOVERY = ""
+# True when the last script call actually received a response (even an
+# empty/unusable one).  A call that never answered (400/429/503, model
+# gone) must fail fast: repeating it as a plain-text call just repeats
+# the same wait.
+_LAST_SCRIPT_ANSWERED = False
+
+# Plain-text script fallback: when Gemini's JSON answers carry no usable
+# scenes, one more call asks for a plain spoken first-person retelling
+# (no JSON), which is split into scenes locally.  A model that mangles
+# JSON -- or spends its whole output budget on a truncated object --
+# usually answers prose normally, and the recap must not die on that.
+SCRIPT_PLAIN_TEXT_FALLBACK_ENABLED = True
+SCRIPT_PLAIN_TEXT_MAX_TOKENS = 16384
+SCRIPT_PLAIN_TEXT_MIN_CHARS = 60
+# A budget a reasoning model cannot silently eat: with 8192 the whole
+# allowance can disappear into hidden thinking, leaving an empty or
+# truncated JSON object that parses but carries no scene.
+SCRIPT_JSON_MAX_TOKENS = 16384
+
 # Free Microsoft Edge neural TTS as an emergency fallback when every
 # Gemini TTS model is unavailable (in production: the free-tier API
 # key's TTS plan quota was exhausted, failing whole jobs at 100%
@@ -4156,12 +4183,17 @@ async def _await_with_heartbeat(
         raise
 
 
-def _direct_gemini_json_config(max_output_tokens: int = 8192):
+def _direct_gemini_json_config(
+    max_output_tokens: int = 8192,
+    response_mime_type: str = "application/json",
+    temperature: float = 0.25,
+):
     kwargs = {
-        "response_mime_type": "application/json",
-        "temperature": 0.25,
+        "temperature": float(temperature),
         "max_output_tokens": int(max_output_tokens),
     }
+    if response_mime_type:
+        kwargs["response_mime_type"] = response_mime_type
     try:
         safety_setting = getattr(types, "SafetySetting", None)
         harm_category = getattr(types, "HarmCategory", None)
@@ -4197,8 +4229,14 @@ async def _generate_direct_gemini_json(
     tracker=None,
     attempts_per_model: int = 1,
     max_output_tokens: int = 8192,
+    plain_text: bool = False,
 ):
     """Generate JSON with model fallback instead of silently using no scenes.
+
+    ``plain_text=True`` asks the same model cascade for ordinary prose
+    (no ``response_mime_type``) and returns the raw text.  It is the
+    last-resort script path: a model that returns empty or truncated
+    JSON normally still writes a full spoken retelling as plain text.
 
     Within a round, models are launched with staggered hedging: the
     next model starts as soon as the previous one *fails*, or after
@@ -4217,6 +4255,8 @@ async def _generate_direct_gemini_json(
     up clearly after ~2 minutes instead of making the user wait).
     """
     attempts_per_model = max(1, int(attempts_per_model or 1))
+    global _LAST_SCRIPT_ANSWERED
+    _LAST_SCRIPT_ANSWERED = False
     models = _live_gemini_models(PREFERRED_MODELS)
     sequence = [
         model for model in models for _ in range(attempts_per_model)
@@ -4294,7 +4334,13 @@ async def _generate_direct_gemini_json(
                     client.models.generate_content,
                     model=model,
                     contents=contents,
-                    config=_direct_gemini_json_config(max_output_tokens),
+                    config=_direct_gemini_json_config(
+                        max_output_tokens,
+                        response_mime_type=(
+                            "" if plain_text else "application/json"
+                        ),
+                        temperature=0.45 if plain_text else 0.25,
+                    ),
                 )
             )
             pending[task] = (model, attempt_number, time.monotonic())
@@ -4340,6 +4386,9 @@ async def _generate_direct_gemini_json(
                         raise
                     except Exception as e:
                         last_error = f"{model}: {_safe_error_text(e, 700)}"
+                        _LAST_SCRIPT_ERROR_BY_MODEL[model] = (
+                            _safe_error_text(e, 300)
+                        )
                         if _gemini_error_is_overload(e):
                             saw_overload = True
                             last_overload_error = last_error
@@ -4377,6 +4426,12 @@ async def _generate_direct_gemini_json(
                     raw, diagnostics = _gemini_response_text_and_diagnostics(
                         response
                     )
+                    _LAST_SCRIPT_ANSWERED = True
+                    _remember_script_preview(raw, purpose=purpose)
+                    _LAST_SCRIPT_ERROR_BY_MODEL[model] = (
+                        f"answered {len(str(raw or ''))} chars"
+                        + (f"; {diagnostics}" if diagnostics else "")
+                    )
                     try:
                         if not str(raw or "").strip():
                             detail = (
@@ -4385,7 +4440,10 @@ async def _generate_direct_gemini_json(
                             raise ValueError(
                                 f"Gemini returned empty text{detail}"
                             )
-                        winner = _parse_gemini_json_text(raw)
+                        if plain_text:
+                            winner = str(raw).strip()
+                        else:
+                            winner = _parse_gemini_json_text(raw)
                     except Exception as e:
                         last_error = f"{model}: {_safe_error_text(e, 700)}"
                         logger.warning(
@@ -4505,6 +4563,129 @@ async def _generate_direct_gemini_json(
         f"Gemini {purpose} failed after {attempt_number} attempts: "
         f"{last_overload_error or last_error}"
     )
+
+
+def _remember_script_preview(raw, *, purpose: str = "") -> None:
+    """Keep a short, log-free record of what Gemini actually answered."""
+    global _LAST_SCRIPT_RAW_PREVIEW
+    text = str(raw or "").strip()
+    if not text:
+        _LAST_SCRIPT_RAW_PREVIEW = f"<empty response from {purpose or 'Gemini'}>"
+        return
+    collapsed = " ".join(text.split())
+    _LAST_SCRIPT_RAW_PREVIEW = collapsed[:1200]
+
+
+def _burmese_ratio(text: str) -> float:
+    text = str(text or "")
+    if not text:
+        return 0.0
+    burmese = sum(1 for ch in text if "\u1000" <= ch <= "\u109f")
+    letters = sum(1 for ch in text if not ch.isspace())
+    if not letters:
+        return 0.0
+    return burmese / float(letters)
+
+
+def _scenes_from_plain_narration(
+    text: str, chunk_duration: float, scene_count: int = 0
+) -> list:
+    """Turn a plain spoken retelling into timed scenes.
+
+    Gemini sometimes refuses to answer inside a JSON envelope (empty or
+    truncated object) while happily writing the same retelling as
+    prose.  The prose is split on sentence boundaries, in order, and
+    laid out over the chunk so the timeline and the 90% duration gate
+    keep working.  Nothing is invented: only the text the model wrote
+    is used, and only Burmese sentences survive.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return []
+    body = re.sub(r"```[a-zA-Z]*", " ", body)
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[။.!?\u104a\u104b])\s+", body)
+        if part.strip()
+    ]
+    kept = [
+        part
+        for part in sentences
+        if _burmese_ratio(part) >= 0.35 and len(part) >= 2
+    ]
+    if not kept:
+        kept = [line.strip() for line in body.splitlines() if line.strip()]
+        kept = [line for line in kept if _burmese_ratio(line) >= 0.35]
+    kept = [part for part in kept if part]
+    if sum(len(part) for part in kept) < SCRIPT_PLAIN_TEXT_MIN_CHARS:
+        return []
+    try:
+        wanted = int(scene_count or 0)
+    except Exception:
+        wanted = 0
+    if wanted <= 0:
+        wanted = max(1, min(12, int(round(len(kept) / 2.0)) or 1))
+    wanted = max(1, min(wanted, len(kept)))
+    total_chars = float(sum(len(part) for part in kept)) or 1.0
+    per_scene = total_chars / float(wanted)
+    groups: list = []
+    current: list = []
+    current_chars = 0
+    for part in kept:
+        current.append(part)
+        current_chars += len(part)
+        if (
+            current_chars >= per_scene
+            and len(groups) < wanted - 1
+        ):
+            groups.append(current)
+            current = []
+            current_chars = 0
+    if current:
+        groups.append(current)
+    if not groups:
+        return []
+    duration = max(0.0, float(chunk_duration or 0.0))
+    step = duration / float(len(groups)) if duration else 0.0
+    scenes = []
+    for index, group in enumerate(groups):
+        start = round(index * step, 3)
+        end = round(min(duration, (index + 1) * step), 3) if duration else 0.0
+        scenes.append(
+            {
+                "start": start,
+                "end": end,
+                "burmese": " ".join(group),
+            }
+        )
+    return scenes
+
+
+def _prose_from_direct_payload(data) -> str:
+    """Longest Burmese-ish string inside an unusable JSON answer."""
+    candidates: list = []
+
+    def _walk(value, depth: int = 0) -> None:
+        if depth > 5:
+            return
+        if isinstance(value, str):
+            if len(value) >= SCRIPT_PLAIN_TEXT_MIN_CHARS:
+                candidates.append(value)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                _walk(item, depth + 1)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                _walk(item, depth + 1)
+
+    _walk(data)
+    burmese = [text for text in candidates if _burmese_ratio(text) >= 0.35]
+    pool = burmese or candidates
+    if not pool:
+        return ""
+    return max(pool, key=len)
 
 
 def _find_direct_scene_list(data, *, _depth: int = 0) -> list:
@@ -5402,6 +5583,14 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     new_protagonist = protagonist
     new_pronoun = pronoun
     last_script_error = ""
+    answer_payloads: list = []
+    # Fresh diagnostics per window: /healthz must describe *this* job,
+    # never a previous chunk's leftovers.
+    global _LAST_SCRIPT_ERROR, _LAST_SCRIPT_RECOVERY
+    global _LAST_SCRIPT_RAW_PREVIEW
+    _LAST_SCRIPT_ERROR = ""
+    _LAST_SCRIPT_RECOVERY = ""
+    _LAST_SCRIPT_RAW_PREVIEW = ""
 
     if has_prepared_script:
         # Manual per-part flow: the script was already generated and stored
@@ -5441,7 +5630,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 [video_file, prompt],
                 purpose="initial script",
                 tracker=tracker,
+                max_output_tokens=SCRIPT_JSON_MAX_TOKENS,
             )
+            answer_payloads.append(parsed)
             payload = _normalize_direct_script_payload(
                 parsed, chunk_duration=chunk_dur
             )
@@ -5504,7 +5695,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                     [video_file, retry_prompt],
                     purpose="initial script retry",
                     tracker=tracker,
+                    max_output_tokens=SCRIPT_JSON_MAX_TOKENS,
                 )
+                answer_payloads.append(parsed)
                 payload = _normalize_direct_script_payload(
                     parsed, chunk_duration=chunk_dur
                 )
@@ -5532,14 +5725,116 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 )
                 logger.error(f"AI script retry error: {detail}")
 
+        if not scenes and SCRIPT_PLAIN_TEXT_FALLBACK_ENABLED:
+            # Tenth-attempt-style recovery.  Twice now the models
+            # *answered* -- but the answer carried no scene object the
+            # normalizer can use (empty "scenes", text under an unknown
+            # key, a truncated object, or a safety-truncated reply).
+            # Two cheap salvages before the job dies:
+            #   1. pull the longest Burmese string straight out of the
+            #      JSON answer(s) already in hand, and
+            #   2. ask once more for a plain spoken retelling (no JSON
+            #      envelope at all) and split it into scenes locally.
+            for payload_candidate in answer_payloads:
+                prose = _prose_from_direct_payload(payload_candidate)
+                if not prose:
+                    continue
+                recovered = _scenes_from_plain_narration(
+                    prose, chunk_dur, scene_count
+                )
+                if recovered:
+                    scenes = recovered
+                    cuts = []
+                    _LAST_SCRIPT_RECOVERY = "prose_salvaged_from_json_answer"
+                    logger.warning(
+                        "Chunk %s: recovered %s scenes from prose inside "
+                        "the JSON answer",
+                        chunk_index,
+                        len(scenes),
+                    )
+                    break
+            plain_attempted = False
+            if not scenes and video_file is not None and _LAST_SCRIPT_ANSWERED:
+                plain_attempted = True
+                await tracker.update(
+                    "📝 Gemini က JSON scene မပေးလို့ စာသားချည်း (plain text) "
+                    "ဖြင့် Script ကို နောက်ဆုံးအကြိမ် ထပ်တောင်းနေပါသည်...",
+                    force=True,
+                )
+                plain_prompt = f"""
+ဒီဗီဒီယိုအပိုင်း ({start_fmt} မှ {end_fmt}) ကို အစကအဆုံး ကြည့်ပြီး ပြန်ပြောပါ။
+
+{context_section}
+- နာမ်စား: {pronoun_line}
+- လေသံ: {tone_line}
+- စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့်။
+- အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။
+- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ၊ စာကြောင်းတိုတို ရေးပါ။
+- JSON မလိုပါ။ မြန်မာစာသားချည်း တိုက်ရိုက် ရေးပါ။ ခေါင်းစဉ်၊ ရှင်းလင်းချက်၊ အင်္ဂလိပ်စာ မထည့်ပါနှင့်။
+""".strip()
+                try:
+                    prose_text = await _generate_direct_gemini_json(
+                        client,
+                        [video_file, plain_prompt],
+                        purpose="initial script plain text",
+                        tracker=tracker,
+                        plain_text=True,
+                        max_output_tokens=SCRIPT_PLAIN_TEXT_MAX_TOKENS,
+                    )
+                    recovered = _scenes_from_plain_narration(
+                        prose_text, chunk_dur, scene_count
+                    )
+                    if recovered:
+                        scenes = recovered
+                        cuts = []
+                        _LAST_SCRIPT_RECOVERY = "plain_text_retelling"
+                        logger.warning(
+                            "Chunk %s: plain-text fallback produced %s scenes",
+                            chunk_index,
+                            len(scenes),
+                        )
+                    else:
+                        last_script_error = (
+                            f"{last_script_error}; plain-text retry carried "
+                            "no usable Burmese narration"
+                            if last_script_error
+                            else "plain-text retry carried no usable "
+                            "Burmese narration"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    detail = _safe_error_text(e, 900)
+                    last_script_error = (
+                        f"{last_script_error}; plain-text retry: {detail}"
+                        if last_script_error
+                        else f"plain-text retry: {detail}"
+                    )
+                    logger.error(f"Plain-text script retry error: {detail}")
+
         if not scenes:
+            _LAST_SCRIPT_ERROR = last_script_error or "empty Gemini response"
+            _LAST_SCRIPT_RECOVERY = ""
             await _delete_gemini_file(client, video_file)
+            preview = str(_LAST_SCRIPT_RAW_PREVIEW or "").strip()
+            preview_note = (
+                f" | Gemini ပြန်ပေးခဲ့သည့် စာသားအစ: {preview[:240]}"
+                if preview
+                else ""
+            )
+            tried = (
+                "Model အားလုံး၊ JSON ထပ်တောင်းမှုနှင့် စာသားချည်း "
+                "(plain text) တောင်းခံမှု အားလုံး scene မရပါ။"
+                if plain_attempted
+                else "Model အားလုံးကို ခေါ်ကြည့်ပေမယ့် အသုံးဝင်တဲ့ "
+                "ပြန်ကြားချက် မရပါ။"
+            )
             raise GeminiScriptError(
                 "Gemini က ဒီအပိုင်းအတွက် Script scene ထုတ်မပေးနိုင်ပါ။ "
-                "Model fallback များနှင့် Script အသစ်ထပ်တောင်းပြီးသော်လည်း "
-                "သုံးနိုင်သော scene မရပါ။ Gemini quota ပြည့်တာ/မအားတာ ဖြစ်နိုင်လို့ "
-                "ခဏစောင့်ပြီး video/link ကို ပြန်ပို့ကြည့်ပါ။ "
-                f"အကြောင်းအသေးစိတ်: {last_script_error or 'empty Gemini response'}"
+                f"{tried} ခဏစောင့်ပြီး video/link ကို "
+                "ပြန်ပို့ကြည့်ပါ၊ မရသေးရင် အောက်က စာသားကို "
+                f"ကူးပို့ပေးပါ။ အကြောင်းအသေးစိတ်: {_LAST_SCRIPT_ERROR}"
+                f"{preview_note}"
             )
 
     scenes = sort_scenes(scenes)
@@ -13906,7 +14201,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.16-tts-retry"
+BUILD_VERSION = "v5.17-script-recovery"
 BUILD_FEATURES = 20
 
 
@@ -13955,6 +14250,18 @@ async def root():
         "last_tts_retry_recovered_scenes": _LAST_TTS_RETRY_RECOVERED,
         "tts_resilience": "per_scene_retries_then_sentence_pieces_then_fresh_pass",
         "edge_tts_timeout_seconds": EDGE_TTS_TIMEOUT_SECONDS,
+        # Script-stage diagnostics: "no usable scenes" is otherwise
+        # indistinguishable from a blocked or truncated answer.
+        "last_script_error": _LAST_SCRIPT_ERROR,
+        "last_script_raw_preview": _LAST_SCRIPT_RAW_PREVIEW,
+        "last_script_error_by_model": dict(_LAST_SCRIPT_ERROR_BY_MODEL),
+        "last_script_recovery": _LAST_SCRIPT_RECOVERY,
+        "script_plain_text_fallback": (
+            "plain_text_retelling_split_locally_then_prose_salvage"
+            if SCRIPT_PLAIN_TEXT_FALLBACK_ENABLED
+            else "disabled"
+        ),
+        "script_plain_text_max_tokens": SCRIPT_PLAIN_TEXT_MAX_TOKENS,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Script length is planned from the voice's *measured* chars/second
@@ -14046,6 +14353,18 @@ async def health():
         "last_tts_retry_recovered_scenes": _LAST_TTS_RETRY_RECOVERED,
         "tts_resilience": "per_scene_retries_then_sentence_pieces_then_fresh_pass",
         "edge_tts_timeout_seconds": EDGE_TTS_TIMEOUT_SECONDS,
+        # Script-stage diagnostics: "no usable scenes" is otherwise
+        # indistinguishable from a blocked or truncated answer.
+        "last_script_error": _LAST_SCRIPT_ERROR,
+        "last_script_raw_preview": _LAST_SCRIPT_RAW_PREVIEW,
+        "last_script_error_by_model": dict(_LAST_SCRIPT_ERROR_BY_MODEL),
+        "last_script_recovery": _LAST_SCRIPT_RECOVERY,
+        "script_plain_text_fallback": (
+            "plain_text_retelling_split_locally_then_prose_salvage"
+            if SCRIPT_PLAIN_TEXT_FALLBACK_ENABLED
+            else "disabled"
+        ),
+        "script_plain_text_max_tokens": SCRIPT_PLAIN_TEXT_MAX_TOKENS,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Script length is planned from the voice's *measured* chars/second
