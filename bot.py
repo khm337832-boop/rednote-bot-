@@ -654,21 +654,20 @@ FINAL_DURATION_TOLERANCE_RATIO = 0.03  # final must be target ±3% of source
 FINAL_DURATION_TOLERANCE_MIN_SECONDS = 0.35
 
 # --- Learned script length rate (chars per second of real narration) ---
-# Sizing a script with a hard-coded rate is what broke whole jobs: 6.5
-# chars/second matches the Gemini voices, but the free Microsoft Edge
-# Burmese neural voices actually speak ~2.1-2.5 chars/second (counted as
-# script_total_chars / measured speech seconds).  Every script therefore
-# came out ~3x too long -- one 2-minute window planned 112s and measured
-# 341s -- and the duration calibration then had to shred ~2/3 of the text
-# (heard as broken, chopped speech).  Instead of guessing, the bot now
-# keeps a process-global chars/second per TTS provider, updated after
-# every measured chunk from `_narration_measurements`'
-# effective_chars_per_second, and sizes every script with it.  Seeded at
-# the real measured Edge rate so even the very first job on a fresh
-# process is sized correctly for the default `edge,gemini` order.
-SCRIPT_CHARS_PER_SEC_SEED = {"edge": 2.3, "gemini": SCRIPT_CHARS_PER_SEC}
+# Sizing a script with a hard-coded rate is what broke whole jobs.  The
+# bot keeps a process-global chars/second per TTS provider, updated
+# after every measured chunk from `_narration_measurements`'
+# effective_chars_per_second, and sizes every script with it.
+# Seeds are cold-start guesses only -- the first real measurement
+# replaces them outright.  Production measurement (v5.20 job): a
+# 313-char scene of my-MM-ThihaNeural measured 18.65s (~17 chars/s)
+# and the job-level effective rate pinned itself against the old
+# 9.0 clamp, so the earlier ~2.3 seed (inferred from an oversized
+# script's 341s total, not from the voice) and the 9.0 ceiling were
+# both far too low and mis-sized every cold-start script.
+SCRIPT_CHARS_PER_SEC_SEED = {"edge": 12.0, "gemini": 10.0}
 SCRIPT_CHARS_PER_SEC_MIN = 1.2
-SCRIPT_CHARS_PER_SEC_MAX = 9.0
+SCRIPT_CHARS_PER_SEC_MAX = 24.0
 SCRIPT_CHARS_PER_SEC_LEARN_WEIGHT = 0.5  # EMA weight of the newest measurement
 SCRIPT_CHARS_PER_SEC_LEARN_MIN_SECONDS = 3.0  # ignore tiny/partial clips
 SCRIPT_CHARS_PER_SEC_LEARN_MIN_CHARS = 20
@@ -683,7 +682,7 @@ def clamp_script_chars_per_second(rate) -> float:
     except (TypeError, ValueError):
         value = 0.0
     if value <= 0:
-        return float(SCRIPT_CHARS_PER_SEC_SEED.get("edge", 2.3))
+        return float(SCRIPT_CHARS_PER_SEC_SEED.get("edge", 12.0))
     return float(
         min(SCRIPT_CHARS_PER_SEC_MAX, max(SCRIPT_CHARS_PER_SEC_MIN, value))
     )
@@ -764,11 +763,18 @@ def record_narration_rate(measurements: dict, provider=None) -> float:
     ):
         return learned_chars_per_second(provider)
     key = _rate_provider_key(provider)
-    previous = learned_chars_per_second(key)
-    weight = SCRIPT_CHARS_PER_SEC_LEARN_WEIGHT
-    updated = clamp_script_chars_per_second(
-        (weight * measured) + ((1.0 - weight) * previous)
-    )
+    if key in _LEARNED_CHARS_PER_SEC:
+        previous = float(_LEARNED_CHARS_PER_SEC[key])
+        weight = SCRIPT_CHARS_PER_SEC_LEARN_WEIGHT
+        updated = clamp_script_chars_per_second(
+            (weight * measured) + ((1.0 - weight) * previous)
+        )
+    else:
+        # First real measurement replaces the seed outright: EMA-ing
+        # from a guessed seed mis-sized the first several chunks of
+        # every cold process (production seed 2.3 vs a voice that
+        # measures ~14-17 chars/s).
+        updated = clamp_script_chars_per_second(measured)
     _LEARNED_CHARS_PER_SEC[key] = updated
     return updated
 
@@ -899,7 +905,7 @@ DEFAULT_SETTINGS = {
     "split_tg": True,      # 16 📤 Telegram အတွက် ခွဲပို့ခြင်း
     "caption": True,       # 17 💬 Video caption ထည့်ခြင်း
     "notify": True,        # 18 🔔 ပြီးဆုံး အကြောင်းကြားခြင်း
-    "fast_mode": False,    # 19 ⚡ မြန်ဆန်မုဒ် (preset အမြန်)
+    "fast_mode": True,     # 19 ⚡ မြန်ဆန်မုဒ် Turbo (preset ultrafast)
     "auto_start": True,    # 20 🚀 Link ပို့လိုက်တာနဲ့ တန်း စခြင်း
 }
 
@@ -953,8 +959,8 @@ FEATURES = [
      "desc": "ပို့တဲ့ ဗီဒီယိုမှာ caption စာသား ထည့်ခြင်း"},
     {"key": "notify", "icon": "🔔", "label": "ပြီး အကြောင်းကြား", "kind": "toggle",
      "desc": "အလုပ်ပြီးရင် သီးသန့် အကြောင်းကြား စာပို့ခြင်း"},
-    {"key": "fast_mode", "icon": "⚡", "label": "မြန်ဆန်မုဒ်", "kind": "toggle",
-     "desc": "Render preset ကို superfast ပြောင်းပြီး မြန်မြန် ထုတ်ခြင်း"},
+    {"key": "fast_mode", "icon": "⚡", "label": "မြန်ဆန်မုဒ် Turbo", "kind": "toggle",
+     "desc": "Render preset ကို ultrafast (အမြန်ဆုံး) သုံးပြီး မြန်မြန် ထုတ်ခြင်း"},
     {"key": "auto_start", "icon": "🚀", "label": "Video/Link တန်းစ", "kind": "toggle",
      "desc": "Video file သို့မဟုတ် link ပို့လိုက်တာနဲ့ မေးမနေဘဲ တန်းစခြင်း (Off ဆိုရင် အတည်ပြု ခလုတ် ပြမယ်)"},
 ]
@@ -3619,17 +3625,20 @@ def _validate_scene_clip(clip, text: str) -> None:
     A decodable file is not proof of complete speech: an
     interrupted Edge stream can end mid-word yet decode cleanly,
     and the old >=400-byte check waved it through -- heard as
-    cut-off speech in the final video.  Bounds are deliberately
-    lenient against the ~2.1-2.5 chars/second the free Edge Burmese
-    voices actually speak at, so only obvious truncation/runaway
-    results are rejected (and never a clip for being spoken slowly).
+    cut-off speech in the final video.  Bounds must stay well
+    clear of the voice's real speed: my-MM-ThihaNeural measures
+    ~14-17 chars/second in production, and the previous
+    chars/16 floor falsely rejected complete fast clips as
+    "truncated" (313 chars in 18.65s), burning retries and
+    turning good scenes into silence.  chars/26 only rejects
+    clips missing a large share of their speech.
     """
     arr = _clip_array(clip)
     if _clip_is_silent(arr):
         raise RuntimeError("synthesized clip is silent")
     chars = max(1, len(str(text or "").strip()))
     seconds = float(arr.size) / SAMPLE_RATE
-    min_seconds = max(0.30, chars / 16.0)
+    min_seconds = max(0.30, chars / 26.0)
     max_seconds = chars / 1.7 + 3.5
     if seconds < min_seconds:
         raise RuntimeError(
@@ -3643,9 +3652,9 @@ def _validate_scene_clip(clip, text: str) -> None:
         )
 
 
-# Burmese (my-MM) Microsoft Edge neural voices for the emergency
-# fallback.  Gender follows the selected Gemini voice's pronoun so
-# the first-person narration stays consistent.
+# Burmese (my-MM) Microsoft Edge neural voices.  The Edge provider
+# always speaks with Thiha (user rule); Nilar is kept only as a
+# named constant for possible future opt-in use.
 EDGE_TTS_VOICE_MALE = "my-MM-ThihaNeural"
 EDGE_TTS_VOICE_FEMALE = "my-MM-NilarNeural"
 
@@ -3673,8 +3682,9 @@ EDGE_TTS_TIMEOUT_SECONDS = max(
 
 
 def _edge_tts_voice_for(settings) -> str:
-    if _voice_first_person_pronoun(settings) == FIRST_PERSON_FEMALE:
-        return EDGE_TTS_VOICE_FEMALE
+    # User rule: the Edge narration voice is always Thiha
+    # (my-MM-ThihaNeural), regardless of the selected Gemini voice
+    # or pronoun.  One consistent voice across every job.
     return EDGE_TTS_VOICE_MALE
 
 
@@ -5229,6 +5239,26 @@ def _duration_is_on_target(
     return low <= float(actual_seconds or 0) <= high
 
 
+def _duration_meets_minimum(
+    actual_seconds: float,
+    source_duration: float,
+    settings: dict = None,
+) -> bool:
+    """True unless the narration is *short* of the target window.
+
+    User rule: finished speech is never cut back to fit -- when
+    the narration comes out long it is kept whole (the script
+    sizing layer prevents recurrence via the learned rate).
+    Only "short" fails: a too-short recap is a summary, which
+    the user rejects just as strongly, so expansion/retry/refusal
+    on the low side stays strict.
+    """
+    if float(source_duration or 0) <= 0:
+        return False
+    _, low, _high = _final_duration_window(source_duration, settings)
+    return float(actual_seconds or 0) >= low
+
+
 def _duration_status(actual_seconds: float, source_duration: float, settings: dict = None) -> str:
     if float(source_duration or 0) <= 0:
         return "unknown"
@@ -6498,7 +6528,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # Character counts are only an estimate.  Measure the real TTS audio;
     # if it is not already at the requested final duration, use this job's
     # measured chars/second to ask Gemini for precisely the missing amount
-    # (or proportionally trim every scene if it is too long), then TTS again.
+    # Finished speech is never trimmed back to fit: a long narration is
+    # kept whole, only a short one is topped up (user rule).
     clips = []
     audio_seconds = 0.0
     duration_status = "unknown"
@@ -6533,7 +6564,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 f"from {chunk_dur:.1f}s input, status={duration_status}, "
                 f"measured_rate={measurements.get('measured_chars_per_second')} chars/s"
             )
-            if duration_status == "on_target":
+            if duration_status in ("on_target", "long"):
+                # Long narration is accepted as-is (user rule):
+                # cutting finished speech to hit the target is what
+                # made earlier outputs sound broken.  The learned
+                # rate sizes the next script correctly instead.
                 break
             if calibration_round >= DURATION_CALIBRATION_ROUNDS:
                 break
@@ -6618,36 +6653,6 @@ JSON ကိုသာပြန်ပေးပါ:
                 scenes = sort_scenes(scenes)
                 if script_total_chars(scenes) <= current_chars:
                     break
-            elif duration_status == "long":
-                await tracker.update(
-                    f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ရှည်နေလို့ "
-                    f"ပစ်မှတ် {fmt_time(target_final_seconds)} ဖြစ်အောင် ချိန်နေပါသည်...",
-                    force=True,
-                )
-                trimmed = _trim_scenes_for_duration(
-                    scenes,
-                    measurements,
-                    target_final_seconds,
-                    tolerance_seconds=max(
-                        0.0, (duration_high - duration_low) / 2.0
-                    ),
-                )
-                if script_total_chars(trimmed) >= current_chars:
-                    # Nothing left to cut at any boundary: report it
-                    # instead of silently re-synthesizing the same text.
-                    logger.warning(
-                        "Chunk %s duration calibration could not trim "
-                        "%s chars at %s scenes (measured %s chars/s)",
-                        chunk_index,
-                        current_chars,
-                        len(scenes),
-                        measurements.get("effective_chars_per_second"),
-                    )
-                    break
-                scenes = sort_scenes(trimmed)
-                calibration_history[-1]["trimmed_to_chars"] = (
-                    script_total_chars(scenes)
-                )
             else:
                 break
 
@@ -6655,10 +6660,10 @@ JSON ကိုသာပြန်ပေးပါ:
     finally:
         await _delete_gemini_file(client, video_file)
 
-    if duration_status == "on_target":
+    if duration_status in ("on_target", "long"):
         _LAST_DURATION_CALIBRATION = {
             "chunk_index": chunk_index,
-            "status": "on_target",
+            "status": duration_status,
             "target_seconds": round(float(target_final_seconds), 3),
             "window": [round(float(duration_low), 3), round(float(duration_high), 3)],
             "source_seconds": round(float(chunk_dur), 3),
@@ -6668,7 +6673,7 @@ JSON ကိုသာပြန်ပေးပါ:
                 "effective_chars_per_second"
             ),
         }
-    if duration_status != "on_target":
+    if duration_status not in ("on_target", "long"):
         history_text = ", ".join(
             f"r{item.get('round')}: {float(item.get('narration_seconds') or 0):.1f}s"
             f"/{item.get('status')}"
@@ -6691,12 +6696,11 @@ JSON ကိုသာပြန်ပေးပါ:
             ),
         }
         raise RuntimeError(
-            "Measured TTS duration is outside the final-duration target after "
+            "Measured TTS duration is below the final-duration target after "
             f"calibration: {audio_seconds:.1f}s actual, target "
-            f"{target_final_seconds:.1f}s (acceptable {duration_low:.1f}-"
-            f"{duration_high:.1f}s from {chunk_dur:.1f}s input); "
-            f"rounds: {history_text}; refusing to render a video with the "
-            "wrong duration"
+            f"{target_final_seconds:.1f}s (minimum {duration_low:.1f}s "
+            f"from {chunk_dur:.1f}s input); "
+            f"rounds: {history_text}; refusing to render a shortened recap"
         )
 
     out_w, out_h = compute_output_dims(
@@ -6716,9 +6720,9 @@ JSON ကိုသာပြန်ပေးပါ:
     expected_final_seconds = sum(
         float(item.get("desired_output_seconds") or 0) for item in plan
     )
-    if not _duration_is_on_target(expected_final_seconds, chunk_dur, st):
+    if not _duration_meets_minimum(expected_final_seconds, chunk_dur, st):
         raise RuntimeError(
-            "Direct render plan is outside the final-duration target: "
+            "Direct render plan is below the minimum final duration: "
             f"{expected_final_seconds:.1f}s planned, target "
             f"{target_final_seconds:.1f}s from {chunk_dur:.1f}s input"
         )
@@ -6764,7 +6768,7 @@ JSON ကိုသာပြန်ပေးပါ:
             "-an",
             "-vf", ffmpeg_filter,
             "-c:v", "libx264",
-            "-preset", "superfast" if st.get("fast_mode") else "ultrafast",
+            "-preset", "ultrafast" if st.get("fast_mode") else "superfast",
             "-crf", str(int(st.get("quality") or 23)),
             segment_path,
         ], 300)
@@ -6807,12 +6811,12 @@ JSON ကိုသာပြန်ပေးပါ:
         raise RuntimeError("direct final mux failed")
 
     final_chunk_duration, _, _ = probe_video_info(out_chunk)
-    if not _duration_is_on_target(final_chunk_duration, chunk_dur, st):
+    if not _duration_meets_minimum(final_chunk_duration, chunk_dur, st):
         raise RuntimeError(
-            "Direct rendered chunk duration is outside target: "
+            "Direct rendered chunk duration is below the minimum target: "
             f"{final_chunk_duration:.1f}s actual, target "
-            f"{target_final_seconds:.1f}s (acceptable {duration_low:.1f}-"
-            f"{duration_high:.1f}s from {chunk_dur:.1f}s input)"
+            f"{target_final_seconds:.1f}s (minimum {duration_low:.1f}s "
+            f"from {chunk_dur:.1f}s input)"
         )
     logger.info(
         f"Chunk {chunk_index} direct final duration verified: "
@@ -9771,7 +9775,9 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     narration_now / source_seconds_initial, 4
                 ) if source_seconds_initial > 0 else 0.0,
             })
-            if final_low <= narration_now <= final_high:
+            if narration_now >= final_low:
+                # On target *or long*: finished speech is kept whole
+                # (user rule -- never trim to fit); only short expands.
                 break
             if calibration_round >= DURATION_CALIBRATION_ROUNDS:
                 break
@@ -9831,35 +9837,10 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     settings,
                 )
             else:
-                await _worker_progress(
-                    state,
-                    "⏱️ အသံကြာချိန် များနေပါသဖြင့် script ကို အစမှ အဆုံးအထိ "
-                    f"အချိုးကျ ခ်ဳံ့နေပါသည်... ({calibration_round + 1}/{DURATION_CALIBRATION_ROUNDS})",
-                    tracker,
-                )
-                before_text = {
-                    int(s.get("group_id") or 0): str(s.get("burmese") or "")
-                    for s in scenes if isinstance(s, dict)
-                }
-                scenes = trim_scenes_proportionally(scenes, desired_total_chars)
-                changed_groups = []
-                for scene in scenes:
-                    try:
-                        gid = int(scene.get("group_id") or 0)
-                    except (TypeError, ValueError, AttributeError):
-                        continue
-                    if gid > 0 and before_text.get(gid) != str(scene.get("burmese") or ""):
-                        changed_groups.append(gid)
-                if not changed_groups:
-                    calibration_history[-1]["calibration_stalled"] = True
-                    break
-                clips = await _resynthesize_changed_worker_clips(
-                    scenes,
-                    clips,
-                    changed_groups,
-                    str(state.get("job_dir") or ""),
-                    settings,
-                )
+                # Unreachable while the break above accepts every
+                # narration at/above the minimum, but kept explicit:
+                # long narration is never trimmed back (user rule).
+                break
 
         final_measurements = _narration_measurements(scenes, clips, settings)
         final_narration = float(final_measurements.get("narration_seconds") or 0)
@@ -9876,12 +9857,12 @@ async def _worker_stage_tts(state: dict, tracker=None):
                 f"calibration: pronoun={selected_pronoun}, bad_group_ids={bad_fp_groups}; "
                 "refusing to render a third-person recap"
             )
-        if not (final_low <= final_narration <= final_high):
+        if final_narration < final_low:
             raise WorkerJobError(
-                "TTS narration could not be calibrated to the required final "
+                "TTS narration stayed below the required minimum final "
                 f"duration: {_duration_status(final_narration, source_seconds_initial, settings)}; "
                 f"calibration_history={calibration_history}; refusing to render "
-                "a video that is not 90% of the source duration"
+                "a shortened recap"
             )
         _persist_worker_calibrated_script(
             state,
@@ -10235,7 +10216,7 @@ async def _worker_stage_render(state: dict, tracker=None):
                 "-an",
                 "-vf", ffmpeg_filter,
                 "-c:v", "libx264",
-                "-preset", "superfast" if settings.get("fast_mode") else "ultrafast",
+                "-preset", "ultrafast" if settings.get("fast_mode") else "superfast",
                 "-crf", str(int(settings.get("quality") or 23)),
                 segment_path,
             ], 900)
@@ -10374,11 +10355,11 @@ async def _worker_stage_deliver(state: dict, tracker=None):
                 "Could not verify final video duration before delivery; "
                 "refusing to send an unverified recap"
             )
-        if not _duration_is_on_target(
+        if not _duration_meets_minimum(
             final_duration, delivery_source_seconds, settings
         ):
             raise WorkerJobError(
-                "Final video duration is outside the required 90% window "
+                "Final video duration is below the required minimum "
                 "before delivery: "
                 f"{_duration_status(final_duration, delivery_source_seconds, settings)}; "
                 "refusing to upload a shortened recap"
@@ -12767,7 +12748,7 @@ async def _run_manual_part_recap(
             else 0.0
         )
         updated_script = script
-        if existing_duration > 0 and _duration_is_on_target(
+        if existing_duration > 0 and _duration_meets_minimum(
             existing_duration, actual_dur, settings
         ):
             rendered_path = output_path
@@ -12822,9 +12803,9 @@ async def _run_manual_part_recap(
                     output_path=output_path,
                 )
             rendered_duration = float(probe_video_info(rendered_path)[0] or 0)
-            if not _duration_is_on_target(rendered_duration, actual_dur, settings):
+            if not _duration_meets_minimum(rendered_duration, actual_dur, settings):
                 raise RuntimeError(
-                    "Rendered part duration is outside target: "
+                    "Rendered part duration is below the minimum target: "
                     f"{rendered_duration:.1f}s from {actual_dur:.1f}s source part"
                 )
             _save_manual_script(state, part, updated_script)
@@ -13486,7 +13467,7 @@ async def _run_manual_join(
         if not (
             final_duration > 0
             and source_duration > 0
-            and _duration_is_on_target(final_duration, source_duration, settings)
+            and _duration_meets_minimum(final_duration, source_duration, settings)
         ):
             await tracker.update(
                 f"🔗 Recap ပြီးတဲ့ {len(recap_paths)} ပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်နေပါသည်...",
@@ -13502,13 +13483,13 @@ async def _run_manual_join(
         target_final, final_low, final_high = _final_duration_window(
             source_duration, settings
         )
-        if source_duration <= 0 or not _duration_is_on_target(
+        if source_duration <= 0 or not _duration_meets_minimum(
             final_duration, source_duration, settings
         ):
             raise RuntimeError(
-                "Final joined video duration is outside target: "
+                "Final joined video duration is below the minimum target: "
                 f"{final_duration:.1f}s actual, target {target_final:.1f}s "
-                f"(acceptable {final_low:.1f}-{final_high:.1f}s)"
+                f"(minimum {final_low:.1f}s)"
             )
         if session_id in CANCELLED_JOBS:
             raise asyncio.CancelledError()
@@ -14237,11 +14218,11 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         target_final_dur, final_low, final_high = _final_duration_window(
             total_dur, job_settings
         )
-        if not _duration_is_on_target(final_dur, total_dur, job_settings):
+        if not _duration_meets_minimum(final_dur, total_dur, job_settings):
             raise RuntimeError(
-                "Final video duration is outside target: "
+                "Final video duration is below the minimum target: "
                 f"{final_dur:.1f}s actual, target {target_final_dur:.1f}s "
-                f"(acceptable {final_low:.1f}-{final_high:.1f}s from "
+                f"(minimum {final_low:.1f}s from "
                 f"{total_dur:.1f}s source)"
             )
         await tracker.update(
@@ -14720,7 +14701,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.20-dialogue-beats"
+BUILD_VERSION = "v5.21-turbo-thiha-no-trim"
 BUILD_FEATURES = 20
 
 
@@ -14805,7 +14786,7 @@ async def root():
         "script_length_rate": learned_script_rate_state(),
         "script_trim_policy": "sentence_then_word_tail_boundaries",
         "duration_calibration": (
-            "measured_rate_budget_sentences_then_word_tails"
+            "expand_only_when_short_long_kept_whole"
         ),
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -14928,7 +14909,7 @@ async def health():
         "script_length_rate": learned_script_rate_state(),
         "script_trim_policy": "sentence_then_word_tail_boundaries",
         "duration_calibration": (
-            "measured_rate_budget_sentences_then_word_tails"
+            "expand_only_when_short_long_kept_whole"
         ),
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,

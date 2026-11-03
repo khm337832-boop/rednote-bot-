@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.20-dialogue-beats` is a **one-shot automatic flow**: the user
+Version `v5.21-turbo-thiha-no-trim` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -72,9 +72,9 @@ silent-scene failures, and exposed on `/healthz` as
 `last_tts_error`, `last_tts_error_by_model` and
 `quota_exhausted_models`. TTS providers run in `TTS_PROVIDER_ORDER`
 (default `edge,gemini` -- completely free first, no quota queue):
-Microsoft Edge Burmese neural voices (`my-MM-ThihaNeural` /
-`my-MM-NilarNeural`, gender-matched to the selected voice's
-pronoun) synthesize each *scene* separately in seconds with no
+Microsoft Edge's Burmese neural voice (`my-MM-ThihaNeural` —
+always Thiha, one consistent narration voice) synthesizes each
+*scene* separately in seconds with no
 plan quota -- per-scene requests mean every clip is exactly its
 own scene's audio (joined-batch slicing guesses were heard as
 doubled/cut speech), and one flaky scene degrades to a short
@@ -137,9 +137,11 @@ seconds — and the duration calibration then deleted two thirds of it,
 which was heard as broken, chopped speech ("အသံအမှန် 05:41 ရှည်နေလို့
 ပစ်မှတ် 01:52 ဖြစ်အောင် ချိန်နေပါသည်"). Scripts are now sized with a
 **learned rate**: the bot keeps a process-global chars/second per TTS
-provider (`edge`, `gemini`), seeded at the measured Edge rate 2.3 for the
-default `edge,gemini` order and updated (exponential moving average,
-clamped to 1.2-9.0 chars/second) from `_narration_measurements`'
+provider (`edge`, `gemini`), seeded at 12 for the Edge voice (production
+measures `my-MM-ThihaNeural` at ~14-17 chars/second: a 313-char scene
+took 18.65s) and 10 for Gemini. The first real measurement replaces the
+seed outright; later measurements blend in (exponential moving average,
+clamped to 1.2-24.0 chars/second) from `_narration_measurements`'
 `effective_chars_per_second` after every measured window. The learned
 rate drives every `target_chars` derivation — the direct per-window
 script writer, its top-up prompt, and the n8n worker rewrite — and is
@@ -264,13 +266,15 @@ Character counts are only the first estimate — the pre-TTS char
 gate is a coarse anti-summary floor (85% of the estimate), not the
 duration guarantee — but that estimate is no longer a guess: scripts are
 sized with the learned chars/second of the voice that will speak them
-(free Edge Burmese: ~2.3, measured), so a 2-minute window at 90% plans
-about 248 characters instead of 702. After TTS, the bot
+(free Edge `my-MM-ThihaNeural`: ~14-17 measured, cold-start seed 12), so
+a 2-minute window at 90% plans about 1,300 characters — close to the
+voice's real speed from the first draft. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
-changed scenes are synthesized again; if it is long, whole trailing
-sentences are removed (sentence boundaries ။ ! ? … only, biggest excess
-matched first) without deleting the ending or cutting mid-sentence. Calibration targets are
+changed scenes are synthesized again; if it is long, the finished speech
+is kept whole — spoken narration is never trimmed back or force-fitted;
+only short results get script top-ups, and a result that stays short is
+refused rather than shipped as an under-length recap. Calibration targets are
 computed from the *effective* rate (all script chars over all produced
 speech seconds, including any quiet slices) so trims always converge --
 the spoken-only rate inflates when some clips measure as silent and
@@ -311,7 +315,7 @@ The measured 90%-duration and per-scene first-person gates remain unchanged.
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
 12. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
-13. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge Burmese ~2.3) from measured TTS and sizes every script with it; choosing 5.5 / 7.5 is an explicit manual override
+13. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 5.5 / 7.5 is an explicit manual override
 14. 👤 ပြောပြသူ ရှုထောင့် — protagonist first-person (ကျွန်တော်/ကျွန်မ) always; every scene is validated/repaired and the script retells the whole video in order, scene by scene, no summarizing
 15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 16. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
@@ -483,7 +487,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.20-dialogue-beats"`,
+URLs must show `"version":"v5.21-turbo-thiha-no-trim"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
@@ -500,8 +504,8 @@ URLs must show `"version":"v5.20-dialogue-beats"`,
 `"script_plain_text_fallback":"plain_text_retelling_split_locally_then_prose_salvage"`,
 `"last_script_error":""`, `"last_script_raw_preview":""`,
 `"last_script_recovery":""`, a `script_length_rate`
-object (`"active_provider":"edge"`, `"learned_chars_per_second"` near 2.3
-on a fresh process, `"clamp":[1.2,9.0]`,
+object (`"active_provider":"edge"`, `"learned_chars_per_second"` 12.0
+on a fresh process, `"clamp":[1.2,24.0]`,
 `"learning_source":"measured_tts_effective_chars_per_second"`),
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,

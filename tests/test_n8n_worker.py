@@ -871,34 +871,37 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 scene["burmese"].strip()[-1], bot.SCRIPT_SENTENCE_END_CHARS
             )
 
-    # --- v5.15: script length is planned from the voice's measured rate ---
+    # --- script length is planned from the voice's measured rate ---
     def test_script_length_rate_is_learned_not_hardcoded_6_5(self):
-        # A fresh process on the default edge-first order must plan with the
-        # measured free Edge Burmese rate (~2.3 chars/s), not the Gemini
-        # shaped 6.5 that made every script ~3x too long.
+        # A fresh process on the default edge-first order plans with the
+        # cold-start seed for the Edge voice, then replaces it with the
+        # first real measurement.  Production measured my-MM-ThihaNeural
+        # at ~14-17 chars/s (a 313-char scene took 18.65s); the earlier
+        # 2.3 seed -- inferred from an oversized script's total, not
+        # from the voice -- mis-sized every cold-start script ~6x short
+        # and sent calibration into expand/trim oscillation.
         bot.reset_learned_chars_per_second()
         self.assertEqual(bot.TTS_PROVIDER_ORDER[0], "edge")
-        self.assertAlmostEqual(bot.learned_chars_per_second(), 2.3, places=6)
-        self.assertAlmostEqual(bot._settings_script_rate({}), 2.3, places=6)
+        self.assertAlmostEqual(bot.learned_chars_per_second(), 12.0, places=6)
+        self.assertAlmostEqual(bot._settings_script_rate({}), 12.0, places=6)
 
         # The shipped 6.5 default means "learn it for me"; any other value
         # is a deliberate user override and is kept.
         self.assertAlmostEqual(
-            bot._settings_script_rate({"rate": 6.5}), 2.3, places=6
+            bot._settings_script_rate({"rate": 6.5}), 12.0, places=6
         )
         self.assertAlmostEqual(
             bot._settings_script_rate({"rate": 7.5}), 7.5, places=6
         )
 
-        # A 120s window at 90% is ~248 chars at 2.3 chars/s.  The old 6.5
-        # estimate asked for 702 chars, which measured 341s of narration
-        # against a 112s target and got shredded by the calibration.
-        self.assertEqual(bot.script_target_chars(120, {}), 248)
-        self.assertEqual(bot._rewrite_target_chars_for_duration(120, {}), 248)
-        self.assertLess(bot.script_target_chars(120, {}), 300)
-        # Gemini-first deployments still seed at the Gemini rate.
+        # A 120s window at 90% is 1296 chars at the 12 chars/s seed --
+        # within one calibration round of the voice's real speed, so the
+        # first script no longer needs heavy expansion *or* trimming.
+        self.assertEqual(bot.script_target_chars(120, {}), 1296)
+        self.assertEqual(bot._rewrite_target_chars_for_duration(120, {}), 1296)
+        # Gemini seeds at its own measured ballpark.
         self.assertAlmostEqual(
-            bot.learned_chars_per_second("gemini"), bot.SCRIPT_CHARS_PER_SEC,
+            bot.learned_chars_per_second("gemini"), 10.0,
             places=6,
         )
 
@@ -916,9 +919,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             measurements["effective_chars_per_second"], 2.5, places=3
         )
         learned_edge = bot.learned_chars_per_second("edge")
-        self.assertAlmostEqual(
-            learned_edge, 0.5 * 2.5 + 0.5 * 2.3, places=3
-        )
+        # The first real measurement replaces the cold-start seed
+        # outright (no EMA from a guessed seed).
+        self.assertAlmostEqual(learned_edge, 2.5, places=3)
         self.assertAlmostEqual(
             bot.learned_chars_per_second_by_provider()["edge"],
             learned_edge,
@@ -937,8 +940,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertAlmostEqual(
             bot.learned_chars_per_second("gemini"),
-            0.5 * gemini_measurements["effective_chars_per_second"]
-            + 0.5 * bot.SCRIPT_CHARS_PER_SEC,
+            gemini_measurements["effective_chars_per_second"],
             places=3,
         )
         self.assertAlmostEqual(
@@ -947,7 +949,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     def test_learned_rate_is_clamped_and_ignores_tiny_audio(self):
         self.assertEqual(bot.SCRIPT_CHARS_PER_SEC_MIN, 1.2)
-        self.assertEqual(bot.SCRIPT_CHARS_PER_SEC_MAX, 9.0)
+        # The ceiling must clear the real Edge voice (~14-17 chars/s
+        # measured in production): the old 9.0 cap pinned the learned
+        # rate well under the voice's actual speed.
+        self.assertEqual(bot.SCRIPT_CHARS_PER_SEC_MAX, 24.0)
         for _ in range(8):
             bot.record_narration_rate({
                 "speech_seconds": 10.0,
@@ -981,7 +986,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "effective_chars_per_second": 8.0,
         })
         self.assertAlmostEqual(
-            bot.learned_chars_per_second("edge"), 2.3, places=6
+            bot.learned_chars_per_second("edge"), 12.0, places=6
         )
 
     def test_trim_cuts_only_at_sentence_boundaries(self):
@@ -1748,16 +1753,25 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 (str(c) for c in reversed(contents) if isinstance(c, str)), ""
             )
             prompts.append(prompt)
-            # A model that returns ~1.15x the requested characters in whole
-            # sentences (models undershoot counts, so the prompt over-asks).
-            scenes = [
-                {
-                    "start": index * 20.0,
-                    "end": (index + 1) * 20.0,
-                    "burmese": " ".join(sentences[index * 2:index * 2 + 2]),
-                }
-                for index in range(5)
-            ]
+            # A model that returns roughly the requested character count
+            # in whole sentences (rotating triples from the bank so no
+            # two scenes share the exact same text).
+            scenes = []
+            total_chars = 0
+            index = 0
+            while total_chars < 1350:
+                text = " ".join([
+                    sentences[index % len(sentences)],
+                    sentences[(index + 3) % len(sentences)],
+                    sentences[(index + 7) % len(sentences)],
+                ])
+                scenes.append({
+                    "start": index * 10.0,
+                    "end": (index + 1) * 10.0,
+                    "burmese": text,
+                })
+                total_chars += len(text)
+                index += 1
             payload = {
                 "protagonist": "Hero",
                 "pronoun": MALE_PRONOUN,
@@ -1793,11 +1807,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         tts_calls = []
 
         async def fake_edge_like_tts(tts_scenes, work_dir, settings):
-            # The free Edge Burmese voices speak ~2.3 chars/second.
+            # Simulated at the planning seed's speed (production
+            # measures the real Thiha voice at ~14-17 chars/second).
             tts_calls.append([scene["burmese"] for scene in tts_scenes])
             return [
                 np.full(
-                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 2.3)),
+                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 12.0)),
                     0.5,
                     dtype=np.float32,
                 )
@@ -1835,20 +1850,20 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "fast_mode": True,
         }
         # The shipped 6.5 "rate" default must mean auto (learned), not 6.5.
-        self.assertEqual(bot.script_target_chars(120, settings), 248)
-        self.assertEqual(bot.script_target_chars(120, {**settings, "rate": 6.5}), 248)
+        self.assertEqual(bot.script_target_chars(120, settings), 1296)
+        self.assertEqual(bot.script_target_chars(120, {**settings, "rate": 6.5}), 1296)
 
         out_chunk, summary = await bot.build_chunk_recap(
             str(chunk_path), 120, 0, 120, {}, 1, tracker, settings=settings,
         )
 
         self.assertEqual(summary["pronoun"], MALE_PRONOUN)
-        # The first script handed to TTS was already the right size: the
-        # old 6.5 planning rate asked for 702 chars here and the measured
-        # 341s narration had to be shredded down to 112s.
+        # The first script handed to TTS was already the right size for
+        # the voice's measured speed, so no expand/trim round was needed
+        # (and long narration is never trimmed back any more).
         first_chars = sum(len(text) for text in tts_calls[0])
-        self.assertGreaterEqual(first_chars, 200)
-        self.assertLessEqual(first_chars, 300)
+        self.assertGreaterEqual(first_chars, 1200)
+        self.assertLessEqual(first_chars, 1500)
         self.assertLessEqual(len(tts_calls), 2)
         # Nothing was chopped mid-sentence on the way.
         for call in tts_calls:
@@ -1856,7 +1871,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(text.strip()[-1], bot.SCRIPT_SENTENCE_END_CHARS)
         final_duration, _, _ = bot.probe_video_info(out_chunk)
         self.assertGreaterEqual(final_duration, 120 * 0.9 * 0.98 - 0.5)
-        self.assertLessEqual(final_duration, 120 * 0.9 * 1.02 + 0.5)
+        # The high side is no longer a hard window edge (finished speech
+        # is kept whole), but a right-sized script still lands close.
+        self.assertLessEqual(final_duration, 120 * 0.9 * 1.15 + 2.0)
 
     def test_alignment_borrows_only_to_next_scene_and_freezes_last(self):
         scenes = [
@@ -1980,7 +1997,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(bot.WorkerJobError) as raised:
             await bot._worker_stage_tts(state)
-        self.assertIn("could not be calibrated", str(raised.exception))
+        self.assertIn("stayed below", str(raised.exception))
         self.assertNotEqual(state["stages"]["tts"]["status"], "done")
         self.assertFalse((Path(state["job_dir"]) / "audio.json").exists())
 
@@ -2785,8 +2802,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(health.json()["target_final_duration_percent"], 90)
             script_rate = health.json()["script_length_rate"]
             self.assertEqual(script_rate["active_provider"], "edge")
-            self.assertEqual(script_rate["clamp"], [1.2, 9.0])
-            self.assertEqual(script_rate["seed_by_provider"]["edge"], 2.3)
+            self.assertEqual(script_rate["clamp"], [1.2, 24.0])
+            self.assertEqual(script_rate["seed_by_provider"]["edge"], 12.0)
             self.assertEqual(
                 script_rate["learning_source"],
                 "measured_tts_effective_chars_per_second",
@@ -2822,7 +2839,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["duration_calibration"],
-                "measured_rate_budget_sentences_then_word_tails",
+                "expand_only_when_short_long_kept_whole",
             )
             self.assertEqual(
                 health.json()["script_plain_text_fallback"],
@@ -6615,19 +6632,14 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot._LAST_TTS_PROVIDER, "edge")
         self.assertEqual(gemini_calls, [])
 
-    def test_edge_tts_voice_mapping_matches_pronoun(self):
-        self.assertEqual(
-            bot._edge_tts_voice_for({"voice": "Charon"}),
-            "my-MM-ThihaNeural",
-        )
-        self.assertEqual(
-            bot._edge_tts_voice_for({"voice": "Kore"}),
-            "my-MM-NilarNeural",
-        )
-        self.assertEqual(
-            bot._edge_tts_voice_for({"voice": "Aoede"}),
-            "my-MM-NilarNeural",
-        )
+    def test_edge_tts_voice_is_always_thiha(self):
+        # User rule: the Edge narration voice is always Thiha,
+        # whatever Gemini voice/pronoun is selected.
+        for voice in ("Charon", "Kore", "Aoede"):
+            self.assertEqual(
+                bot._edge_tts_voice_for({"voice": voice}),
+                "my-MM-ThihaNeural",
+            )
 
     def test_calibration_trim_uses_effective_rate_not_inflated_spoken_rate(self):
         # Production regression: narration measured 120.0s vs a
