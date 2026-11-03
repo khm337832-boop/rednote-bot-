@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2180,7 +2181,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         await bot._maybe_send_update_notice(919191)
         self.assertNotIn("_seen_version", users.get("919191", {}))
 
-    def test_alignment_borrows_only_to_next_scene_and_stretches_not_freezes(self):
+    def test_alignment_proportional_borrows_and_stretches_not_freezes(self):
         scenes = [
             {"group_id": 1, "source_segment_ids": [1], "start": 0, "end": 10},
             {"group_id": 2, "source_segment_ids": [2], "start": 20, "end": 28},
@@ -2188,24 +2189,34 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
         plan = bot._build_alignment_plan(scenes, [2, 15, 12], 50, pause_seconds=0.2)
 
+        # Boundaries are proportional to the narration durations
+        # (desired 2.2/15.2/12 over a 50s source -> 3.7 / 29.6
+        # cumulative), pulled back to within the anchor drift
+        # (min(6, max(2, 50*4%)) = 2.0s) of the model starts 20/40:
+        # 18.0 and 42.0.
+        self.assertEqual(plan[0]["source_start"], 0.0)
+        self.assertEqual(plan[0]["source_limit"], 18.0)
+        self.assertEqual(plan[1]["source_start"], 18.0)
+        self.assertEqual(plan[2]["source_start"], 42.0)
+
         self.assertEqual(plan[0]["input_seconds"], 2.2)
         self.assertEqual(plan[0]["borrowed_seconds"], 0.0)
         self.assertEqual(plan[0]["stretch_factor"], 1.0)
         self.assertEqual(plan[0]["freeze_seconds"], 0.0)
         self.assertEqual(plan[0]["output_end"], 2.2)
 
-        self.assertEqual(plan[1]["source_limit"], 40.0)
+        self.assertEqual(plan[1]["source_limit"], 42.0)
         self.assertEqual(plan[1]["input_seconds"], 15.2)
-        self.assertEqual(plan[1]["borrowed_seconds"], 7.2)
+        self.assertEqual(plan[1]["borrowed_seconds"], 5.2)
         self.assertEqual(plan[1]["stretch_factor"], 1.0)
         self.assertEqual(plan[1]["freeze_seconds"], 0.0)
 
-        # 12s of narration over 10s of available footage: the footage
-        # is slowed (1.2x timestamps) instead of frozen for 2s -- the
+        # 12s of narration over 8s of available footage: the footage
+        # is slowed (1.5x timestamps) instead of frozen for 4s -- the
         # "video stopped, only audio working" user report.
-        self.assertEqual(plan[2]["input_seconds"], 10.0)
+        self.assertEqual(plan[2]["input_seconds"], 8.0)
         self.assertEqual(plan[2]["borrowed_seconds"], 5.0)
-        self.assertAlmostEqual(plan[2]["stretch_factor"], 1.2, places=6)
+        self.assertAlmostEqual(plan[2]["stretch_factor"], 1.5, places=6)
         self.assertEqual(plan[2]["freeze_seconds"], 0.0)
         self.assertEqual(plan[2]["desired_output_seconds"], 12.0)
 
@@ -2241,20 +2252,83 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
         plan = bot._build_alignment_plan(
             scenes, [5, 5, 5], 60, pause_seconds=0.0,
-            cut_times=[19.0, 30.0, 41.5],
+            cut_times=[19.0, 30.0, 39.5],
         )
-        # Starts snap to the nearest real cut within tolerance; the
-        # 30.0 cut is not near any scene start and changes nothing.
+        # Proportional boundaries (5s each over 60s -> 20 / 40,
+        # within anchor drift of the model starts) snap to the
+        # nearest real cut within tolerance; the 30.0 cut is not
+        # near any boundary and changes nothing.
         self.assertEqual(plan[0]["source_start"], 0.0)
         self.assertEqual(plan[1]["source_start"], 19.0)
-        self.assertEqual(plan[2]["source_start"], 41.5)
+        self.assertEqual(plan[2]["source_start"], 39.5)
         # Limits follow the snapped starts.
         self.assertEqual(plan[0]["source_limit"], 19.0)
-        self.assertEqual(plan[1]["source_limit"], 41.5)
+        self.assertEqual(plan[1]["source_limit"], 39.5)
         # Without cuts the model timings are used as-is.
         plain = bot._build_alignment_plan(scenes, [5, 5, 5], 60)
         self.assertEqual(plain[1]["source_start"], 20.0)
         self.assertEqual(plain[2]["source_start"], 40.0)
+
+    def test_alignment_proportional_boundaries_rescue_front_loaded_script(self):
+        # The real freeze scenario: a small model puts long narration
+        # on two tiny early scenes (0-8, 8-16) and the rest on one
+        # huge scene. Trusting those timestamps would stretch/freeze
+        # ~17s; proportional boundaries (drift 4.8s on a 120s source)
+        # move the boundaries to 12.8 / 20.8 so footage need roughly
+        # matches narration need.
+        scenes = [
+            {"start": 0, "end": 8},
+            {"start": 8, "end": 16},
+            {"start": 16, "end": 120},
+        ]
+        plan = bot._build_alignment_plan(
+            scenes, [16.0, 16.0, 76.0], 120.0, pause_seconds=0.4
+        )
+        self.assertAlmostEqual(plan[1]["source_start"], 12.8, places=6)
+        self.assertAlmostEqual(plan[2]["source_start"], 20.8, places=6)
+        # Scene 1: 16.4s wanted over 12.8s footage -> mild stretch,
+        # no freeze at all.
+        self.assertAlmostEqual(
+            plan[0]["stretch_factor"], 16.4 / 12.8, places=4
+        )
+        self.assertEqual(plan[0]["freeze_seconds"], 0.0)
+        # Scene 2 still has only 8s of footage for 16.4s: stretch to
+        # the cap, freeze only the 2.4s remainder (not 8.4s).
+        self.assertAlmostEqual(
+            plan[1]["stretch_factor"], bot.ALIGNMENT_MAX_STRETCH, places=6
+        )
+        self.assertAlmostEqual(plan[1]["freeze_seconds"], 2.4, places=6)
+        self.assertEqual(plan[2]["stretch_factor"], 1.0)
+        total_freeze = sum(item["freeze_seconds"] for item in plan)
+        self.assertLessEqual(total_freeze, 2.5)
+
+    def test_burmese_number_words_spelled_out_for_speech(self):
+        cases = {
+            0: "သုည",
+            7: "ခုနစ်",
+            10: "တစ်ဆယ်",
+            15: "တစ်ဆယ့်ငါး",
+            50: "ငါးဆယ်",
+            100: "တစ်ရာ",
+            250: "နှစ်ရာ့ငါးဆယ်",
+            1234: "တစ်ထောင့်နှစ်ရာ့သုံးဆယ့်လေး",
+            10000: "တစ်သောင်း",
+            2000000: "နှစ်သန်း",
+        }
+        for number, words in cases.items():
+            self.assertEqual(bot._burmese_number_words(number), words)
+        spoken = bot._spoken_numbers(
+            "၁၂ ယောက်က 1,234 ကျပ် ပေးပြီး 90% ပြည့်တယ်။ အမြန်နှုန်း 1.5 ဆ။"
+        )
+        self.assertNotRegex(spoken, r"[0-9၀-၉]")
+        self.assertIn("တစ်ဆယ့်နှစ်", spoken)
+        self.assertIn("တစ်ထောင့်နှစ်ရာ့သုံးဆယ့်လေး", spoken)
+        self.assertIn("ကိုးဆယ်ရာခိုင်နှုန်း", spoken)
+        self.assertIn("တစ်ပွိုင့်ငါး", spoken)
+        # The speech polish applies the same conversion before TTS.
+        polished = bot._polish_text_for_speech("ကျွန်တော်က 250 ရတယ်")
+        self.assertIn("နှစ်ရာ့ငါးဆယ်", polished)
+        self.assertNotRegex(polished, r"[0-9]")
 
     def test_parse_scene_cut_times(self):
         stderr = (
@@ -3242,7 +3316,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["edit_sync"],
-                "shot_cut_snapped_stretch_instead_of_freeze",
+                "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
             )
             self.assertEqual(
                 health.json()["script_plain_text_fallback"],
@@ -5005,6 +5079,155 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot.probe_video_info(rendered)[0], 2.7, delta=0.2
         )
         self.assertIn("rendered_duration_seconds", updated["metrics"])
+
+    async def test_prepared_front_loaded_chunk_renders_full_video_track(self):
+        """Freeze regression: long narration on tiny early scenes.
+
+        Two defects compounded here for two releases: (1) the
+        segment render put ``-t input_seconds`` *after* ``-i``, so
+        ffmpeg truncated every stretched/frozen segment back to
+        ``input_seconds`` and the video track ended ~16s before the
+        audio (container probes still reported the audio length,
+        so every gate passed while the picture froze); (2) scene
+        boundaries trusted front-loaded model timestamps, so early
+        scenes had seconds of footage for much longer narration.
+        The rendered *video stream* must now run the full length.
+        """
+        chunk_path = self.tmp_path / "front_loaded_chunk.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f", "lavfi", "-i", "color=c=red:s=64x64:r=25:d=10",
+                "-f", "lavfi", "-i", "color=c=green:s=64x64:r=25:d=15",
+                "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=25:d=35",
+                "-f", "lavfi", "-i", "color=c=yellow:s=64x64:r=25:d=60",
+                "-filter_complex", "[0][1][2][3]concat=n=4:v=1:a=0[v]",
+                "-map", "[v]",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p",
+                str(chunk_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        def forbidden_upload(file):
+            raise AssertionError("prepared script must not upload")
+
+        def forbidden_generate(model, contents, config):
+            raise AssertionError("prepared script must not be regenerated")
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=forbidden_upload,
+                get=lambda name: None,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=forbidden_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+
+        async def fake_tts(tts_scenes, _work_dir, _settings):
+            # 16s of speech on each tiny early scene, 76s on the big
+            # one: 108s total, exactly the 90% target for 120s.
+            return [
+                np.full(
+                    int(bot.SAMPLE_RATE * (76 if len(s["burmese"]) > 400 else 16)),
+                    0.5,
+                    dtype=np.float32,
+                )
+                for s in tts_scenes
+            ]
+
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        prepared = {
+            "version": 1,
+            "part_index": 1,
+            "scenes": [
+                {"start": 0, "end": 8, "burmese": first_person_text(192)},
+                {"start": 8, "end": 16, "burmese": first_person_text(192)},
+                {"start": 16, "end": 120, "burmese": first_person_text(912)},
+            ],
+            "cuts": [],
+            "protagonist": "Hero",
+            "pronoun": MALE_PRONOUN,
+            "story_context_before": {},
+            "story_context_after": {
+                "characters": ["Hero"],
+                "summary": "done",
+                "last_scene": "end",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            },
+            "metrics": {"target_chars": 1296},
+        }
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+        output_path = self.tmp_path / "front_loaded_recap.mp4"
+        rendered, _updated = await bot.render_chunk_recap_from_script(
+            str(chunk_path),
+            120,
+            0,
+            120,
+            prepared,
+            1,
+            tracker,
+            settings={
+                "coverage": 90,
+                "rate": 12.0,
+                "speed": 1.0,
+                "pause": 0,
+                "voice": "Charon",
+                "resolution": 64,
+                "shield": False,
+                "color": False,
+                "quality": 35,
+                "fast_mode": True,
+            },
+            output_path=str(output_path),
+        )
+
+        final_duration, _, _ = bot.probe_video_info(rendered)
+        self.assertGreaterEqual(final_duration, 106.0)
+        self.assertLessEqual(final_duration, 111.0)
+        # The decisive assertion: measure the VIDEO STREAM itself
+        # (decode to null and read the last progress timestamp).
+        # The old output-side -t produced only ~92s of video under
+        # 108s of audio -- invisible to container probes, frozen on
+        # screen.
+        proc = subprocess.run(
+            [bot.FFMPEG_BIN, "-i", rendered, "-map", "0:v:0", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        stamps = re.findall(r"time=(\d+):(\d+):([\d.]+)", proc.stderr or "")
+        self.assertTrue(stamps, "could not measure video stream length")
+        vh, vm, vs = stamps[-1]
+        video_seconds = int(vh) * 3600 + int(vm) * 60 + float(vs)
+        self.assertGreaterEqual(video_seconds, 105.0)
+        alignment = (bot._LAST_DURATION_CALIBRATION or {}).get("alignment") or {}
+        self.assertLessEqual(alignment.get("max_stretch", 99), 1.75)
+        self.assertLess(alignment.get("freeze_seconds_total", 99), 3.0)
 
     def test_stale_manual_render_is_reset_after_restart(self):
         state = bot._create_manual_session(
