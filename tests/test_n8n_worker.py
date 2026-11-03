@@ -1452,8 +1452,17 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         script = json.loads(
             (Path(state["job_dir"]) / "script.json").read_text(encoding="utf-8")
         )
-        self.assertAlmostEqual(audio["total_narration_seconds"], 90.0, delta=0.05)
-        self.assertEqual(script["coverage"]["actual_burmese_chars"], 1800)
+        # Calibration's contract is landing inside the final-duration
+        # window (90s target for the 100s source), not the exact
+        # center: trims intentionally aim ~1% inside the band.
+        self.assertTrue(
+            bot._duration_is_on_target(audio["total_narration_seconds"], 100, state["settings"]),
+            audio["total_narration_seconds"],
+        )
+        self.assertAlmostEqual(audio["total_narration_seconds"], 90.0, delta=1.0)
+        self.assertAlmostEqual(
+            script["coverage"]["actual_burmese_chars"], 1800, delta=36
+        )
         self.assertGreaterEqual(len(audio["duration_calibration_history"]), 3)
         self.assertEqual(audio["duration_calibration_history"][0]["narration_seconds"], 45.0)
         self.assertGreaterEqual(len(tts_calls), 3)
@@ -5416,6 +5425,45 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             bot._edge_tts_voice_for({"voice": "Aoede"}),
             "my-MM-NilarNeural",
+        )
+
+    def test_calibration_trim_uses_effective_rate_not_inflated_spoken_rate(self):
+        # Production regression: narration measured 120.0s vs a
+        # 113.0s target (acceptable 110.5-115.5), yet calibration
+        # refused to render.  Some clips measured as silent, so the
+        # spoken-only chars/second was inflated and the old trim
+        # math produced a desired char total ABOVE the current
+        # script -- the trim was a no-op and calibration stalled.
+        # The desired total must come from the effective rate (all
+        # chars over all produced speech seconds).
+        measurements = {
+            "speech_seconds": 118.0,
+            "pause_total_seconds": 1.8,
+            # Inflated spoken-only rate: 2000 chars over the 100s of
+            # non-silent slices--the value that used to break trims.
+            "measured_chars_per_second": 20.0,
+        }
+        # Old formula would have asked for ~2203 chars (> current).
+        trim_to = bot._calibration_desired_total_chars(
+            measurements, 2000, 113.0, expand=False
+        )
+        self.assertEqual(
+            trim_to, int((113.0 - 1.8) * (2000 / 118.0) * 0.99)
+        )
+        self.assertLess(trim_to, 2000)
+
+        expand_to = bot._calibration_desired_total_chars(
+            measurements, 2000, 113.0, expand=True
+        )
+        self.assertEqual(
+            expand_to, int((113.0 - 1.8) * (2000 / 118.0) * 1.01) + 1
+        )
+        self.assertGreater(expand_to, trim_to)
+
+        # Without speech measurements the helper keeps current size.
+        self.assertEqual(
+            bot._calibration_desired_total_chars({}, 1500, 113.0, expand=False),
+            1500,
         )
 
     def test_tts_speech_config_shapes(self):
