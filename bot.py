@@ -5075,6 +5075,47 @@ def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> di
             scene["start"] = round(float(start), 3)
             scene["end"] = round(float(end), 3)
 
+    if scenes and duration > 0:
+        # Repair degenerate model timings before they can reach the
+        # alignment plan: duplicate or reversed starts would leave a
+        # scene with *zero* available footage, which renders as one
+        # frozen frame under its whole narration.  Sort into story
+        # order and guarantee strictly increasing starts (every
+        # scene keeps a minimum real span) with ends contained
+        # within [start, next start].
+        scenes.sort(
+            key=lambda s: (
+                float(s.get("start") or 0),
+                float(s.get("end") or 0),
+            )
+        )
+        count = len(scenes)
+        min_span = max(0.25, min(1.0, duration / (2.0 * count)))
+        cursor = 0.0
+        for scene in scenes:
+            start = max(float(scene.get("start") or 0), cursor)
+            start = min(start, max(0.0, duration - min_span))
+            scene["start"] = round(start, 3)
+            cursor = start + min_span
+        cursor = duration
+        for scene in reversed(scenes):
+            start = min(
+                float(scene.get("start") or 0),
+                max(0.0, cursor - min_span),
+            )
+            scene["start"] = round(max(0.0, start), 3)
+            cursor = float(scene["start"])
+        for index, scene in enumerate(scenes):
+            start = float(scene["start"])
+            limit = (
+                float(scenes[index + 1]["start"])
+                if index + 1 < count
+                else duration
+            )
+            end = float(scene.get("end") or limit)
+            end = min(max(end, min(limit, start + min_span)), limit)
+            scene["end"] = round(end, 3)
+
     raw_cuts = _find_direct_payload_value(data, ("cuts", "cut_scenes")) or []
     cuts = []
     if isinstance(raw_cuts, list):
@@ -6098,15 +6139,15 @@ async def build_chunk_recap(
     prepared_target_chars = 0
     target_seconds = chunk_dur * coverage_ratio
     # Keep the requested scene count and per-scene length mathematically
-    # consistent.  The old values required at least 15 x 80 chars even for
-    # a 120s part whose full 90% target is only about 702 chars.
-    #
-    # With the learned rate the same 120s window now targets ~250 chars
-    # (free Edge Burmese speaks ~2.3 chars/second), so the time-based
-    # count (120/12 = 10 scenes) would ask for ~25 characters per scene --
-    # fragments that are hard to speak and hard to trim without losing
-    # content.  Cap the count so a scene keeps roughly a full sentence.
-    scene_count = max(1, min(15, int(round(float(chunk_dur or 0) / 12.0)) or 1))
+    # consistent.  At the voice's real measured rate the same 120s
+    # window targets ~1,300-2,000 chars, so scenes can be finer than
+    # the old one-per-12s: about one scene per 8 seconds keeps every
+    # scene at roughly 90-140 chars (3-4 short spoken sentences) and,
+    # just as importantly, keeps the narration *tracking the right
+    # footage* -- long scenes are where spoken content and on-screen
+    # events drift apart in the edit.  The char-based cap still
+    # prevents fragment scenes when a window's target is small.
+    scene_count = max(1, min(18, int(round(float(chunk_dur or 0) / 8.0)) or 1))
     chars_scene_cap = max(1, int(round(float(target_chars or 0) / 45.0)))
     scene_count = max(1, min(scene_count, chars_scene_cap))
     # Models reliably undershoot explicit character counts, which used
@@ -6189,6 +6230,8 @@ async def build_chunk_recap(
 
 ## ဗီဒီယိုကို အပြည့်အဝ ပြန်ပြောပုံ (အကျဉ်းချုပ် မဟုတ်ပါ)
 - အတိုချုပ် (summary) မရေးပါနှင့်။ နားထောင်နေသူက မူရင်းဗီဒီယိုကို ပြန်ပင် ကြည့်နေရသလို ထင်ရအောင် အစက အဆုံးအထိ အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပြပါ။
+- **မရေးခင် ဒီအပိုင်းရဲ့ အဓိကအချက် (key beats) တွေကို အရင် စိတ်ထဲမှာ စာရင်းချုပ်ပါ** — အရေးကြီးဆုံး စကားပြောချက်တွေရဲ့ အဓိပ္ပာယ်၊ ဆုံးဖြတ်ချက်တွေ၊ လျှို့ဝှက်ချက် ထုတ်ဖော်မှုတွေ၊ အလှည့်အပြောင်းတွေနဲ့ သူတို့ရဲ့ အကျိုးဆက်တွေပါ။ ပြီးမှ beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
+- Scene တိုင်းမှာ **အရေးအကြီးဆုံး အချက်ကို ပထမဝါကျမှာ** ထားပါ (နောက်ပိုင်း အသေးစိတ်တွေက နောက်မှ လိုက်ပါ)။
 - ခန်းတိုင်းတွင် ဘယ်သူတွေ ရှိနေလဲ၊ ဘယ်မှာလဲ၊ ဘာလုပ်နေလဲ၊ ဘာတွေ ပြောလဲ (အဓိပ္ပာယ်)၊ တစ်ဖက်က ဘယ်လို တုံ့ပြန်လဲ၊ ဘာကြောင့်လဲနှင့် ဘာဆက်ဖြစ်သည်ကို ရှင်းလင်းစွာ ဖော်ပြပါ။
 - ဖြစ်ရပ် များစွာကို ဝါကျတစ်ကြောင်းတည်းနှင့် ချုံ့ မပစ်ပါနှင့်။ အလယ်ပိုင်းကို ကျော်၍ အဆုံးသို့ တန်းမရောက်ပါနှင့် — နောက်ဆုံးခန်းသည် ဤအပိုင်း၏ နောက်ဆုံး မြင်ကွင်းအထိ ရောက်အောင် ရေးပါ။
 - အဓိက ဖြစ်ရပ်များအပြင် ဇာတ်လမ်းကို နားလည်ရန် လိုအပ်သည့် အသေးစိတ်များ — ဇာတ်ကောင်တို့၏ ဆက်နွယ်မှု၊ အငြင်းပွားမှု၊ လျှို့ဝှက်ချက်၊ အလှည့်အပြောင်းနှင့် နောင်ပိုင်း သက်ရောက်မည့် ပစ္စည်း၊ စာ၊ ဖုန်းခေါ်ဆိုမှု စသည်တို့ကို တစ်ခု မကျန် ထည့်ပါ။
@@ -6203,13 +6246,14 @@ async def build_chunk_recap(
 - နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်းအပိုင်း၏ {st['coverage']}% ဖြစ်ရမည်။ စာလုံးပမာဏသည် အဲဒီကြာချိန်ကို ရအောင်တွက်ထားသော ပမာဏဖြစ်ပြီး အကျဉ်းချုပ်၍ မရပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
 - ခန်း {scene_count} ခန်းခန့် ရေးပါ။ ခန်းတစ်ခန်းလျှင် ပျမ်းမျှ {request_chars_per_scene} လုံးခန့်ဖြင့် စုစုပေါင်း {request_chars} လုံးခန့် ပြည့်ရမည်။
-- အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။
+- **စာသားပမာဏကို scene ကြာချိန်နဲ့ အချိုးကျအောင် ရေးပါ** — ဒီစာသားကို တစ်စက္ကန့်လျှင် စာလုံး {int(round(chars_rate))} လုံးနှုန်းနဲ့ ပြောမှာ ဖြစ်တယ်။ Scene တစ်ခုရဲ့ စာလုံးအရေအတွက်ဟာ သူ့ရဲ့ (end − start) စက္ကန့် × {int(round(chars_rate))} နဲ့ နီးပါး ကိုက်ညီရပါမယ်။ ဥပမာ 8 စက္ကန့်စာ scene ဆိုရင် စာလုံး {int(round(chars_rate)) * 8} လုံးဝန်းကျင်ပဲ ရေးပါ။ တိုတဲ့ scene ကို ရှည်ရှည်ရေး၊ ရှည်တဲ့ scene ကို တစ်ကြောင်းတည်းနဲ့ ချန်ထားတာမျိုး လုံးဝ မလုပ်ရ — အဲဒါက အသံနဲ့ ရုပ်ရှင် မကိုက်ဖြစ်စေတယ်။
+- အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။ **"start" ဆိုတာ အဲဒီ scene ရဲ့ ဖြစ်ရပ်/မြင်ကွင်း စတင်တဲ့ စက္ကန့် အတိအကျ** ဖြစ်ရပါမယ် — နေရာ ပြောင်းတိုင်း၊ စကားပြောသူ ပြောင်းတိုင်း၊ ဖြစ်ရပ်အသစ် စတိုင်း scene အသစ်တစ်ခု စပါ။ Scene တွေကို အချိန်အစဉ်အတိုင်း ဆက်တိုက် (ရှေ့ scene ရဲ့ end = နောက် scene ရဲ့ start) ထားပါ၊ အချိန် ထပ်မနေစေရ။
 - ပထမခန်း၏ "start" သည် အပိုင်းအစ (0.0 ပတ်ဝန်းကျင်) မှ စပြီး နောက်ဆုံးခန်း၏ "end" သည် အပိုင်းဆုံး ({chunk_dur:.0f} စက္ကန့် ပတ်လည်) အထိ ရောက်ရမည်။ အလယ်တွင် ဇာတ်လမ်းနှင့် ဆိုင်သည့် အချိန်ကွက် တစ်ခုမှ မလွတ်ရပါ။
 - အရေးမကြီးသောအပိုင်းကို ဖြတ်သင့်ပါက ၎င်း၏ မူရင်းစတင်ချိန်နှင့် ဆုံးချိန်ကို "cuts" စာရင်းတွင် ထည့်ပြီး ဖြတ်ရသည့်အကြောင်းကို တိုတိုရေးပါ။
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
-JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
+JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — တစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
 
 ## အဖြေထုတ်ပုံ
 အောက်ပါပုံစံအတိုင်း JSON ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် ရှင်းလင်းချက် သို့မဟုတ် အခြားစာသား မရေးပါနှင့်။
@@ -6537,7 +6581,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ကိုယ် မရှိခဲ့၊ မမြင်ရသေးသည့် မြင်ကွင်းဖြစ်လျှင် «အဲဒီတုန်းက ကျွန်တော် မသိသေးပေမယ့် ...» ဟု ဆက်စပ် ဖော်ပြပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။
-🎯 အနည်းဆုံး {missing} လုံး အသစ် ထပ်ဖြည့်ပါ။ စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ပြည့်ရပါမည်။
+🎯 အသစ်စာသားကို {missing} လုံးမှ {int(missing * 1.2)} လုံးအတွင်းသာ ထပ်ဖြည့်ပါ (အဲဒီထက် မပိုရ)။ ပေါင်းလျှင် စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ဝန်းကျင် ဖြစ်ရပါမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဦးစားပေး ဖြည့်ပါ။
 
 ယခင် script:
 {json.dumps(scenes, ensure_ascii=False)}
@@ -6854,7 +6898,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 extra_prompt = f"""
 မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ အတိုချုပ်လွန်းသော/ကျန်ခဲ့သော အပိုင်းများကို scene အသစ်များအဖြစ် ထပ်ဖြည့်ပါ။
 ယခင် scenes များကို ပြန်မပေးပါနှင့် — အသစ်ထပ်ထည့်ရမည့် scenes များကိုသာ ပေးပါ။
-အသစ်စာသား စုစုပေါင်း အနည်းဆုံး {missing_chars} လုံး ရှိရမည်ဖြစ်ပြီး ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ပြည့်ရမည်။
+အသစ်စာသား စုစုပေါင်းကို {missing_chars} လုံးမှ {int(missing_chars * 1.2)} လုံးအတွင်းသာ ရေးပါ (အဲဒီထက် လုံးဝ မပိုရ)။ ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ဝန်းကျင် ဖြစ်ရမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဖြည့်ပါ — ပြောပြီးသားကို ပုံစံပြောင်း ပြန်မရေးရ။
 ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{new_pronoun}» တစ်မျိုးတည်းကိုသာ သုံးရမည်။
 Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမည်။
 ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။
@@ -6915,6 +6959,16 @@ JSON ကိုသာပြန်ပေးပါ:
                     break
                 scenes.extend(accepted_scenes)
                 scenes = sort_scenes(scenes)
+                # A top-up that wildly overshoots the requested amount
+                # (production: ~+165 chars requested, ~+1,200 returned)
+                # is capped *before* re-voicing, so the over-source
+                # shave never has to delete large parts of the story
+                # by sentence size alone.
+                topup_cap = int(desired_total_chars * 1.10)
+                if script_total_chars(scenes) > topup_cap:
+                    scenes = sort_scenes(
+                        trim_scenes_proportionally(scenes, topup_cap)
+                    )
                 if script_total_chars(scenes) <= current_chars:
                     break
             elif over_source:
@@ -7056,9 +7110,16 @@ JSON ကိုသာပြန်ပေးပါ:
     # Align each source scene to its measured narration clip.  The old
     # direct renderer kept almost the whole source chunk and padded audio
     # with silence, so neither the spoken content nor final duration was
-    # actually controlled by the 90% setting.
+    # actually controlled by the 90% setting.  Scene starts snap to
+    # real shot cuts, and over-long narration slows its own footage
+    # down instead of freezing it (see _build_alignment_plan).
+    cut_times = await asyncio.to_thread(_detect_shot_cuts, chunk_path, chunk_dur)
     plan = _build_alignment_plan(
-        scenes, audio_durations, chunk_dur, pause_seconds=pause_seconds
+        scenes,
+        audio_durations,
+        chunk_dur,
+        pause_seconds=pause_seconds,
+        cut_times=cut_times,
     )
     expected_final_seconds = sum(
         float(item.get("desired_output_seconds") or 0) for item in plan
@@ -7101,7 +7162,11 @@ JSON ကိုသာပြန်ပေးပါ:
             os.path.dirname(chunk_path), f"seg_{index:03d}.mp4"
         )
         ffmpeg_filter = _worker_video_filter(
-            out_w, out_h, st, float(item.get("freeze_seconds") or 0)
+            out_w,
+            out_h,
+            st,
+            float(item.get("freeze_seconds") or 0),
+            stretch_factor=float(item.get("stretch_factor") or 1.0),
         )
         result = await asyncio.to_thread(run_cmd, [
             FFMPEG_BIN, "-y",
@@ -10533,14 +10598,90 @@ async def _worker_stage_tts(state: dict, tracker=None):
     )
 
 
-def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: float, pause_seconds: float = 0.0) -> list:
+# When a scene's narration runs longer than the footage available
+# before the next scene starts, the footage is *slowed down* by up
+# to this factor (1.75x slower timestamps = ~0.57x playback speed)
+# instead of freezing on one frame.  Slow-moving footage of the
+# right event looks edited; a frozen frame under continuing speech
+# looks broken (user report).  A freeze remains only as the last
+# resort for shortages beyond even this stretch.
+ALIGNMENT_MAX_STRETCH = 1.75
+# Scene starts snap to a real detected shot cut when one is this
+# close, so visual cuts land where the narration changes scene.
+ALIGNMENT_CUT_SNAP_SECONDS = 2.0
+# Shot-cut detection decodes the video; skip it for very long
+# single-file (worker) sources where it would cost minutes.
+SHOT_CUT_MAX_DURATION_SECONDS = 600.0
+_SHOT_CUT_CACHE: dict = {}
+
+
+def _parse_scene_cut_times(stderr_text: str) -> list:
+    """Extract selected-frame timestamps from ffmpeg metadata=print."""
+    times = []
+    for match in re.finditer(r"pts_time:([0-9]+(?:\.[0-9]+)?)", stderr_text or ""):
+        try:
+            value = float(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            times.append(round(value, 3))
+    return sorted(set(times))
+
+
+def _detect_shot_cuts(video_path: str, duration: float = 0.0) -> list:
+    """Real visual cut points (seconds) via ffmpeg scene detection.
+
+    Best-effort and cached per file: any failure returns ``[]`` and
+    the render simply falls back to the model's timestamps.
+    """
+    try:
+        key = (os.path.abspath(str(video_path)), os.path.getsize(video_path))
+    except Exception:
+        return []
+    cached = _SHOT_CUT_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+    cuts = []
+    if not duration or float(duration) <= SHOT_CUT_MAX_DURATION_SECONDS:
+        try:
+            result = run_cmd(
+                [
+                    FFMPEG_BIN, "-hide_banner",
+                    "-i", str(video_path),
+                    "-vf",
+                    "scale=-2:240,fps=10,"
+                    "select='gt(scene,0.30)',"
+                    "metadata=print:key=lavfi.scene_score",
+                    "-an", "-f", "null", "-",
+                ],
+                180,
+            )
+            cuts = _parse_scene_cut_times(
+                (result.stderr or b"").decode(errors="ignore")
+            )
+        except Exception as e:
+            logger.warning(
+                "shot cut detection failed: %s", _safe_error_text(e, 200)
+            )
+            cuts = []
+    if len(_SHOT_CUT_CACHE) > 32:
+        _SHOT_CUT_CACHE.clear()
+    _SHOT_CUT_CACHE[key] = cuts
+    return list(cuts)
+
+
+def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: float, pause_seconds: float = 0.0, cut_times: list = None) -> list:
     """Build start-aligned video cuts without changing narration speed.
 
-    - If narration is shorter than its source scene, only the beginning of
-      that scene is kept.
-    - If narration is longer, following source footage may be borrowed, but
-      only until the next selected scene starts.
-    - A frozen final frame is used only for any remaining shortage.
+    - Scene starts snap to nearby *real* shot cuts (``cut_times``)
+      so the picture changes when the narration changes scene.
+    - If narration is shorter than its source scene, only the
+      beginning of that scene is kept.
+    - If narration is longer, the scene's own footage (up to the
+      next scene's start) is slowed down by up to
+      ``ALIGNMENT_MAX_STRETCH`` -- moving footage of the right
+      event -- instead of freezing on a single frame.
+    - A frozen final frame covers only any shortage beyond that.
     """
     if len(scenes) != len(audio_durations):
         raise WorkerJobError("scene/audio count mismatch while building render plan")
@@ -10552,37 +10693,75 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
     except (TypeError, ValueError):
         pause_seconds = 0.0
 
+    cuts = sorted({
+        round(float(c), 3)
+        for c in (cut_times or [])
+        if isinstance(c, (int, float)) and float(c) > 0
+    })
+
+    def _snap_start(value: float) -> float:
+        if not cuts or value <= 0.5:
+            return value
+        best = min(cuts, key=lambda c: abs(c - value))
+        if abs(best - value) <= ALIGNMENT_CUT_SNAP_SECONDS:
+            return float(best)
+        return value
+
+    # Resolve every scene's start first (snapped + strictly
+    # increasing), because each scene's footage limit is the *next*
+    # scene's resolved start.
+    starts = []
+    cursor_min = 0.0
+    max_start = max(0.0, source_duration - 0.04)
+    for index, scene in enumerate(scenes):
+        try:
+            raw_start = float(scene.get("start") or 0)
+        except (TypeError, ValueError, AttributeError) as e:
+            raise WorkerJobError(f"invalid scene timing at index {index + 1}") from e
+        start = _snap_start(max(0.0, min(raw_start, max_start)))
+        start = max(start, cursor_min)
+        start = min(start, max_start)
+        starts.append(start)
+        cursor_min = start + 0.05
+
     plan = []
     output_cursor = 0.0
     for index, (scene, raw_audio_duration) in enumerate(zip(scenes, audio_durations)):
         try:
-            start = float(scene.get("start") or 0)
-            end = float(scene.get("end") or start)
+            end = float(scene.get("end") or starts[index])
             audio_duration = max(0.0, float(raw_audio_duration or 0))
         except (TypeError, ValueError, AttributeError) as e:
             raise WorkerJobError(f"invalid scene timing at index {index + 1}") from e
 
-        start = max(0.0, min(start, max(0.0, source_duration - 0.04)))
+        start = starts[index]
         end = max(start, min(end, source_duration))
-        if index + 1 < len(scenes):
-            try:
-                limit = float(scenes[index + 1].get("start") or source_duration)
-            except (TypeError, ValueError, AttributeError):
-                limit = source_duration
-        else:
-            limit = source_duration
+        limit = starts[index + 1] if index + 1 < len(starts) else source_duration
         limit = max(start, min(float(limit), source_duration))
 
         pause_after = pause_seconds if index + 1 < len(scenes) else 0.0
         desired_seconds = audio_duration + pause_after
         available_seconds = max(0.0, limit - start)
-        input_seconds = min(desired_seconds, available_seconds)
-        if input_seconds <= 0:
+        original_scene_seconds = max(0.0, end - start)
+        if available_seconds <= 0:
             input_seconds = min(0.04, source_duration)
             if start + input_seconds > source_duration:
                 start = max(0.0, source_duration - input_seconds)
-        freeze_seconds = max(0.0, desired_seconds - input_seconds)
-        original_scene_seconds = max(0.0, end - start)
+            stretch_factor = 1.0
+            freeze_seconds = max(0.0, desired_seconds - input_seconds)
+        elif desired_seconds <= available_seconds:
+            input_seconds = desired_seconds
+            stretch_factor = 1.0
+            freeze_seconds = 0.0
+        else:
+            # Slow this scene's footage down to cover the narration
+            # (capped); freeze only what even the cap cannot cover.
+            stretch_factor = min(
+                desired_seconds / available_seconds, ALIGNMENT_MAX_STRETCH
+            )
+            input_seconds = available_seconds
+            freeze_seconds = max(
+                0.0, desired_seconds - input_seconds * stretch_factor
+            )
         borrowed_seconds = max(0.0, input_seconds - original_scene_seconds)
 
         plan.append({
@@ -10597,6 +10776,7 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
             "desired_output_seconds": round(desired_seconds, 6),
             "input_seconds": round(input_seconds, 6),
             "borrowed_seconds": round(borrowed_seconds, 6),
+            "stretch_factor": round(float(stretch_factor), 6),
             "freeze_seconds": round(freeze_seconds, 6),
             "output_start": round(output_cursor, 6),
             "output_end": round(output_cursor + desired_seconds, 6),
@@ -10605,8 +10785,17 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
     return plan
 
 
-def _worker_video_filter(out_w: int, out_h: int, settings: dict, freeze_seconds: float = 0.0) -> str:
+def _worker_video_filter(out_w: int, out_h: int, settings: dict, freeze_seconds: float = 0.0, stretch_factor: float = 1.0) -> str:
     filters = []
+    try:
+        stretch = float(stretch_factor or 1.0)
+    except (TypeError, ValueError):
+        stretch = 1.0
+    if stretch > 1.01:
+        # Slow the footage (never the audio) so a scene whose
+        # narration outruns its footage keeps *moving* picture of
+        # the right event instead of a frozen frame.
+        filters.append(f"setpts={stretch:.4f}*PTS")
     if settings.get("shield"):
         filters.extend(["crop=iw*0.96:ih*0.96", "hflip"])
     filters.extend([
@@ -10659,7 +10848,13 @@ async def _worker_stage_render(state: dict, tracker=None):
         pause_seconds = float(audio.get("pause_seconds", settings.get("pause") or 0) or 0)
     except (TypeError, ValueError):
         pause_seconds = 0.0
-    plan = _build_alignment_plan(scenes, audio_durations, source_duration, pause_seconds)
+    cut_times = await asyncio.to_thread(
+        _detect_shot_cuts, source_path, source_duration
+    )
+    plan = _build_alignment_plan(
+        scenes, audio_durations, source_duration, pause_seconds,
+        cut_times=cut_times,
+    )
 
     # Fail before expensive rendering if an older/manual artifact would
     # violate either contract: literal 90%-of-source final duration or
@@ -10713,7 +10908,11 @@ async def _worker_stage_render(state: dict, tracker=None):
             _worker_check_cancelled(state)
             segment_path = os.path.join(segments_dir, f"segment_{index:04d}.mp4")
             ffmpeg_filter = _worker_video_filter(
-                out_w, out_h, settings, float(item.get("freeze_seconds") or 0)
+                out_w,
+                out_h,
+                settings,
+                float(item.get("freeze_seconds") or 0),
+                stretch_factor=float(item.get("stretch_factor") or 1.0),
             )
             result = await asyncio.to_thread(run_cmd, [
                 FFMPEG_BIN, "-y",
@@ -15295,7 +15494,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.22-script-first-no-overshoot"
+BUILD_VERSION = "v5.23-pro-sync-no-freeze"
 BUILD_FEATURES = 20
 
 
@@ -15382,6 +15581,7 @@ async def root():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
+        "edit_sync": "shot_cut_snapped_stretch_instead_of_freeze",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
@@ -15505,6 +15705,7 @@ async def health():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
+        "edit_sync": "shot_cut_snapped_stretch_instead_of_freeze",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -15992,11 +16193,11 @@ def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
         "ဒီတစ်ခါ ပြင်ထားတာတွေ —\n"
-        "• Final ဗီဒီယိုက မူရင်းထက် <b>မရှည်တော့ပါ</b>\n"
-        "• အလုပ်စဉ်: Script အကုန် <b>အရင်ရေး</b> → ထပ်တာတွေ စစ်ဖယ် → "
-        "အသံသွင်း → Edit (error စစ်) → Final ခွဲပို့\n"
-        "• အသံ: Thiha တစ်မျိုးတည်း၊ Turbo ဖွင့်ထားပြီး၊ သဘာဝကျတဲ့ အပြောဟန်\n"
-        "• Script: ထပ်နေတဲ့ ဝါကျတွေ မပါအောင် စစ်ထား\n\n"
+        "• ဗီဒီယို <b>ရပ်တန့်နေပြီး အသံပဲ သွားနေတာ</b> မရှိတော့ပါ — "
+        "အသံရှည်ရင် footage ကိုပဲ ဖြေးဖြေးချပြီး ဆက်ပြပါတယ်\n"
+        "• အသံနဲ့ <b>ဇာတ်ကွက် ပိုကိုက်အောင်</b> တကယ့် shot-cut နေရာတွေနဲ့ ညှိထားပါတယ်\n"
+        "• Script မှာ <b>အဓိကအချက်တွေ မကျန်အောင်</b> ဦးစားပေး ရေးခိုင်းထားပါတယ်\n"
+        "• Final က မူရင်းထက် <b>မရှည်ပါ</b> · Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
         "🎬 ဗီဒီယို ဒါမှမဟုတ် link ပို့ပြီး စမ်းကြည့်ပါ။"
     )
 
