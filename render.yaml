@@ -12,6 +12,11 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false         # Render dashboard မှာ ကိုယ်တိုင် ထည့်ရမယ့် secret
+      # Optional: Telegram webhook secret token.  When unset the bot
+      # derives one from BOT_TOKEN automatically, so the webhook is
+      # authenticated either way; set this only to override/rotate it.
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: ADMIN_ID

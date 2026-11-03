@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import gc
+import hashlib
 import hmac
 import html
 import importlib.metadata
@@ -1096,13 +1097,38 @@ def finish_active_job(chat_id, status: str = "", error: str = "") -> None:
     _save_job_state(force=True)
 
 
+def _mask_health_key(key) -> str:
+    """Mask a chat-id key before publishing it on the health API.
+
+    ``/healthz`` is public (uptime monitors, deploy verification,
+    remote diagnostics), so raw Telegram chat ids of everyone who
+    ran a job do not belong on it.  The last four digits stay
+    visible so entries can still be correlated while debugging
+    together with the chat owner.
+    """
+    text = str(key or "")
+    return f"***{text[-4:]}" if len(text) > 4 else "***"
+
+
+def _health_last_job_results() -> dict:
+    """Recent per-chat job outcomes for /healthz, chat ids masked."""
+    return {
+        _mask_health_key(key): {
+            "status": str(value.get("status") or ""),
+            "at": round(float(value.get("at") or 0)),
+        }
+        for key, value in list(LAST_JOB_RESULTS.items())[-10:]
+        if isinstance(value, dict)
+    }
+
+
 def active_jobs_snapshot() -> dict:
     now = time.time()
     snapshot = {}
     for key, state in ACTIVE_JOB_STATE.items():
         if not isinstance(state, dict):
             continue
-        snapshot[key] = {
+        snapshot[_mask_health_key(key)] = {
             "job_id": state.get("job_id"),
             "stage": state.get("stage"),
             "age_seconds": round(now - float(state.get("started_at") or now)),
@@ -1136,7 +1162,7 @@ async def _recover_interrupted_jobs() -> int:
             seconds_ago = 0
         recovered.append(
             {
-                "chat_id": key,
+                "chat_id": _mask_health_key(key),
                 "job_id": job_id,
                 "stage": stage,
                 "seconds_ago": seconds_ago,
@@ -1993,10 +2019,6 @@ def _telegram_link_info(url: str) -> dict | None:
     if len(segments) >= 2 and segments[-1].isdigit():
         info.update({"kind": "public_post", "message_id": segments[-1]})
     return info
-
-
-def _is_telegram_url(url: str) -> bool:
-    return _telegram_link_info(url) is not None
 
 
 def _telegram_link_error(url: str, info: dict | None = None) -> SourceDownloadError:
@@ -3420,48 +3442,6 @@ def build_source_segment_plan(
     return plan
 
 
-def make_keep_ranges(duration: float, cuts: list, max_remove_ratio: float = 0.08):
-    candidates = []
-    for item in cuts:
-        try:
-            start = max(0.0, min(duration, float(item["start"])))
-            end = max(0.0, min(duration, float(item["end"])))
-            if end > start:
-                candidates.append((start, end))
-        except (KeyError, TypeError, ValueError):
-            continue
-
-    candidates.sort()
-    merged = []
-    for start, end in candidates:
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-
-    removal_limit = duration * max_remove_ratio
-    accepted_cuts = []
-    removed = 0.0
-    for start, end in merged:
-        remaining = removal_limit - removed
-        if remaining <= 0:
-            break
-        cut_len = min(end - start, remaining)
-        if cut_len > 0:
-            accepted_cuts.append((start, start + cut_len))
-            removed += cut_len
-
-    keep_ranges = []
-    cursor = 0.0
-    for start, end in accepted_cuts:
-        if start > cursor:
-            keep_ranges.append((cursor, start))
-        cursor = max(cursor, end)
-    if cursor < duration:
-        keep_ranges.append((cursor, duration))
-    return keep_ranges
-
-
 def split_pcm_by_weights(master: np.ndarray, scenes: list) -> list[np.ndarray]:
     if len(scenes) == 0:
         return []
@@ -4391,66 +4371,6 @@ def _make_gemini_client():
         return genai.Client(api_key=GEMINI_API_KEY)
 
 
-async def _await_with_heartbeat(
-    awaitable,
-    *,
-    timeout_seconds,
-    tracker=None,
-    make_text=None,
-):
-    """Await with a hard deadline and periodic progress heartbeats.
-
-    The sync Gemini SDK runs through ``asyncio.to_thread`` and cannot
-    be cancelled once running, so on timeout/cancel we simply stop
-    waiting (the client-level HTTP timeout aborts the request itself
-    shortly after) and attach a done-callback that retrieves any later
-    exception so asyncio does not log it as unretrieved.
-    """
-    task = asyncio.ensure_future(awaitable)
-    started = time.monotonic()
-    heartbeat = max(0.05, float(GEMINI_HEARTBEAT_SECONDS or 20.0))
-    timeout = max(0.05, float(timeout_seconds or 0))
-
-    def _abandon() -> None:
-        def _swallow(done_task) -> None:
-            try:
-                done_task.exception()
-            except Exception:
-                pass
-
-        task.add_done_callback(_swallow)
-
-    try:
-        while True:
-            remaining = timeout - (time.monotonic() - started)
-            if remaining <= 0:
-                _abandon()
-                raise TimeoutError(
-                    f"Gemini call timeout after {timeout:.0f}s"
-                )
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(task),
-                    timeout=min(heartbeat, remaining),
-                )
-            except asyncio.TimeoutError:
-                if time.monotonic() - started >= timeout:
-                    _abandon()
-                    raise TimeoutError(
-                        f"Gemini call timeout after {timeout:.0f}s"
-                    ) from None
-                if tracker is not None and make_text is not None:
-                    try:
-                        await tracker.update(
-                            make_text(time.monotonic() - started), force=True
-                        )
-                    except Exception:
-                        pass
-    except asyncio.CancelledError:
-        _abandon()
-        raise
-
-
 def _direct_gemini_json_config(
     max_output_tokens: int = 8192,
     response_mime_type: str = "application/json",
@@ -5223,10 +5143,11 @@ def _settings_coverage_ratio(settings: dict = None) -> float:
 def _settings_script_rate(settings: dict = None) -> float:
     """Chars/second used to size scripts (chars = seconds x rate).
 
-    The *learned* rate for the voice that will actually speak wins, so a
-    free Edge Burmese voice (measured ~2.1-2.5 chars/s) is not sized with
-    the Gemini-shaped 6.5 chars/s estimate and then shredded by the
-    duration calibration.  An explicitly changed 🗣️ setting (anything
+    The *learned* rate for the voice that will actually speak wins, so
+    each voice is sized at its own measured speed (Edge Thiha measures
+    ~18-20 chars/s in production; Gemini TTS seeds at 10) instead of one
+    shared estimate that measured calibration would then have to shred
+    or pad.  An explicitly changed 🗣️ setting (anything
     other than the shipped default) is still honoured as a manual
     override -- that is the user deliberately asking for a different
     reading speed.
@@ -5309,6 +5230,13 @@ def _duration_meets_minimum(
     return float(actual_seconds or 0) >= low
 
 
+def _source_duration_ceiling(source_duration: float) -> float:
+    """Longest acceptable final for a source: the source itself plus
+    a hair of container/fade rounding tolerance."""
+    source = max(0.0, float(source_duration or 0))
+    return source + max(2.0, source * 0.005)
+
+
 def _duration_exceeds_source(
     actual_seconds: float,
     source_duration: float,
@@ -5325,7 +5253,7 @@ def _duration_exceeds_source(
     source = float(source_duration or 0)
     if source <= 0:
         return False
-    return float(actual_seconds or 0) > source + max(2.0, source * 0.005)
+    return float(actual_seconds or 0) > _source_duration_ceiling(source)
 
 
 def _duration_within_limits(
@@ -5528,46 +5456,6 @@ def _text_is_sentence_structured(text: str) -> bool:
     return any(ch in SCRIPT_SENTENCE_END_CHARS for ch in str(text or ""))
 
 
-def _drop_last_sentence(text: str) -> str:
-    """Remove the final whole sentence; returns '' when nothing is left."""
-    sentences = _split_sentences(text)
-    if len(sentences) <= 1:
-        return ""
-    return "".join(sentences[:-1]).strip()
-
-
-def _trim_text_to_char_budget(text: str, budget: int) -> str:
-    """Shorten text to (about) a character budget at sentence boundaries.
-
-    Whole sentences are kept as long as they fit, so the TTS never reads
-    half a clause.  When even the first sentence is over budget the text
-    is dropped (the caller then removes that empty scene) instead of
-    shipping a chopped sentence.  Only text with no sentence terminator
-    at all -- e.g. a model that returned one unpunctuated run -- falls
-    back to a whitespace boundary and finally to the exact budget.
-    """
-    value = str(text or "").strip()
-    budget = max(0, int(budget or 0))
-    if len(value) <= budget:
-        return value
-    if budget <= 0:
-        return ""
-    if _text_is_sentence_structured(value):
-        kept = ""
-        for sentence in _split_sentences(value):
-            candidate = kept + sentence
-            if len(candidate.strip()) <= budget:
-                kept = candidate
-            else:
-                break
-        return kept.strip()
-    # No punctuation to cut on: prefer the last word boundary.
-    cut = value.rfind(" ", 0, budget + 1)
-    if cut >= max(10, int(budget * 0.5)):
-        return value[:cut].strip()
-    return value[:budget].strip()
-
-
 # Burmese combining marks: a cut that ends on one of these leaves a
 # dangling mark that the TTS reads as a broken syllable.
 _BURMESE_TRAILING_JUNK = set(
@@ -5739,20 +5627,6 @@ def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
                 kept = [fallback]
                 break
     return kept
-
-
-def _predicted_narration_seconds(
-    total_chars: int, scene_count: int, measurements: dict
-) -> float:
-    """Seconds this text would take at the rate *this job* measured."""
-    m = measurements or {}
-    rate = float(m.get("effective_chars_per_second") or 0)
-    pause = float(m.get("pause_seconds") or 0)
-    if rate <= 0:
-        return 0.0
-    return (float(max(0, int(total_chars or 0))) / rate) + (
-        pause * max(0, int(scene_count or 0) - 1)
-    )
 
 
 def _trim_scenes_for_duration(
@@ -9300,10 +9174,6 @@ def _rewrite_target_chars_for_duration(duration_seconds: float, settings: dict =
     )
 
 
-def _rewrite_target_chars_for_speech(speech_seconds: float, settings: dict = None) -> int:
-    return _rewrite_target_chars_for_duration(speech_seconds, settings)
-
-
 def _group_timeline_seconds(groups: list, source_duration: float = 0.0) -> dict:
     """Seconds of source timeline represented by each transcript group.
 
@@ -11046,14 +10916,20 @@ async def _worker_stage_render(state: dict, tracker=None):
     planned_duration = sum(
         float(item.get("desired_output_seconds") or 0) for item in plan
     )
-    target_final_pre, final_low_pre, final_high_pre = _final_duration_window(
-        source_duration, settings
-    )
-    if not (final_low_pre <= planned_duration <= final_high_pre):
+    # Same delivery rule as every other stage since v5.21: at/above
+    # the 90% floor and never longer than the source itself.  This
+    # gate used to demand the narrow target +/-tolerance window, so
+    # narration that TTS calibration had deliberately kept whole
+    # (long but still inside the source -- finished speech is never
+    # cut back to the target) was refused here, after all the
+    # synthesis work.  Only genuinely short or over-source plans
+    # are rejected now.
+    if not _duration_within_limits(planned_duration, source_duration, settings):
         raise WorkerJobError(
-            "Planned final duration is outside the required 90% window before "
-            f"render: {_duration_status(planned_duration, source_duration, settings)}; "
-            "run TTS calibration again instead of rendering a shortened recap"
+            "Planned final duration is outside the accepted range before "
+            "render (90% floor, never over the source): "
+            f"{_duration_status(planned_duration, source_duration, settings)}; "
+            "run TTS calibration again instead of rendering an out-of-range recap"
         )
     script_coverage_render = script.get("coverage") or {}
     render_pronoun = _choose_first_person_pronoun(
@@ -11181,14 +11057,20 @@ async def _worker_stage_render(state: dict, tracker=None):
     expected_duration = sum(float(item.get("desired_output_seconds") or 0) for item in plan)
     coverage_ratio = _settings_coverage_ratio(settings)
     speed = _settings_speed(settings)
-    target_final_seconds, minimum_final_seconds, maximum_final_seconds = (
-        _final_duration_window(source_duration, settings)
+    target_final_seconds, minimum_final_seconds, _ = _final_duration_window(
+        source_duration, settings
     )
-    # Small mux/container differences are tolerated by the window itself.
-    # Anything outside it is not "90% of source" in the user's literal sense.
-    if not (minimum_final_seconds <= final_duration <= maximum_final_seconds):
+    # Enforced range is the shared delivery rule -- 90% floor, never
+    # over the source -- not the narrow target +/-tolerance window.
+    # Narration between the target and the source length is kept
+    # whole by design (finished speech is never cut back), and this
+    # worker's own delivery gate accepts it; refusing it here used
+    # to fail fully-rendered jobs that were perfectly deliverable.
+    maximum_final_seconds = _source_duration_ceiling(source_duration)
+    if not _duration_within_limits(final_duration, source_duration, settings):
         raise WorkerJobError(
-            "Rendered final duration is outside the required 90% window: "
+            "Rendered final duration is outside the accepted range "
+            "(90% floor, never over the source): "
             f"{_duration_status(final_duration, source_duration, settings)}; "
             f"alignment plan {expected_duration:.1f}s, coverage "
             f"{coverage_ratio * 100:.0f}%, speed {speed}; refusing to deliver"
@@ -15696,7 +15578,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.24-pro-edit-natural"
+BUILD_VERSION = "v5.25-pro-audit-hardening"
 BUILD_FEATURES = 20
 
 
@@ -15719,14 +15601,7 @@ async def root():
         "n8n_telegram_handoff_enabled": N8N_TELEGRAM_HANDOFF_ENABLED,
         "job_registry": "disk_mirrored_active_jobs_with_stall_watchdog",
         "active_jobs": active_jobs_snapshot(),
-        "last_job_results": {
-            key: {
-                "status": str(value.get("status") or ""),
-                "at": round(float(value.get("at") or 0)),
-            }
-            for key, value in list(LAST_JOB_RESULTS.items())[-10:]
-            if isinstance(value, dict)
-        },
+        "last_job_results": _health_last_job_results(),
         "interrupted_jobs_last_restart": _LAST_INTERRUPTED_JOBS[-10:],
         "job_watchdog": {
             "enabled": True,
@@ -15806,6 +15681,7 @@ async def root():
         "rednote_cookie_configured": _rednote_cookie_configured(),
         "telegram_buttons": "inline_persistent_menu_auto_one_shot_manual_opt_in",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+        "telegram_webhook_auth": "secret_token_header",
         "public_base_url": PUBLIC_BASE_URL,
         "public_host": urlparse(PUBLIC_BASE_URL).netloc,
         "render_git_commit": RENDER_GIT_COMMIT,
@@ -15843,14 +15719,7 @@ async def health():
         "n8n_telegram_handoff_enabled": N8N_TELEGRAM_HANDOFF_ENABLED,
         "job_registry": "disk_mirrored_active_jobs_with_stall_watchdog",
         "active_jobs": active_jobs_snapshot(),
-        "last_job_results": {
-            key: {
-                "status": str(value.get("status") or ""),
-                "at": round(float(value.get("at") or 0)),
-            }
-            for key, value in list(LAST_JOB_RESULTS.items())[-10:]
-            if isinstance(value, dict)
-        },
+        "last_job_results": _health_last_job_results(),
         "interrupted_jobs_last_restart": _LAST_INTERRUPTED_JOBS[-10:],
         "job_watchdog": {
             "enabled": True,
@@ -15928,6 +15797,7 @@ async def health():
         "rednote_cookie_configured": _rednote_cookie_configured(),
         "telegram_buttons": "inline_persistent_menu_auto_one_shot_manual_opt_in",
         "telegram_webhook_allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+        "telegram_webhook_auth": "secret_token_header",
         "public_base_url": PUBLIC_BASE_URL,
         "public_host": urlparse(PUBLIC_BASE_URL).netloc,
         "render_git_commit": RENDER_GIT_COMMIT,
@@ -16285,6 +16155,26 @@ def _telegram_result_ok(method: str, response) -> bool:
     return ok
 
 
+def _telegram_webhook_secret() -> str:
+    """Secret Telegram must echo in the webhook header.
+
+    Registered with ``setWebhook(secret_token=...)`` and verified on
+    every incoming update, so the public ``/webhook`` URL alone is
+    not enough to inject forged updates.  An explicit
+    ``TELEGRAM_WEBHOOK_SECRET`` env wins; otherwise the secret is
+    derived from the bot token, giving authenticated webhooks with
+    zero extra configuration.  Empty only when no bot token is
+    configured (local/dev), where there is no webhook to protect.
+    """
+    configured = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    if configured:
+        return configured
+    token = str(globals().get("BOT_TOKEN") or "").strip()
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 async def _setup_bot_once(expected_webhook_url: str) -> bool:
     """Register commands, the chat menu button, and this exact webhook."""
     me = await tg_api("getMe", {})
@@ -16311,18 +16201,21 @@ async def _setup_bot_once(expected_webhook_url: str) -> bool:
     )
     menu_ok = _telegram_result_ok("setChatMenuButton", menu_result)
 
-    webhook_result = await tg_api(
-        "setWebhook",
-        {
-            "url": expected_webhook_url,
-            "drop_pending_updates": False,
-            "max_connections": 40,
-            # Explicitly reset this every deploy.  If omitted, Telegram
-            # can retain an older allowed_updates setting and silently
-            # stop delivering inline-button callback_query updates.
-            "allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
-        },
-    )
+    webhook_payload = {
+        "url": expected_webhook_url,
+        "drop_pending_updates": False,
+        "max_connections": 40,
+        # Explicitly reset this every deploy.  If omitted, Telegram
+        # can retain an older allowed_updates setting and silently
+        # stop delivering inline-button callback_query updates.
+        "allowed_updates": TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
+    }
+    webhook_secret = _telegram_webhook_secret()
+    if webhook_secret:
+        # Telegram echoes this in X-Telegram-Bot-Api-Secret-Token on
+        # every update; the /webhook handler rejects anything else.
+        webhook_payload["secret_token"] = webhook_secret
+    webhook_result = await tg_api("setWebhook", webhook_payload)
     webhook_ok = _telegram_result_ok("setWebhook", webhook_result)
 
     info = await tg_api("getWebhookInfo", {})
@@ -16395,9 +16288,10 @@ def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
         "ဒီတစ်ခါ ပြင်ထားတာတွေ —\n"
-        "• <b>Freeze ဖြစ်စေတဲ့ တကယ့် bug</b> ကို ရှာတွေ့ ပြင်ပြီးပါပြီ — ဗီဒီယိုက အသံထက် တိုပြီး ကုန်သွားလို့ နောက်ဆုံးမြင်ကွက်မှာ ရပ်တည်နေခဲ့တာ၊ အခု ဗီဒီယိုက အသံနဲ့အတူ အပြည့်အဝ သွားပါပြီ\n"
-        "• Scene အပိုင်းချိုးတွေကို <b>အသံပမာဏနဲ့ အချိုးကျအောင်</b> ချိန်ညှိထားပါတယ် — ဇာတ်ကွက်နဲ့ အသံ ပိုကိုက်ပါမယ်\n"
-        "• Script ကို <b>လူအသုံးများတဲ့ စကားလုံးတွေ</b>နဲ့ ပို သဘာဝကျ၊ ပို Professional ကျကျ ပြန်ပြောပုံစံ ပြောင်းထားပါတယ် (ဂဏန်းတွေကိုလည်း မြန်မာလိုပဲ ဖတ်ပါမယ်)\n"
+        "• <b>Error အစုံ စစ်ဆေးပြီးပါပြီ</b> — code တစ်ခုလုံးကို Professional audit လုပ်ပြီး test အစုံ အောင်မြင်ပါတယ်\n"
+        "• <b>လုံခြုံရေး မြှင့်ထားပါတယ်</b> — Bot ရဲ့ webhook ကို လျှို့ဝှက်ကုဒ်နဲ့ ကာကွယ်ထားပြီး ကိုယ်ရေးအချက်အလက် (Chat ID) ကို အပြင်မှာ မပြတော့ပါဘူး\n"
+        "• အသံပမာဏ စစ်ဆေးချက် စံနှုန်းတွေ အားလုံး တူညီအောင် ပြုပြင်ထားလို့ job တွေ <b>အပိတ်အဆို့မရှိ</b> ပြီးမြောက်ပါမယ်\n"
+        "• မသုံးတော့တဲ့ code အဟောင်းတွေ ရှင်းထုတ်ပြီး စနစ်တစ်ခုလုံး ပိုတည်ငြိမ်အောင် လုပ်ထားပါတယ်\n"
         "• Final က မူရင်းထက် <b>မရှည်ပါ</b> · Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
         "🎬 ဗီဒီယို ဒါမှမဟုတ် link ပို့ပြီး စမ်းကြည့်ပါ။"
     )
@@ -16533,6 +16427,16 @@ async def _process_admin_update_guarded(update: dict) -> None:
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
+    webhook_secret = _telegram_webhook_secret()
+    if webhook_secret:
+        supplied = (
+            request.headers.get("x-telegram-bot-api-secret-token") or ""
+        ).strip()
+        if not supplied or not hmac.compare_digest(supplied, webhook_secret):
+            logger.warning("Rejected /webhook POST with bad secret token")
+            return JSONResponse(
+                {"ok": False, "error": "unauthorized"}, status_code=403
+            )
     update = await request.json()
     _spawn_background(
         _process_admin_update_guarded(update), name="telegram-update"

@@ -1046,14 +1046,6 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     def test_trim_drops_a_whole_scene_instead_of_chopping_it(self):
         single = MALE_PRONOUN + " ဒီအကြောင်းကို အစကနေ အဆုံးထိ ပြန်ပြောပြမယ်။"
-        # A budget below the only sentence removes the text (the scene is
-        # then dropped by trim_scenes_proportionally) instead of shipping
-        # half a clause to the TTS.
-        self.assertEqual(bot._trim_text_to_char_budget(single, 10), "")
-        self.assertEqual(
-            bot._trim_text_to_char_budget(single, len(single)), single
-        )
-
         scenes = [
             {"start": 0, "burmese": single},
             {
@@ -1075,9 +1067,18 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     def test_unpunctuated_text_falls_back_to_a_word_boundary(self):
         unstructured = MALE_PRONOUN + " ဒီအကြောင်းကို အစကနေ အဆုံးထိ"
-        cut = bot._trim_text_to_char_budget(unstructured, 20)
-        self.assertLessEqual(len(cut), 20)
+        scenes = [{"start": 0, "burmese": unstructured}]
+        trimmed = bot.trim_scenes_proportionally(scenes, 20)
+        cut = trimmed[0]["burmese"].strip()
+        # Trimmed at a word boundary, never mid-syllable: what remains
+        # is a clean prefix of the original (plus a sentence
+        # terminator), close to the requested budget.
         self.assertTrue(cut)
+        self.assertTrue(unstructured.startswith(cut.rstrip("။")))
+        self.assertLess(
+            bot.script_total_chars(trimmed), bot.script_total_chars(scenes)
+        )
+        self.assertGreaterEqual(bot.script_total_chars(trimmed), 15)
         self.assertTrue(bot._scene_is_first_person(cut, MALE_PRONOUN))
 
     def test_first_person_validation_uses_actual_scene_text(self):
@@ -1629,7 +1630,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot.LAST_JOB_RESULTS["777"]["status"], "interrupted"
         )
         self.assertEqual(bot.ACTIVE_JOB_STATE, {})
-        self.assertEqual(bot._LAST_INTERRUPTED_JOBS[0]["chat_id"], "777")
+        # The user is notified at their real chat (asserted above),
+        # but the diagnostics record published on /healthz masks it.
+        self.assertEqual(bot._LAST_INTERRUPTED_JOBS[0]["chat_id"], "***")
         with open(state_file, encoding="utf-8") as f:
             saved = json.load(f)
         self.assertEqual(saved.get("active"), {})
@@ -2858,6 +2861,107 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             await bot._worker_stage_render(state)
         self.assertNotEqual(state["stages"]["render"]["status"], "done")
 
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
+    async def test_render_stage_accepts_long_narration_inside_source(self):
+        # Regression: the render stage used to demand the narrow
+        # 90% +/-tolerance window and refused narration that TTS
+        # calibration had deliberately kept whole (long but still
+        # inside the source) -- after all the synthesis work.  9.8s
+        # of speech on a 10s source sits above the old window high
+        # (9.35s) yet is fully deliverable under the shared rule:
+        # 90% floor, never over the source.
+        state = self.create_job(
+            job_id="job-render-long",
+            chat_id=10013,
+            settings={
+                "resolution": 64,
+                "quality": 35,
+                "shield": False,
+                "color": False,
+                "pause": 0,
+                "fast_mode": True,
+            },
+        )
+        job_dir = Path(state["job_dir"])
+        source = job_dir / "source.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=green:s=64x64:r=25:d=10",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(source),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        narration = job_dir / "narration.wav"
+        samples = np.full(int(bot.SAMPLE_RATE * 9.8), 1000, dtype="<i2")
+        with wave.open(str(narration), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(bot.SAMPLE_RATE)
+            wav.writeframes(samples.tobytes())
+
+        self.write_job_json(
+            state,
+            "script.json",
+            {
+                "scenes": [
+                    {
+                        "group_id": 1,
+                        "source_segment_ids": [1],
+                        "start": 0,
+                        "end": 10,
+                        "burmese": first_person_text(20),
+                    }
+                ]
+            },
+        )
+        self.write_job_json(
+            state,
+            "audio.json",
+            {
+                "pause_seconds": 0,
+                "narration_file": "narration.wav",
+                "clips": [
+                    {
+                        "scene_index": 1,
+                        "group_id": 1,
+                        "duration_seconds": 9.8,
+                    }
+                ],
+            },
+        )
+
+        await bot._worker_stage_render(state)
+
+        final = job_dir / "final.mp4"
+        self.assertTrue(final.exists() and final.stat().st_size > 0)
+        final_duration, _, _ = bot.probe_video_info(str(final))
+        self.assertAlmostEqual(final_duration, 9.8, delta=0.3)
+        # Metrics must report the rule actually enforced: the
+        # ceiling is the source (+rounding), not target+tolerance.
+        self.assertAlmostEqual(
+            state["metrics"]["render"]["maximum_acceptable_final_seconds"],
+            12.0,
+            delta=0.25,
+        )
+
     def test_telegram_button_keyboards_are_structured_correctly(self):
         persistent = bot.persistent_menu_keyboard()
         labels = [
@@ -3247,6 +3351,65 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         async with bot.lifespan(bot.app):
             await asyncio.wait_for(started.wait(), timeout=1)
 
+    async def test_webhook_rejects_forged_updates_and_health_masks_chat_ids(self):
+        fake_chat = "987654321"
+        bot.LAST_JOB_RESULTS[fake_chat] = {"status": "done", "at": 1700000000}
+        bot.ACTIVE_JOB_STATE[fake_chat] = {
+            "job_id": "job-mask",
+            "stage": "render",
+            "started_at": 1700000000,
+            "updated_at": 1700000000,
+        }
+        try:
+            async with self.api_client() as client:
+                health = await client.get("/healthz")
+                body = health.json()
+                # Public diagnostics must never leak raw chat ids.
+                self.assertNotIn(fake_chat, health.text)
+                self.assertIn("***4321", body["last_job_results"])
+                self.assertIn("***4321", body["active_jobs"])
+                self.assertEqual(
+                    body["last_job_results"]["***4321"]["status"], "done"
+                )
+
+                guarded = AsyncMock(return_value=None)
+                self.start_patch(
+                    patch.object(bot, "_process_admin_update_guarded", new=guarded)
+                )
+                self.start_patch(
+                    patch.object(bot, "BOT_TOKEN", "123456:fake-test-token")
+                )
+                self.start_patch(
+                    patch.dict(os.environ, {"TELEGRAM_WEBHOOK_SECRET": ""})
+                )
+                secret = bot._telegram_webhook_secret()
+                self.assertTrue(secret)
+
+                # The webhook URL is public; without the secret token
+                # Telegram registers at setWebhook time, a POST is a
+                # forgery and must not reach update processing.
+                missing = await client.post("/webhook", json={"update_id": 1})
+                self.assertEqual(missing.status_code, 403)
+                wrong = await client.post(
+                    "/webhook",
+                    json={"update_id": 1},
+                    headers={"X-Telegram-Bot-Api-Secret-Token": "forged"},
+                )
+                self.assertEqual(wrong.status_code, 403)
+                guarded.assert_not_called()
+
+                accepted = await client.post(
+                    "/webhook",
+                    json={"update_id": 1},
+                    headers={"X-Telegram-Bot-Api-Secret-Token": secret},
+                )
+                self.assertEqual(accepted.status_code, 200)
+                self.assertTrue(accepted.json()["ok"])
+                guarded.assert_called_once()
+        finally:
+            bot.LAST_JOB_RESULTS.pop(fake_chat, None)
+            bot.ACTIVE_JOB_STATE.pop(fake_chat, None)
+
     async def test_worker_api_auth_and_health(self):
         async with self.api_client() as client:
             health = await client.get("/health")
@@ -3317,6 +3480,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["edit_sync"],
                 "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
+            )
+            self.assertEqual(
+                health.json()["telegram_webhook_auth"], "secret_token_header"
             )
             self.assertEqual(
                 health.json()["script_plain_text_fallback"],
