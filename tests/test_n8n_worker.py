@@ -5603,6 +5603,50 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # A half-length summary is still refused.
         self.assertGreater(bot._minimum_script_chars(734), 367)
 
+    def test_script_target_chars_uses_learned_edge_rate(self):
+        # Production evidence: a script sized at the old static
+        # 6.5 chars/sec for a 01:52 target produced 05:41 of Edge
+        # narration, and calibration then shredded most of it to
+        # fit -- heard as broken speech.  Planning must use the
+        # Edge voice's measured speed instead.
+        self.start_patch(patch.dict(bot._LEARNED_TTS_CPS, {}, clear=True))
+        self.start_patch(
+            patch.object(bot, "TTS_PROVIDER_ORDER", ("edge", "gemini"))
+        )
+        # 125.5s source, 90% coverage, Edge seed 2.3 chars/sec.
+        self.assertEqual(bot.script_target_chars(125.5, {}), 259)
+        bot._record_learned_tts_cps("edge", 2.0)
+        self.assertEqual(bot._learned_tts_cps("edge"), 2.0)
+        self.assertEqual(bot.script_target_chars(125.5, {}), 225)
+        # Updates are smoothed; absurd measurements are clamped.
+        bot._record_learned_tts_cps("edge", 3.0)
+        self.assertEqual(bot._learned_tts_cps("edge"), 2.5)
+        bot._record_learned_tts_cps("gemini", 500.0)
+        self.assertEqual(bot._learned_tts_cps("gemini"), bot.TTS_CPS_MAX)
+        # An explicit user rate still overrides the learned one.
+        self.assertEqual(
+            bot.script_target_chars(100, {"rate": 10.0, "speed": 2.0}),
+            1800,
+        )
+
+    def test_trim_text_never_breaks_sentences_or_graphemes(self):
+        s1 = "ကျွန်တော် အိမ်ပြန်ရောက်လာခဲ့တယ်။"
+        s2 = "အမေက ထမင်းချက်နေတယ်။"
+        s3 = "ကျွန်တော် အရမ်းပျော်သွားတယ်။"
+        text = s1 + s2 + s3
+        # Budget inside sentence 2 -> keep sentence 1 whole.
+        self.assertEqual(
+            bot._trim_text_to_char_budget(text, len(s1) + 5), s1
+        )
+        # Budget inside sentence 1 -> keep sentence 1 whole rather
+        # than slicing it mid-word/mid-grapheme.
+        self.assertEqual(bot._trim_text_to_char_budget(text, 6), s1)
+        # Punctuation-free text still trims, at a grapheme-safe spot.
+        plain = "ကျွန်တော်" + "က" * 91
+        cut = bot._trim_text_to_char_budget(plain, 50)
+        self.assertEqual(len(cut), 50)
+        self.assertTrue(cut.startswith("ကျွန်တော်"))
+
     def test_tts_speech_config_shapes(self):
         new_cfg = bot._tts_speech_config("Charon", "voice")
         self.assertEqual(new_cfg.voice_config.voice, "Charon")

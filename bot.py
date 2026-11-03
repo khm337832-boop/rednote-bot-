@@ -4432,6 +4432,74 @@ def _settings_coverage_ratio(settings: dict = None) -> float:
     return float(s["coverage"]) / 100.0
 
 
+# learned speaking speed per TTS provider, in chars/sec as
+# counted by script_total_chars.  Production evidence: a script
+# sized for a 01:52 target at the old static 6.5 chars/sec
+# produced 05:41 of Edge narration, so calibration had to shred
+# most of the script away to fit -- and the user heard that
+# shredding as broken speech.  Planning must use the voice's
+# *measured* speed: seeded per provider, then updated (clamped
+# and smoothed) after every measured TTS round.
+TTS_CPS_SEED = {"edge": 2.3, "gemini": SCRIPT_CHARS_PER_SEC}
+TTS_CPS_MIN = 1.2
+TTS_CPS_MAX = 9.0
+_LEARNED_TTS_CPS: dict = {}
+
+
+def _primary_tts_provider() -> str:
+    for provider in TTS_PROVIDER_ORDER:
+        if provider == "edge" and not EDGE_TTS_FALLBACK_ENABLED:
+            continue
+        return provider
+    return "gemini"
+
+
+def _learned_tts_cps(provider: str = "") -> float:
+    key = str(provider or "") or _primary_tts_provider()
+    value = _LEARNED_TTS_CPS.get(key)
+    if value:
+        return float(value)
+    return float(TTS_CPS_SEED.get(key, SCRIPT_CHARS_PER_SEC))
+
+
+def _record_learned_tts_cps(provider: str, effective_cps) -> None:
+    if not provider:
+        return
+    try:
+        measured = float(effective_cps or 0)
+    except (TypeError, ValueError):
+        return
+    if measured <= 0:
+        return
+    measured = min(TTS_CPS_MAX, max(TTS_CPS_MIN, measured))
+    old = _LEARNED_TTS_CPS.get(provider)
+    if old:
+        _LEARNED_TTS_CPS[provider] = round(
+            0.5 * float(old) + 0.5 * measured, 4
+        )
+    else:
+        _LEARNED_TTS_CPS[provider] = round(measured, 4)
+
+
+def _planning_chars_per_second(settings: dict = None) -> tuple:
+    """Chars/sec for sizing a script *before* TTS.
+
+    Returns ``(rate, includes_speed)``: a learned rate already
+    embodies the voice-speed setting it was measured under, so
+    callers must not multiply it by speed again.  An explicit
+    user rate (the button setting changed away from the shipped
+    default) still wins and does not include speed.
+    """
+    raw = settings or {}
+    try:
+        user_rate = float(raw.get("rate") or 0)
+    except (TypeError, ValueError, AttributeError):
+        user_rate = 0.0
+    if user_rate > 0 and abs(user_rate - SCRIPT_CHARS_PER_SEC) > 1e-9:
+        return user_rate, False
+    return _learned_tts_cps(), True
+
+
 def _settings_script_rate(settings: dict = None) -> float:
     s = {**DEFAULT_SETTINGS, **(settings or {})}
     try:
@@ -4605,8 +4673,8 @@ def script_target_chars(chunk_dur: float, settings: dict = None) -> int:
     measured TTS rate for this exact job/voice.
     """
     ratio = _settings_coverage_ratio(settings)
-    rate = _settings_script_rate(settings)
-    speed = _settings_speed(settings)
+    rate, includes_speed = _planning_chars_per_second(settings)
+    speed = 1.0 if includes_speed else _settings_speed(settings)
     return int(max(0.0, float(chunk_dur or 0)) * ratio * rate * speed)
 
 
@@ -4624,19 +4692,65 @@ def sort_scenes(scenes: list) -> list:
     return sorted(valid, key=_start)
 
 
+_SENTENCE_ENDERS = "။!?…"
+
+
+def _grapheme_safe_cut(value: str, budget: int) -> int:
+    """Largest cut index <= budget that does not split a grapheme.
+
+    Cutting between a Myanmar base consonant and its vowel/medial
+    signs leaves malformed text that TTS stumbles over -- one of
+    the ways over-trimmed scripts turned into broken speech.
+    """
+    index = min(max(0, int(budget or 0)), len(value))
+    while 0 < index < len(value):
+        nxt = value[index]
+        prev = value[index - 1]
+        if unicodedata.category(nxt).startswith("M") or prev in (
+            "\u1039",  # virama: next char is its stacked consonant
+            "\u103a",  # asat: killer for the previous syllable
+        ):
+            index -= 1
+            continue
+        break
+    return index
+
+
 def _trim_text_to_char_budget(text: str, budget: int) -> str:
+    """Shorten text toward ``budget`` chars without breaking speech.
+
+    Cut ladder: last sentence end inside the budget, then the
+    first whole sentence (slightly over budget -- a complete
+    thought beats an on-budget fragment), then a clause comma /
+    space for sentence-less text, and only for punctuation-free
+    fragments a grapheme-safe cut.  The old
+    exact-budget slice cut words and grapheme clusters in half;
+    after re-TTS those fragments were heard as broken speech --
+    worst when a 341s narration had to become 112s and every
+    scene lost two thirds of its text mid-word.
+    """
     value = str(text or "").strip()
     budget = max(0, int(budget or 0))
     if len(value) <= budget:
         return value
     if budget <= 0:
         return ""
-    cut = value.rfind("။", 0, budget)
-    # Keep a complete sentence when it does not remove too much of the
-    # scene; otherwise use the exact character budget as a last resort.
-    if cut >= max(25, int(budget * 0.55)):
-        return value[:cut + 1].strip()
-    return value[:budget].strip()
+    ender_positions = [
+        i for i, ch in enumerate(value) if ch in _SENTENCE_ENDERS
+    ]
+    inside = [i for i in ender_positions if i < budget]
+    if inside:
+        return value[: inside[-1] + 1].strip()
+    if ender_positions:
+        return value[: ender_positions[0] + 1].strip()
+    fair = max(10, int(budget * 0.4))
+    for sep in ("၊", " "):
+        cut = value.rfind(sep, 0, budget)
+        if cut >= fair:
+            if sep == "၊":
+                return value[: cut + 1].strip()
+            return value[:cut].strip()
+    return value[: _grapheme_safe_cut(value, budget)].strip()
 
 
 def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
@@ -4710,6 +4824,7 @@ _SPOKEN_STYLE_GUIDE = """
 - ဥပမာ ✅: "ကျွန်တော် အိမ်ပြန်ရောက်လာခဲ့တယ်။ အမေ့ကို မြင်လိုက်ရတော့ ကျွန်တော် အံ့သြသွားတယ်။"
 - စာကြောင်းတွေကို တိုတိုထားပါ — တစ်ကြောင်းကို စာလုံး ၂၅ လုံးထက် မရှည်ပါစေနှင့်။ ရှည်တဲ့ စာကြောင်းကို နှစ်ကြောင်း ခွဲရေးပါ။ အသံနားထောင်ရတာ ရှင်းလင်း သဘာဝကျဖို့ အရေးကြီးသည်။
 - သူငယ်ချင်းတစ်ယောက်ကို ဇာတ်လမ်းပြန်ပြောပြနေသလို ရေးပါ။ ဒါပေမဲ့ slang အလွန်အကျွံ (ဗျာ၊ ရှင်၊ ဟဲဟဲ စသည်) မသုံးပါနှင့်။
+- အရေးကြီးတဲ့ စကားပြောခန်းတွေမှာ ဇာတ်ကောင်တွေ ပြောတဲ့စကားကို တိုက်ရိုက်ပုံစံနဲ့ ထည့်ပြောပါ (ဥပမာ: အဖေက \"ဒီနေ့ ငါးအကြီးကြီး ရခဲ့တယ်\" လို့ ပြောတယ်)။ နားထောင်သူက ဇာတ်လမ်းထဲမှာ ကိုယ်တိုင် ပါနေသလို ခံစားရဖို့ ဖြစ်ပါတယ်။ ဒါပေမဲ့ စာသားတစ်ခုလုံးက ကျွန်တော်/ကျွန်မ ပြန်ပြောပြနေတဲ့ ပထမလူပုံစံကနေ မလွဲစေပါနှင့်။
 """.strip()
 
 
@@ -4828,7 +4943,11 @@ async def build_chunk_recap(
     if script_only and has_prepared_script:
         raise ValueError("script_only cannot be combined with prepared_script")
     coverage_ratio = _settings_coverage_ratio(st)
-    chars_rate = _settings_script_rate(st)
+    _plan_rate, _plan_includes_speed = _planning_chars_per_second(st)
+    chars_rate = (
+        _plan_rate if _plan_includes_speed
+        else _plan_rate * _settings_speed(st)
+    )
     client = _make_gemini_client()
     start_fmt = fmt_time(global_start)
     end_fmt = fmt_time(global_end)
@@ -4837,8 +4956,9 @@ async def build_chunk_recap(
     target_chars = script_target_chars(chunk_dur, st)
     target_seconds = chunk_dur * coverage_ratio
     # Keep the requested scene count and per-scene length mathematically
-    # consistent.  The old values required at least 15 x 80 chars even for
-    # a 120s part whose full 90% target is only about 702 chars.
+    # consistent.  The old values required at least 15 x 80 chars even
+    # for a 120s part whose full 90% target is only a few hundred chars
+    # at the (learned) measured speed of the actual TTS voice.
     scene_count = max(1, min(15, int(round(float(chunk_dur or 0) / 12.0)) or 1))
     # Models reliably undershoot explicit character counts, which used
     # to trigger extra full-video top-up calls on most windows (each
@@ -5395,6 +5515,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 raise RuntimeError(
                     f"Gemini TTS produced too many silent scenes: {silent_count}/{len(clips)}" + _last_tts_error_suffix()
                 )
+            _record_learned_tts_cps(
+                _LAST_TTS_PROVIDER,
+                measurements.get("effective_chars_per_second"),
+            )
             duration_status = _duration_status(audio_seconds, chunk_dur, st)
             calibration_history.append({
                 "round": calibration_round,
@@ -7433,8 +7557,8 @@ async def _worker_stage_transcribe(state: dict, tracker=None):
 
 def _rewrite_target_chars_for_duration(duration_seconds: float, settings: dict = None) -> int:
     coverage_ratio = _settings_coverage_ratio(settings)
-    rate = _settings_script_rate(settings)
-    speed = _settings_speed(settings)
+    rate, includes_speed = _planning_chars_per_second(settings)
+    speed = 1.0 if includes_speed else _settings_speed(settings)
     return max(
         0,
         int(float(duration_seconds or 0) * coverage_ratio * rate * speed),
@@ -8575,6 +8699,10 @@ async def _worker_stage_tts(state: dict, tracker=None):
                 raise WorkerJobError(
                     f"Gemini TTS produced too many silent scenes: {round_silent}/{len(scenes)}" + _last_tts_error_suffix()
                 )
+            _record_learned_tts_cps(
+                _LAST_TTS_PROVIDER,
+                measurements.get("effective_chars_per_second"),
+            )
             narration_now = float(measurements.get("narration_seconds") or 0)
             calibration_history.append({
                 "round": calibration_round,
@@ -8681,6 +8809,13 @@ async def _worker_stage_tts(state: dict, tracker=None):
                 )
 
         final_measurements = _narration_measurements(scenes, clips, settings)
+        if int(final_measurements.get("silent_count") or 0) <= max(
+            1, int(len(scenes) * 0.25)
+        ):
+            _record_learned_tts_cps(
+                _LAST_TTS_PROVIDER,
+                final_measurements.get("effective_chars_per_second"),
+            )
         final_narration = float(final_measurements.get("narration_seconds") or 0)
         bad_fp_groups = []
         for scene in scenes:
@@ -13471,7 +13606,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.14-audio-smooth"
+BUILD_VERSION = "v5.15-right-sized-script"
 BUILD_FEATURES = 20
 
 
@@ -13517,6 +13652,10 @@ async def root():
         "tts_provider_order": list(TTS_PROVIDER_ORDER),
         "audio_pipeline": "per_scene_validated_trim_fade_master_loudnorm",
         "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
+        "learned_tts_chars_per_second": {
+            k: round(float(v), 3) for k, v in sorted(_LEARNED_TTS_CPS.items())
+        },
+        "script_planning_chars_per_second": round(_learned_tts_cps(), 3),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -13600,6 +13739,10 @@ async def health():
         "tts_provider_order": list(TTS_PROVIDER_ORDER),
         "audio_pipeline": "per_scene_validated_trim_fade_master_loudnorm",
         "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
+        "learned_tts_chars_per_second": {
+            k: round(float(v), 3) for k, v in sorted(_LEARNED_TTS_CPS.items())
+        },
+        "script_planning_chars_per_second": round(_learned_tts_cps(), 3),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,

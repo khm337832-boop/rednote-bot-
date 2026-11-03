@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.14-audio-smooth` is a **one-shot automatic flow**: the user
+Version `v5.15-right-sized-script` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -208,11 +208,19 @@ source duration.
 
 Character counts are only the first estimate — the pre-TTS char
 gate is a coarse anti-summary floor (85% of the estimate), not the
-duration guarantee. After TTS, the bot
+duration guarantee. The estimate itself is sized with the speaking
+speed the bot has *measured* for the active TTS provider (learned
+per provider after every measured round, seeded from production
+evidence; `/healthz` shows `script_planning_chars_per_second` and
+`learned_tts_chars_per_second`). Sizing with a static 6.5 chars/sec
+once wrote a script three times too long for the Edge Burmese voice
+(05:41 of narration for a 01:52 target), and the forced trim that
+followed shredded sentences — heard as broken speech. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
 changed scenes are synthesized again; if it is long, scenes are shortened
-proportionally without deleting the ending. Calibration targets are
+proportionally without deleting the ending, cutting only at sentence
+boundaries — never mid-sentence or mid-grapheme. Calibration targets are
 computed from the *effective* rate (all script chars over all produced
 speech seconds, including any quiet slices) so trims always converge --
 the spoken-only rate inflates when some clips measure as silent and
@@ -318,7 +326,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.14-audio-smooth"`,
+URLs must show `"version":"v5.15-right-sized-script"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
