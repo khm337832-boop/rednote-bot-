@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.17-script-recovery` is a **one-shot automatic flow**: the user
+Version `v5.18-duration-calibration` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -377,6 +377,46 @@ v5.17 changes three things:
   guesswork. The message no longer claims the quota is exhausted when the
   models clearly answered.
 
+## v5.18 — measured-duration calibration that can actually converge
+
+A job died with
+
+`Measured TTS duration is outside the final-duration target after
+calibration: 124.2s actual, target 113.0s (acceptable 110.5-115.5s from
+125.5s input); refusing to render a video with the wrong duration`
+
+after **three** full attempts. The narration was only ~10% too long, and
+the script *was* being trimmed — but the trim reasoned in **characters**
+while the only boundary it allowed was a whole sentence. One Burmese
+sentence is 10-15 seconds of speech, so each "improvement" jumped the
+narration from ~124s to ~100s and back: the ±2% window (2.3s) was far
+narrower than the only control the pipeline had. The gate then refused
+the video instead of finishing it.
+
+v5.18 fixes the control loop, not the gate:
+
+- **Trim by predicted duration, not by characters.** The character budget
+  is derived from *this job's measured chars/second*, so removing the
+  right number of characters becomes removing the right number of
+  seconds (`_trim_scenes_for_duration`).
+- **Two-phase trimming.** Whole trailing sentences (or whole
+  single-sentence scenes) go first, and the last few characters — the
+  part that actually decides whether the ±3% window is met — are cut from
+  the tail of the last scenes at a **word boundary**. A cut never lands
+  inside a word, never leaves a dangling Burmese combining mark (which
+  the TTS reads as a broken syllable), and always ends on `။`.
+- **The window is ±3% of the source** (was ±2%). Word-level cutting moves
+  in ~1-3s steps, so ±2% (2.3s on a 2-minute window) was tighter than the
+  mechanism could physically hit; ±3% still pins the final video to the
+  requested 90% within a second or two.
+- **Nothing is ever stretched or padded.** Only text the model wrote is
+  removed, in order, from the end.
+
+The same calibration (and therefore the same failure) is visible on
+`/health` as `last_duration_calibration` — target, window, and every
+round's measured seconds/chars/status — and the terminal error now lists
+those rounds instead of a bare "refusing to render".
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -408,12 +448,14 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.17-script-recovery"`,
+URLs must show `"version":"v5.18-duration-calibration"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
-`"script_trim_policy":"sentence_boundaries_only"`,
+`"script_trim_policy":"sentence_then_word_tail_boundaries"`,
+`"duration_calibration":"measured_rate_budget_sentences_then_word_tails"`,
+`"last_duration_calibration":{}`,
 `"tts_resilience":"per_scene_retries_then_sentence_pieces_then_fresh_pass"`,
 `"last_tts_retry_recovered_scenes":0`, `"edge_tts_timeout_seconds":45`,
 `"script_plain_text_fallback":"plain_text_retelling_split_locally_then_prose_salvage"`,

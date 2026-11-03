@@ -482,6 +482,12 @@ _LAST_SCRIPT_RECOVERY = ""
 # the same wait.
 _LAST_SCRIPT_ANSWERED = False
 
+# Last measured-duration calibration: target, window and every round's
+# measured seconds.  The failure "refusing to render a video with the
+# wrong duration" is useless without it (production report: 124.2s of a
+# 125.5s window, target 113s, after three full attempts).
+_LAST_DURATION_CALIBRATION: dict = {}
+
 # Plain-text script fallback: when Gemini's JSON answers carry no usable
 # scenes, one more call asks for a plain spoken first-person retelling
 # (no JSON), which is split into scenes locally.  A model that mangles
@@ -640,7 +646,11 @@ SCRIPT_MIN_NARRATION_RATIO = 0.90  # legacy metric name; final gates use window 
 TRANSCRIPT_MIN_SPAN_RATIO = 0.75  # transcript must span most of the source
 DURATION_CALIBRATION_ROUNDS = 4  # measured TTS -> expand/trim -> TTS again
 FIRST_PERSON_REPAIR_ROUNDS = 3   # rewrite scenes missing ကျွန်တော်/ကျွန်မ
-FINAL_DURATION_TOLERANCE_RATIO = 0.02  # final must be target ±2% of source
+# ±3% of the source window.  Text-driven trimming can only move in
+# whole words (~1-3s of speech), so a ±2% window (2.3s here) was
+# tighter than the control we actually have and made calibration
+# oscillate long <-> short and then refuse a fixable video.
+FINAL_DURATION_TOLERANCE_RATIO = 0.03  # final must be target ±3% of source
 FINAL_DURATION_TOLERANCE_MIN_SECONDS = 0.35
 
 # --- Learned script length rate (chars per second of real narration) ---
@@ -5207,6 +5217,48 @@ def _trim_text_to_char_budget(text: str, budget: int) -> str:
     return value[:budget].strip()
 
 
+# Burmese combining marks: a cut that ends on one of these leaves a
+# dangling mark that the TTS reads as a broken syllable.
+_BURMESE_TRAILING_JUNK = set(
+    # Dependent vowels (U+102B-U+1032) and medials (U+103B-U+103E) can
+    # never end a Burmese word, so a cut that stops on one leaves a
+    # broken syllable for the TTS.  Word-final marks that ARE legitimate
+    # -- asat \u103a ("\u1000\u103a"), dot below \u1037, visarga \u1038 -- are
+    # deliberately absent: "\u1000\u103b\u103d\u1014\u103a\u1010\u1031\u102c\u103a" ends on \u103a and is a
+    # perfectly good word.
+    "\u102b\u102c\u102d\u102e\u102f\u1030\u1031\u1032"
+    "\u103b\u103c\u103d\u103e"
+)
+
+
+def _strip_trailing_burmese_junk(text: str) -> str:
+    """Drop trailing combining marks / spaces left by a hard cut.
+
+    A cut that stops right after a dependent vowel or tone mark leaves a
+    dangling mark that the TTS reads as a broken syllable.
+    """
+    value = str(text or "").rstrip()
+    while value and value[-1] in _BURMESE_TRAILING_JUNK:
+        value = value[:-1].rstrip()
+    return value
+
+
+def _word_boundary_prefixes(text: str):
+    """Yield shorter prefixes of ``text`` cut only at spaces / «၊»."""
+    value = str(text or "").strip()
+    if not value:
+        return
+    seen = set()
+    for index, char in enumerate(value):
+        if char not in " ၊":
+            continue
+        prefix = _strip_trailing_burmese_junk(value[:index])
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        yield prefix
+
+
 def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
     """Shorten the script only at sentence boundaries.
 
@@ -5224,6 +5276,14 @@ def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
     above) the requested size, so this is a small correction -- usually
     dropping the last sentence of a few scenes -- instead of deleting two
     thirds of the narration.
+
+    v5.18: whole sentences are far too coarse to hit a ±2% duration
+    window (one 26-character Burmese sentence is ~12 seconds of speech),
+    which is why calibration used to jump from "long" to "short" and back
+    and then refuse a fixable 124s narration of a 125.5s window.  Trimming
+    therefore runs in two phases: whole sentences/scenes first, but never
+    past the requested budget, and then the few remaining characters are
+    taken out of the *tail* of the last scenes at a word boundary.
     """
     trimmed = [dict(s) for s in (scenes or []) if isinstance(s, dict)]
     desired = max(0, int(desired_total_chars or 0))
@@ -5235,10 +5295,14 @@ def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
         len(_split_sentences(scene.get("burmese") or "")) for scene in trimmed
     )
     attempts = 0
+    # Phase 1 -- remove whole trailing sentences (or whole single-sentence
+    # scenes), but never below the requested budget.  Undershooting is
+    # what used to cost an expensive Gemini top-up call and made the
+    # calibration oscillate long -> short -> long.
     while total > desired and attempts < max_attempts:
         attempts += 1
         excess = total - desired
-        best = None  # (distance from the excess, scene index, new text)
+        best = None  # (left-over excess, scene index, new text)
         for index, scene in enumerate(trimmed):
             current = str(scene.get("burmese") or "").strip()
             if not current:
@@ -5246,28 +5310,69 @@ def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
             sentences = _split_sentences(current)
             if len(sentences) > 1:
                 shortened = "".join(sentences[:-1]).strip()
-            elif sentences and not _text_is_sentence_structured(current):
-                # No sentence terminator at all: the only boundary left is
-                # a word boundary / exact budget.
-                shortened = _trim_text_to_char_budget(
-                    current, max(1, len(current) - excess)
-                )
             else:
                 # One whole sentence that cannot be split: remove the
                 # scene instead of shipping a half sentence.
                 shortened = ""
             if shortened == current:
                 continue
-            distance = abs((len(current) - len(shortened)) - excess)
+            removed = len(current) - len(shortened)
+            if removed > excess:
+                # Removing this unit would land *under* the budget by more
+                # than phase 2 can add back (it cannot add at all), and an
+                # undershoot costs a whole Gemini top-up call and made the
+                # old calibration oscillate long -> short -> long.  Leave
+                # the remainder to the word-boundary phase.
+                continue
+            distance = excess - removed
             if best is None or distance < best[0]:
                 best = (distance, index, shortened)
         if best is None:
             break
-        trimmed[best[1]]["burmese"] = best[2]
-        new_total = script_total_chars(trimmed)
-        if new_total >= total:
+        # Only take a step that actually gets closer to the budget:
+        # removing a unit that is much larger than what is left to remove
+        # would overshoot by seconds of speech and start the long/short
+        # oscillation this phase exists to avoid.
+        if best[0] >= abs(total - desired):
             break
-        total = new_total
+        trimmed[best[1]]["burmese"] = best[2]
+        total = script_total_chars(trimmed)
+
+    # Phase 2 -- the remaining few characters, taken out of the tail of
+    # the last scenes at a word boundary.  A ±2% window is only a handful
+    # of characters wide, so this phase is what actually makes the
+    # measured duration land on target.  Every word-boundary cut of the
+    # last few scenes is scored and the *closest* one wins, so the script
+    # is not pushed below the budget (an undershoot costs an expensive
+    # Gemini top-up and used to make calibration oscillate).
+    if total > desired:
+        # "Leave the text alone" is itself a candidate: if no word cut
+        # lands closer to the budget, keeping the few extra characters
+        # (a fraction of a second of speech) is the better trade.
+        best = (abs(total - desired), None, None)
+        checked = 0
+        for index in range(len(trimmed) - 1, -1, -1):
+            current = str(trimmed[index].get("burmese") or "").strip()
+            if not current:
+                continue
+            checked += 1
+            if checked > 3:
+                break
+            min_keep = max(8, int(len(current) * 0.4))
+            for candidate in _word_boundary_prefixes(current):
+                if not candidate or len(candidate) >= len(current):
+                    continue
+                if len(candidate) < min_keep:
+                    continue
+                new_total = total - (len(current) - len(candidate))
+                distance = abs(new_total - desired)
+                if best is None or distance < best[0]:
+                    best = (distance, index, candidate)
+        if best[1] is not None:
+            text = str(best[2] or "").strip()
+            if text and text[-1] not in SCRIPT_SENTENCE_END_CHARS:
+                text = text + "။"
+            trimmed[best[1]]["burmese"] = text
 
     kept = [scene for scene in trimmed if str(scene.get("burmese") or "").strip()]
     if not kept:
@@ -5283,6 +5388,58 @@ def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
                 kept = [fallback]
                 break
     return kept
+
+
+def _predicted_narration_seconds(
+    total_chars: int, scene_count: int, measurements: dict
+) -> float:
+    """Seconds this text would take at the rate *this job* measured."""
+    m = measurements or {}
+    rate = float(m.get("effective_chars_per_second") or 0)
+    pause = float(m.get("pause_seconds") or 0)
+    if rate <= 0:
+        return 0.0
+    return (float(max(0, int(total_chars or 0))) / rate) + (
+        pause * max(0, int(scene_count or 0) - 1)
+    )
+
+
+def _trim_scenes_for_duration(
+    scenes: list,
+    measurements: dict,
+    target_seconds: float,
+    *,
+    tolerance_seconds: float = 0.0,
+) -> list:
+    """Shorten the script so *the measured rate* lands on the target.
+
+    The character budget is derived from this job's measured
+    chars/second, so a character-accurate trim is a duration-accurate
+    trim.  Trimming itself cuts whole trailing sentences first and then
+    the last few characters at a word boundary (see
+    ``trim_scenes_proportionally``), which is what makes a ±3% window
+    reachable at all: one whole Burmese sentence is 10-15 seconds of
+    speech, so sentence-only trimming used to jump from "long" straight
+    to "short" (production: 124.2s narration, target 113s, no
+    convergence, job refused after three attempts).
+
+    ``tolerance_seconds`` is accepted for callers that want to document
+    the window they are aiming at; the budget targets its centre.
+    """
+    current = [dict(scene) for scene in (scenes or []) if isinstance(scene, dict)]
+    if not current:
+        return current
+    m = measurements or {}
+    rate = float(m.get("effective_chars_per_second") or 0)
+    pause = float(m.get("pause_seconds") or 0)
+    target = float(target_seconds or 0)
+    if rate <= 0 or target <= 0:
+        return current
+    palette = pause * max(0, len(current) - 1)
+    desired_chars = int(
+        max(1, round(max(0.1, target - palette) * rate))
+    )
+    return trim_scenes_proportionally(current, desired_chars)
 
 
 def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
@@ -5587,10 +5744,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # Fresh diagnostics per window: /healthz must describe *this* job,
     # never a previous chunk's leftovers.
     global _LAST_SCRIPT_ERROR, _LAST_SCRIPT_RECOVERY
-    global _LAST_SCRIPT_RAW_PREVIEW
+    global _LAST_SCRIPT_RAW_PREVIEW, _LAST_DURATION_CALIBRATION
     _LAST_SCRIPT_ERROR = ""
     _LAST_SCRIPT_RECOVERY = ""
     _LAST_SCRIPT_RAW_PREVIEW = ""
+    _LAST_DURATION_CALIBRATION = {}
 
     if has_prepared_script:
         # Manual per-part flow: the script was already generated and stored
@@ -6219,19 +6377,35 @@ JSON ကိုသာပြန်ပေးပါ:
                 if script_total_chars(scenes) <= current_chars:
                     break
             elif duration_status == "long":
-                desired_total_chars = _calibration_desired_total_chars(
-                    measurements, current_chars, target_final_seconds,
-                    expand=False,
-                )
                 await tracker.update(
                     f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ရှည်နေလို့ "
                     f"ပစ်မှတ် {fmt_time(target_final_seconds)} ဖြစ်အောင် ချိန်နေပါသည်...",
                     force=True,
                 )
-                trimmed = trim_scenes_proportionally(scenes, desired_total_chars)
+                trimmed = _trim_scenes_for_duration(
+                    scenes,
+                    measurements,
+                    target_final_seconds,
+                    tolerance_seconds=max(
+                        0.0, (duration_high - duration_low) / 2.0
+                    ),
+                )
                 if script_total_chars(trimmed) >= current_chars:
+                    # Nothing left to cut at any boundary: report it
+                    # instead of silently re-synthesizing the same text.
+                    logger.warning(
+                        "Chunk %s duration calibration could not trim "
+                        "%s chars at %s scenes (measured %s chars/s)",
+                        chunk_index,
+                        current_chars,
+                        len(scenes),
+                        measurements.get("effective_chars_per_second"),
+                    )
                     break
                 scenes = sort_scenes(trimmed)
+                calibration_history[-1]["trimmed_to_chars"] = (
+                    script_total_chars(scenes)
+                )
             else:
                 break
 
@@ -6239,13 +6413,48 @@ JSON ကိုသာပြန်ပေးပါ:
     finally:
         await _delete_gemini_file(client, video_file)
 
+    if duration_status == "on_target":
+        _LAST_DURATION_CALIBRATION = {
+            "chunk_index": chunk_index,
+            "status": "on_target",
+            "target_seconds": round(float(target_final_seconds), 3),
+            "window": [round(float(duration_low), 3), round(float(duration_high), 3)],
+            "source_seconds": round(float(chunk_dur), 3),
+            "actual_seconds": round(float(audio_seconds), 3),
+            "history": calibration_history,
+            "measured_chars_per_second": measurements.get(
+                "effective_chars_per_second"
+            ),
+        }
     if duration_status != "on_target":
+        history_text = ", ".join(
+            f"r{item.get('round')}: {float(item.get('narration_seconds') or 0):.1f}s"
+            f"/{item.get('status')}"
+            f" ({item.get('spoken_chars_measured') or 0} chars)"
+            + (
+                f" -> trimmed to {item['trimmed_to_chars']} chars"
+                if item.get("trimmed_to_chars")
+                else ""
+            )
+            for item in calibration_history
+        )
+        _LAST_DURATION_CALIBRATION = {
+            "chunk_index": chunk_index,
+            "target_seconds": round(float(target_final_seconds), 3),
+            "window": [round(float(duration_low), 3), round(float(duration_high), 3)],
+            "source_seconds": round(float(chunk_dur), 3),
+            "history": calibration_history,
+            "measured_chars_per_second": measurements.get(
+                "effective_chars_per_second"
+            ),
+        }
         raise RuntimeError(
             "Measured TTS duration is outside the final-duration target after "
             f"calibration: {audio_seconds:.1f}s actual, target "
             f"{target_final_seconds:.1f}s (acceptable {duration_low:.1f}-"
             f"{duration_high:.1f}s from {chunk_dur:.1f}s input); "
-            "refusing to render a video with the wrong duration"
+            f"rounds: {history_text}; refusing to render a video with the "
+            "wrong duration"
         )
 
     out_w, out_h = compute_output_dims(
@@ -14201,7 +14410,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.17-script-recovery"
+BUILD_VERSION = "v5.18-duration-calibration"
 BUILD_FEATURES = 20
 
 
@@ -14268,7 +14477,11 @@ async def root():
         # (learned process-wide), not a hard-coded 6.5; the free Edge
         # Burmese voices speak ~2.1-2.5 chars/second.
         "script_length_rate": learned_script_rate_state(),
-        "script_trim_policy": "sentence_boundaries_only",
+        "script_trim_policy": "sentence_then_word_tail_boundaries",
+        "duration_calibration": (
+            "measured_rate_budget_sentences_then_word_tails"
+        ),
+        "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -14371,7 +14584,11 @@ async def health():
         # (learned process-wide), not a hard-coded 6.5; the free Edge
         # Burmese voices speak ~2.1-2.5 chars/second.
         "script_length_rate": learned_script_rate_state(),
-        "script_trim_policy": "sentence_boundaries_only",
+        "script_trim_policy": "sentence_then_word_tail_boundaries",
+        "duration_calibration": (
+            "measured_rate_budget_sentences_then_word_tails"
+        ),
+        "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",

@@ -824,7 +824,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         # A 10-minute source must produce a 9-minute final.  Voice speed
         # changes how much text is needed, never the requested final time.
-        self.assertEqual((target, low, high), (540.0, 528.0, 552.0))
+        # v5.18: the window is ±3% of the source (text-driven trimming can
+        # only move in whole words, ~1-3s, so ±2% was unreachable and made
+        # calibration oscillate long <-> short).
+        self.assertEqual((target, low, high), (540.0, 522.0, 558.0))
         self.assertEqual(bot.script_target_chars(100, settings), 1800)
         self.assertTrue(bot._duration_is_on_target(540, 600, settings))
         self.assertFalse(bot._duration_is_on_target(33, 600, settings))
@@ -1009,19 +1012,27 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(trimmed_total, original_total)
         for scene in trimmed:
             text = scene["burmese"].strip()
-            # Never a half sentence: the last character is a terminator.
+            # The result always ends on a terminator so the TTS does not
+            # read a flat, unfinished fragment.
             self.assertIn(text[-1], bot.SCRIPT_SENTENCE_END_CHARS)
-            # Only whole leading sentences of the source scene survive.
-            self.assertTrue(
-                any(source.startswith(text) for source in source_texts),
-                f"trimmed text is not a whole-sentence prefix: {text!r}",
-            )
+            # Only a leading part of the source scene survives: whole
+            # sentences first, and (v5.18) the last few characters may be
+            # cut at a word boundary -- never in the middle of a word and
+            # never leaving a dangling combining mark behind.
+            core = text
+            if not any(source.startswith(core) for source in source_texts):
+                core = core[:-1].rstrip()
+                self.assertTrue(
+                    any(source.startswith(core) for source in source_texts),
+                    f"trimmed text is not a prefix of its source: {text!r}",
+                )
+            self.assertNotIn(core[-1], bot._BURMESE_TRAILING_JUNK)
             self.assertTrue(bot._scene_is_first_person(text, MALE_PRONOUN))
-            for sentence in bot._split_sentences(text):
+            for sentence in bot._split_sentences(core):
                 self.assertTrue(
                     any(sentence in source for source in source_texts)
                 )
-        # Every surviving sentence is complete, not a fragment of one.
+        # Every surviving sentence that is not the trimmed tail is complete.
         for source in source_texts:
             for sentence in bot._split_sentences(source):
                 if sentence in "".join(scene["burmese"] for scene in trimmed):
@@ -1477,6 +1488,89 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
         "ffmpeg is not available",
     )
+    # --- v5.18: measured-duration calibration (production 124.2s/113s) ---
+    def test_duration_trim_lands_inside_the_window_from_measured_rate(self):
+        """Regression: a 125.5s window measuring 124.2s against a 113s target
+        used to fail with "refusing to render a video with the wrong
+        duration" after three full attempts.
+
+        One whole Burmese sentence is ~10-15s of speech, so a
+        sentence-only trim jumped from "long" to "short".  Trimming to the
+        character budget implied by the *measured* rate (with the tail cut
+        at a word boundary) has to land inside the window.
+        """
+        settings = dict(bot.DEFAULT_SETTINGS)
+        source_seconds = 125.5
+        target, low, high = bot._final_duration_window(source_seconds, settings)
+        pause = bot._settings_pause_seconds(settings)
+        sentence = "ကျွန်တော် ဒီနေ့ မနက်စာ စားပြီး အလုပ်သွားတယ်။"
+        scenes = [
+            {"start": index * 12.5, "end": (index + 1) * 12.5, "burmese": sentence}
+            for index in range(10)
+        ]
+        measured_seconds = 124.2
+        total_chars = bot.script_total_chars(scenes)
+        rate = total_chars / measured_seconds
+        measurements = {
+            "speech_seconds": measured_seconds,
+            "pause_seconds": pause,
+            "pause_total_seconds": pause * (len(scenes) - 1),
+            "narration_seconds": measured_seconds + pause * (len(scenes) - 1),
+            "measured_chars_per_second": rate,
+            "effective_chars_per_second": rate,
+        }
+
+        trimmed = bot._trim_scenes_for_duration(scenes, measurements, target)
+
+        self.assertLess(
+            bot.script_total_chars(trimmed), total_chars, "nothing was trimmed"
+        )
+        predicted = (
+            bot.script_total_chars(trimmed) / rate
+            + pause * (len(trimmed) - 1)
+        )
+        self.assertTrue(
+            low <= predicted <= high,
+            f"trimmed narration predicts {predicted:.1f}s, "
+            f"window is {low:.1f}-{high:.1f}s",
+        )
+        # Only the model's own words survive, in order.
+        for scene in trimmed:
+            text = scene["burmese"].strip()
+            self.assertTrue(sentence.startswith(text.rstrip("။")))
+            self.assertIn(text[-1], bot.SCRIPT_SENTENCE_END_CHARS)
+            self.assertNotIn(
+                text[-2] if len(text) > 1 else " ", bot._BURMESE_TRAILING_JUNK
+            )
+
+    def test_duration_trim_is_a_noop_without_a_measured_rate(self):
+        scenes = [
+            {"start": 0, "burmese": "ကျွန်တော် ပထမ scene ပါ။"},
+            {"start": 10, "burmese": "ကျွန်တော် ဒုတိယ scene ပါ။"},
+        ]
+        self.assertEqual(
+            bot._trim_scenes_for_duration(scenes, {}, 113.0), scenes
+        )
+        self.assertEqual(bot._trim_scenes_for_duration([], {}, 113.0), [])
+
+    def test_word_tail_cut_keeps_words_whole_and_endings_readable(self):
+        text = "ကျွန်တော် မနက်စာ စားပြီး အလုပ်သွားတယ်။ ညနေမှာ အိမ်ပြန်ခဲ့တယ်။"
+        source = text
+
+        trimmed = bot.trim_scenes_proportionally(
+            [{"start": 0, "burmese": text}, {"start": 20, "burmese": text}],
+            int(bot.script_total_chars([{"burmese": text}]) * 1.2),
+        )
+
+        self.assertTrue(trimmed)
+        for scene in trimmed:
+            value = scene["burmese"].strip()
+            self.assertTrue(value)
+            self.assertIn(value[-1], bot.SCRIPT_SENTENCE_END_CHARS)
+            core = value[:-1] if value[-1] in bot.SCRIPT_SENTENCE_END_CHARS else value
+            self.assertTrue(source.startswith(core), core)
+            self.assertNotIn(core[-1], bot._BURMESE_TRAILING_JUNK)
+
     async def test_direct_recap_sized_by_learned_rate_is_not_shredded(self):
         """v5.15 acceptance: a 2-minute window must reach ~108s because the
         script was *sized* right, not because calibration deleted two
@@ -1866,13 +1960,20 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot._duration_is_on_target(audio["total_narration_seconds"], 100, state["settings"]),
             audio["total_narration_seconds"],
         )
-        self.assertAlmostEqual(audio["total_narration_seconds"], 90.0, delta=1.0)
+        self.assertAlmostEqual(audio["total_narration_seconds"], 90.0, delta=3.0)
+        # ±3% of the 1800-character target: that is the whole band the
+        # calibration is allowed to land in (v5.18 widened it from ±2%).
         self.assertAlmostEqual(
-            script["coverage"]["actual_burmese_chars"], 1800, delta=36
+            script["coverage"]["actual_burmese_chars"], 1800, delta=54
         )
-        self.assertGreaterEqual(len(audio["duration_calibration_history"]), 3)
+        # Two rounds are enough now: v5.18 trims by *predicted duration*
+        # from the measured rate instead of by raw characters, so it hits
+        # the band on the first correction instead of overshooting.
+        self.assertGreaterEqual(len(audio["duration_calibration_history"]), 2)
         self.assertEqual(audio["duration_calibration_history"][0]["narration_seconds"], 45.0)
-        self.assertGreaterEqual(len(tts_calls), 3)
+        # One TTS pass per calibration round (+1 for the expand), so two
+        # rounds is exactly the fast, converging path.
+        self.assertGreaterEqual(len(tts_calls), 2)
         self.assertTrue(script["coverage"]["first_person"]["all_scenes_first_person"])
         self.assertEqual(state["stages"]["tts"]["status"], "done")
 
@@ -2574,7 +2675,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 places=3,
             )
             self.assertEqual(
-                health.json()["script_trim_policy"], "sentence_boundaries_only"
+                health.json()["script_trim_policy"],
+                "sentence_then_word_tail_boundaries",
             )
             self.assertEqual(
                 health.json()["tts_resilience"],
@@ -2585,6 +2687,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("last_script_raw_preview", health.json())
             self.assertIn("last_script_error_by_model", health.json())
             self.assertEqual(health.json()["last_script_recovery"], "")
+            self.assertIn("last_duration_calibration", health.json())
+            self.assertEqual(
+                health.json()["duration_calibration"],
+                "measured_rate_budget_sentences_then_word_tails",
+            )
             self.assertEqual(
                 health.json()["script_plain_text_fallback"],
                 "plain_text_retelling_split_locally_then_prose_salvage",
