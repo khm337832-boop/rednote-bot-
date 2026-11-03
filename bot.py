@@ -470,6 +470,24 @@ EDGE_TTS_FALLBACK_ENABLED = os.environ.get(
 ).strip().lower() not in ("0", "false", "no", "off")
 
 
+def _parse_tts_provider_order(raw: str):
+    order = []
+    for part in str(raw or "").split(","):
+        name = part.strip().lower()
+        if name in ("edge", "gemini") and name not in order:
+            order.append(name)
+    return tuple(order) or ("edge", "gemini")
+
+
+# User's standing rule: completely free, no queueing.  Edge TTS is
+# free with no plan quota and answers in seconds, so it goes first;
+# Gemini (original Charon) is the fallback if Edge ever fails.
+# Set TTS_PROVIDER_ORDER=gemini,edge to put Charon first again.
+TTS_PROVIDER_ORDER = _parse_tts_provider_order(
+    os.environ.get("TTS_PROVIDER_ORDER", "edge,gemini")
+)
+
+
 def _last_tts_error_suffix() -> str:
     return f" (last TTS error: {_LAST_TTS_ERROR})" if _LAST_TTS_ERROR else ""
 
@@ -3164,12 +3182,42 @@ async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voic
 
 
 async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str, settings: dict = None):
-    global _LAST_TTS_ERROR, _LAST_TTS_PROVIDER
+    """Synthesize one batch with the configured providers in order.
+
+    Default order is Edge (completely free, no quota queue) first,
+    then Gemini Charon -- see TTS_PROVIDER_ORDER.
+    """
     s = {**DEFAULT_SETTINGS, **(settings or {})}
-    voice_name = s.get("voice") or "Charon"
     voice_filter = build_voice_filter(s)
-    client = _make_gemini_client()
     joined = "\n\n".join(s_["burmese"] for s_ in batch)
+    for provider in TTS_PROVIDER_ORDER:
+        if provider == "edge":
+            if not EDGE_TTS_FALLBACK_ENABLED:
+                continue
+            clips = await _tts_one_batch_edge(
+                batch, batch_idx, total_batches, work_dir, s,
+                voice_filter, joined,
+            )
+        elif provider == "gemini":
+            clips = await _tts_one_batch_gemini(
+                batch, batch_idx, total_batches, work_dir, s,
+                voice_filter, joined,
+            )
+        else:  # pragma: no cover - parser only yields edge/gemini
+            continue
+        if clips is not None:
+            return clips
+        logger.warning(
+            f"TTS batch {batch_idx + 1}/{total_batches}: provider "
+            f"{provider} failed; trying next provider"
+        )
+    return None
+
+
+async def _tts_one_batch_gemini(batch, batch_idx, total_batches, work_dir, s, voice_filter, joined):
+    global _LAST_TTS_ERROR, _LAST_TTS_PROVIDER
+    voice_name = s.get("voice") or "Charon"
+    client = _make_gemini_client()
     # Current models want voice_config.voice; legacy preview models
     # want prebuilt_voice_config.voice_name.  Alternate per attempt.
     try:
@@ -3275,21 +3323,6 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                             os.remove(p)
                         except Exception:
                             pass
-
-    # Every Gemini TTS model failed (in production: free-tier plan
-    # quota exhausted).  A finished video in the fallback Burmese
-    # voice beats a failed job -- original Charon stays primary
-    # and automatically returns whenever Gemini works again.
-    if EDGE_TTS_FALLBACK_ENABLED:
-        logger.warning(
-            f"TTS batch {batch_idx + 1}/{total_batches}: all Gemini "
-            "TTS models failed -- trying Edge TTS fallback"
-        )
-        edge_clips = await _tts_one_batch_edge(
-            batch, batch_idx, total_batches, work_dir, s, voice_filter, joined
-        )
-        if edge_clips is not None:
-            return edge_clips
 
     return None
 
@@ -5143,8 +5176,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
         if _LAST_TTS_PROVIDER == "edge":
             await tracker.update(
-                "🎙️ Gemini အသံ quota ပြည့်နေလို့ အရန်အသံ (Edge မြန်မာအသံ) "
-                "ဖြင့် ဆက်လုပ်နေပါသည်...",
+                "🎙️ Edge မြန်မာအသံ (free) ဖြင့် အသံသွင်းထားပါသည်...",
                 force=True,
             )
         for calibration_round in range(DURATION_CALIBRATION_ROUNDS + 1):
@@ -13185,7 +13217,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.9-edge-tts-fallback"
+BUILD_VERSION = "v5.10-free-first-tts"
 BUILD_FEATURES = 20
 
 
@@ -13228,6 +13260,7 @@ async def root():
         "quota_exhausted_models": _quota_exhausted_active(),
         "last_tts_provider": _LAST_TTS_PROVIDER,
         "edge_tts_fallback_enabled": EDGE_TTS_FALLBACK_ENABLED,
+        "tts_provider_order": list(TTS_PROVIDER_ORDER),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -13308,6 +13341,7 @@ async def health():
         "quota_exhausted_models": _quota_exhausted_active(),
         "last_tts_provider": _LAST_TTS_PROVIDER,
         "edge_tts_fallback_enabled": EDGE_TTS_FALLBACK_ENABLED,
+        "tts_provider_order": list(TTS_PROVIDER_ORDER),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
