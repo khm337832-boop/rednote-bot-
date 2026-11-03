@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.18-duration-calibration` is a **one-shot automatic flow**: the user
+Version `v5.19-job-recovery` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -417,6 +417,39 @@ The same calibration (and therefore the same failure) is visible on
 round's measured seconds/chars/status — and the terminal error now lists
 those rounds instead of a bare "refusing to render".
 
+## v5.19 — a job can no longer die silently
+
+Production report: the progress message froze at "video ဖန်တီးနေပါသည်",
+then 📊 အလုပ်အခြေအနေ answered **"⚪ လက်ရှိ လုပ်နေတာ မရှိပါ။"** — as if the
+recap had never existed — and no error ever arrived.
+
+Cause: jobs live **only in process memory** (`ACTIVE_JOBS`), and Render
+restarts the process on every deploy/health recycle. A restart therefore
+erased a running job instantly: the progress message stopped updating,
+`/status` had nothing to report, and the chat never learned that its
+video was gone. Nothing was even broken in the pipeline — the process had
+simply been replaced mid-render.
+
+v5.19 makes the job registry survive that:
+
+- **Every job is mirrored to disk** (`active_jobs.json` in `WORK_ROOT`,
+  written atomically and throttled): `job_id`, current stage, started /
+  last-progress timestamps, plus the last outcome per chat. A progress
+  update heartbeats the registry even when Telegram throttles the edit.
+- **Startup recovery**: the next process reads the mirror, marks each
+  unfinished job `interrupted`, records it in `interrupted_jobs_last_restart`
+  on `/health`, and sends that chat a message — "🔁 Server ပြန် restart
+  ဖြစ်လို့ ဒီ job ရပ်သွားပါတယ် / ⏱ ရပ်သွားတဲ့အဆင့်: … / video/link ကို
+  ပြန်ပို့ပေးပါ" — instead of losing it.
+- **Stall watchdog** (every 60s, `JOB_STALL_SECONDS` = 1200s): a job that
+  stops reporting is cancelled, its slot released, and the chat told
+  which stage it stalled at. A dead job can no longer block the chat
+  forever.
+- **The status screen is honest**: while a job runs it shows the live
+  stage and elapsed time; when idle it shows the previous job's outcome
+  (✅ done / 🛑 cancelled / 🔁 interrupted by restart / ❌ failed with the
+  reason) instead of a bare "nothing is running".
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -448,7 +481,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.18-duration-calibration"`,
+URLs must show `"version":"v5.19-job-recovery"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
@@ -456,6 +489,10 @@ URLs must show `"version":"v5.18-duration-calibration"`,
 `"script_trim_policy":"sentence_then_word_tail_boundaries"`,
 `"duration_calibration":"measured_rate_budget_sentences_then_word_tails"`,
 `"last_duration_calibration":{}`,
+`"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
+`"active_jobs":{}`, `"last_job_results":{}`,
+`"interrupted_jobs_last_restart":[]`,
+`"job_watchdog":{"enabled":true,"stall_seconds":1200,"interval_seconds":60}`,
 `"tts_resilience":"per_scene_retries_then_sentence_pieces_then_fresh_pass"`,
 `"last_tts_retry_recovered_scenes":0`, `"edge_tts_timeout_seconds":45`,
 `"script_plain_text_fallback":"plain_text_retelling_split_locally_then_prose_salvage"`,

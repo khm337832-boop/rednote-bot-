@@ -1571,6 +1571,128 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(source.startswith(core), core)
             self.assertNotIn(core[-1], bot._BURMESE_TRAILING_JUNK)
 
+    # --- v5.19: a job must never die silently (restart / stall) ---
+    def _job_state_file(self):
+        path = str(self.tmp_path / "active_jobs.json")
+        self.start_patch(patch.object(bot, "JOB_STATE_FILE", path))
+        self.addCleanup(bot.ACTIVE_JOB_STATE.clear)
+        self.addCleanup(bot.LAST_JOB_RESULTS.clear)
+        self.addCleanup(bot.ACTIVE_JOBS.clear)
+        self.addCleanup(setattr, bot, "_LAST_INTERRUPTED_JOBS", [])
+        return path
+
+    async def test_restart_recovery_tells_the_user_their_job_died(self):
+        """Production: /status said "nothing is running" while the user's
+        recap was mid-render, because a deploy killed the process.  The
+        next process must say so instead of silently forgetting it."""
+        state_file = self._job_state_file()
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "active": {
+                        "777": {
+                            "job_id": "jdead01",
+                            "stage": "video ဖန်တီးနေသည်",
+                            "started_at": time.time() - 600,
+                            "updated_at": time.time() - 540,
+                        }
+                    },
+                    "results": {"777": {"status": "done", "at": time.time() - 9000}},
+                },
+                f,
+                ensure_ascii=False,
+            )
+        sent = []
+
+        async def fake_send_text(chat_id, text, reply_to=None, reply_markup=None):
+            sent.append((chat_id, text))
+            return 1
+
+        self.start_patch(patch.object(bot, "send_text", new=fake_send_text))
+
+        recovered = await bot._recover_interrupted_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(len(sent), 1)
+        chat_id, text = sent[0]
+        self.assertEqual(chat_id, 777)
+        self.assertIn("restart", text)
+        self.assertIn("video ဖန်တီးနေသည်", text)
+        self.assertIn("ပြန်ပို့", text)
+        self.assertEqual(
+            bot.LAST_JOB_RESULTS["777"]["status"], "interrupted"
+        )
+        self.assertEqual(bot.ACTIVE_JOB_STATE, {})
+        self.assertEqual(bot._LAST_INTERRUPTED_JOBS[0]["chat_id"], "777")
+        with open(state_file, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved.get("active"), {})
+        self.assertIn("777", saved.get("results") or {})
+
+        # The status screen now explains it instead of a bare "idle".
+        status_text = bot.job_status_text(777)
+        self.assertIn("လုပ်နေတာ မရှိပါ", status_text)
+        self.assertIn("server restart", status_text)
+
+    async def test_watchdog_releases_a_stalled_job_and_keeps_live_ones(self):
+        self._job_state_file()
+        sent = []
+
+        async def fake_send_text(chat_id, text, reply_to=None, reply_markup=None):
+            sent.append((chat_id, text))
+            return 1
+
+        self.start_patch(patch.object(bot, "send_text", new=fake_send_text))
+        now = time.time()
+        bot.ACTIVE_JOBS[1] = "jstalled"
+        bot.register_active_job(1, "jstalled", stage="Gemini ဆီ ဗီဒီယိုတင်ပြီး")
+        bot.ACTIVE_JOB_STATE["1"]["updated_at"] = now - (bot.JOB_STALL_SECONDS + 30)
+        bot.ACTIVE_JOBS[2] = "jlive"
+        bot.register_active_job(2, "jlive", stage="အသံသွင်းနေသည်")
+
+        released = await bot._job_watchdog_tick()
+
+        self.assertEqual(released, 1)
+        self.assertNotIn(1, bot.ACTIVE_JOBS)
+        self.assertIn(2, bot.ACTIVE_JOBS)
+        self.assertEqual(bot.LAST_JOB_RESULTS["1"]["status"], "failed")
+        self.assertIn("stalled", bot.LAST_JOB_RESULTS["1"]["error"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 1)
+        self.assertIn("ရပ်လိုက်ပါတယ်", sent[0][1])
+
+    async def test_active_job_state_is_mirrored_to_disk(self):
+        state_file = self._job_state_file()
+
+        bot.register_active_job(5, "jdisk01", stage="script ရေးနေသည်")
+        with open(state_file, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["active"]["5"]["job_id"], "jdisk01")
+        self.assertEqual(saved["active"]["5"]["stage"], "script ရေးနေသည်")
+
+        bot.touch_active_job(5, stage="အသံသွင်းနေသည်")
+        self.assertEqual(bot.ACTIVE_JOB_STATE["5"]["stage"], "အသံသွင်းနေသည်")
+
+        bot.finish_active_job(5, "failed", "Measured TTS duration is outside")
+        self.assertEqual(bot.ACTIVE_JOB_STATE, {})
+        self.assertEqual(bot.LAST_JOB_RESULTS["5"]["status"], "failed")
+        with open(state_file, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["active"], {})
+        self.assertIn("5", saved["results"])
+
+        # A dead registry entry must never survive as a phantom job that
+        # blocks the chat forever.
+        self.assertNotIn(5, bot.ACTIVE_JOBS)
+
+    def test_status_text_shows_the_live_stage(self):
+        self._job_state_file()
+        bot.ACTIVE_JOBS[9] = "jlive9"
+        bot.register_active_job(9, "jlive9", stage="အသံသွင်းနေသည်")
+        text = bot.job_status_text(9)
+        self.assertIn("jlive9", text)
+        self.assertIn("အသံသွင်းနေသည်", text)
+
     async def test_direct_recap_sized_by_learned_rate_is_not_shredded(self):
         """v5.15 acceptance: a 2-minute window must reach ~108s because the
         script was *sized* right, not because calibration deleted two
@@ -2688,6 +2810,16 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("last_script_error_by_model", health.json())
             self.assertEqual(health.json()["last_script_recovery"], "")
             self.assertIn("last_duration_calibration", health.json())
+            self.assertEqual(
+                health.json()["job_registry"],
+                "disk_mirrored_active_jobs_with_stall_watchdog",
+            )
+            self.assertIn("active_jobs", health.json())
+            self.assertIn("last_job_results", health.json())
+            self.assertIn("interrupted_jobs_last_restart", health.json())
+            self.assertGreaterEqual(
+                health.json()["job_watchdog"]["stall_seconds"], 120
+            )
             self.assertEqual(
                 health.json()["duration_calibration"],
                 "measured_rate_budget_sentences_then_word_tails",

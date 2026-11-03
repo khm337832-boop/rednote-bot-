@@ -989,6 +989,244 @@ def _save_persisted():
         logger.warning(f"settings save failed: {e}")
 
 
+# --- Active job registry (survives a restart, watched for stalls) -------
+# Jobs live only in process memory and Render restarts the process on
+# every deploy/health recycle.  A restart therefore used to make a running
+# job vanish silently: the progress message froze at
+# "video ဖန်တီးနေပါသည်", /status answered "nothing is running", and no
+# error ever reached the user.  The registry is mirrored to disk so the
+# next process can say what happened, and a watchdog releases jobs that
+# stop reporting.
+JOB_STATE_FILE = os.path.join(WORK_ROOT, "active_jobs.json")
+ACTIVE_JOB_STATE: dict = {}   # str(chat_id) -> {job_id, stage, source, started_at, updated_at}
+LAST_JOB_RESULTS: dict = {}   # str(chat_id) -> {status, error, job_id, at}
+_LAST_INTERRUPTED_JOBS: list = []
+JOB_TASKS: dict = {}   # str(chat_id) -> asyncio.Task running that job
+JOB_STALL_SECONDS = max(120, _parse_int_env("JOB_STALL_SECONDS", 1200))
+JOB_WATCHDOG_INTERVAL_SECONDS = max(
+    15, _parse_int_env("JOB_WATCHDOG_INTERVAL_SECONDS", 60)
+)
+_JOB_STATE_MIN_WRITE_INTERVAL = 2.0
+_last_job_state_write = 0.0
+_job_stage_since = {}
+
+
+def _job_chat_key(chat_id) -> str:
+    try:
+        return str(int(chat_id))
+    except (TypeError, ValueError):
+        return str(chat_id)
+
+
+def _load_job_state() -> dict:
+    try:
+        with open(JOB_STATE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_job_state(force: bool = False) -> None:
+    """Atomically mirror the registry to disk (throttled)."""
+    global _last_job_state_write
+    now = time.monotonic()
+    if not force and (now - _last_job_state_write) < _JOB_STATE_MIN_WRITE_INTERVAL:
+        return
+    _last_job_state_write = now
+    payload = {
+        "active": ACTIVE_JOB_STATE,
+        "results": LAST_JOB_RESULTS,
+        "saved_at": time.time(),
+    }
+    tmp = JOB_STATE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, JOB_STATE_FILE)
+    except Exception as e:
+        logger.warning("job state save failed: %s", e)
+
+
+def register_active_job(chat_id, job_id: str, stage: str = "", source: str = "") -> None:
+    key = _job_chat_key(chat_id)
+    now = time.time()
+    ACTIVE_JOB_STATE[key] = {
+        "job_id": str(job_id or ""),
+        "stage": str(stage or "")[:200],
+        "source": str(source or "")[:80],
+        "started_at": now,
+        "updated_at": now,
+    }
+    _job_stage_since[key] = now
+    _save_job_state(force=True)
+
+
+def touch_active_job(chat_id, stage: str = "") -> None:
+    """Heartbeat: called on every visible progress update."""
+    key = _job_chat_key(chat_id)
+    state = ACTIVE_JOB_STATE.get(key)
+    if not state:
+        return
+    state["updated_at"] = time.time()
+    if stage:
+        state["stage"] = str(stage)[:200]
+        _job_stage_since[key] = time.time()
+    _save_job_state()
+
+
+def finish_active_job(chat_id, status: str = "", error: str = "") -> None:
+    """Clear the registry entry; ``status`` also records the outcome."""
+    key = _job_chat_key(chat_id)
+    state = ACTIVE_JOB_STATE.pop(key, None)
+    _job_stage_since.pop(key, None)
+    if status:
+        LAST_JOB_RESULTS[key] = {
+            "status": str(status),
+            "error": str(error or "")[:600],
+            "job_id": str((state or {}).get("job_id") or ""),
+            "at": time.time(),
+        }
+    _save_job_state(force=True)
+
+
+def active_jobs_snapshot() -> dict:
+    now = time.time()
+    snapshot = {}
+    for key, state in ACTIVE_JOB_STATE.items():
+        if not isinstance(state, dict):
+            continue
+        snapshot[key] = {
+            "job_id": state.get("job_id"),
+            "stage": state.get("stage"),
+            "age_seconds": round(now - float(state.get("started_at") or now)),
+            "idle_seconds": round(now - float(state.get("updated_at") or now)),
+        }
+    return snapshot
+
+
+async def _recover_interrupted_jobs() -> int:
+    """Tell every user whose job died with the previous process.
+
+    This is the difference between "the bot silently forgot my video" and
+    "server restarted, please resend".
+    """
+    global _LAST_INTERRUPTED_JOBS
+    data = _load_job_state()
+    results = data.get("results")
+    if isinstance(results, dict):
+        for key, value in results.items():
+            if isinstance(value, dict):
+                LAST_JOB_RESULTS.setdefault(str(key), value)
+    recovered = []
+    for key, state in (data.get("active") or {}).items():
+        if not isinstance(state, dict):
+            continue
+        stage = str(state.get("stage") or "မသိသော အဆင့်")
+        job_id = str(state.get("job_id") or "")
+        try:
+            seconds_ago = round(max(0.0, time.time() - float(state.get("updated_at") or 0)))
+        except (TypeError, ValueError):
+            seconds_ago = 0
+        recovered.append(
+            {
+                "chat_id": key,
+                "job_id": job_id,
+                "stage": stage,
+                "seconds_ago": seconds_ago,
+            }
+        )
+        try:
+            chat_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        LAST_JOB_RESULTS[str(chat_id)] = {
+            "status": "interrupted",
+            "error": f"server restart ({stage})",
+            "job_id": job_id,
+            "at": time.time(),
+        }
+        try:
+            await send_text(
+                chat_id,
+                "🔁 <b>Server ပြန် restart ဖြစ်လို့ ဒီ job ရပ်သွားပါတယ်။</b>\n"
+                f"⏱ ရပ်သွားတဲ့အဆင့်: {stage}\n\n"
+                "video/link ကို ပြန်ပို့ပေးပါ — အသစ် ပြန်စပေးပါမယ်။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+        except Exception as e:
+            logger.warning("restart notice failed for chat %s: %s", key, e)
+    _LAST_INTERRUPTED_JOBS = recovered
+    ACTIVE_JOB_STATE.clear()
+    _job_stage_since.clear()
+    _save_job_state(force=True)
+    if recovered:
+        logger.warning(
+            "Recovered %s job(s) interrupted by a restart: %s",
+            len(recovered),
+            [item["job_id"] for item in recovered],
+        )
+    return len(recovered)
+
+
+async def _job_watchdog_tick() -> int:
+    """Release jobs that stopped reporting for ``JOB_STALL_SECONDS``."""
+    if not ACTIVE_JOBS:
+        return 0
+    now = time.time()
+    released = 0
+    for chat_id, job_id in list(ACTIVE_JOBS.items()):
+        state = ACTIVE_JOB_STATE.get(_job_chat_key(chat_id)) or {}
+        try:
+            last_seen = float(state.get("updated_at") or state.get("started_at") or 0)
+        except (TypeError, ValueError):
+            last_seen = 0.0
+        if not last_seen or (now - last_seen) <= JOB_STALL_SECONDS:
+            continue
+        stage = str(state.get("stage") or "")
+        idle_minutes = int((now - last_seen) // 60)
+        logger.error(
+            "Job %s for chat %s stalled for %s min at %r; releasing it",
+            job_id,
+            chat_id,
+            idle_minutes,
+            stage,
+        )
+        released += 1
+        finish_active_job(
+            chat_id,
+            "failed",
+            f"job stalled {idle_minutes} min at {stage or 'unknown stage'}",
+        )
+        ACTIVE_JOBS.pop(chat_id, None)
+        stalled_task = JOB_TASKS.pop(_job_chat_key(chat_id), None)
+        if stalled_task is not None and not stalled_task.done():
+            stalled_task.cancel()
+        try:
+            await send_text(
+                chat_id,
+                "⚠️ <b>Recap က ရပ်နေတာကြာလို့ ("
+                f"{idle_minutes} မိနစ်ကျော် တိုးတက်မှု မရှိ) ရပ်လိုက်ပါတယ်။</b>\n"
+                f"⏱ ရပ်နေတဲ့အဆင့်: {stage or 'မသိသော အဆင့်'}\n\n"
+                "video/link ကို ပြန်ပို့ပြီး ပြန်စပေးပါ။",
+                reply_markup=main_menu_keyboard(chat_id),
+            )
+        except Exception as e:
+            logger.warning("stall notice failed for chat %s: %s", chat_id, e)
+    return released
+
+
+async def _job_watchdog() -> None:
+    while True:
+        await asyncio.sleep(JOB_WATCHDOG_INTERVAL_SECONDS)
+        try:
+            await _job_watchdog_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("job watchdog error: %s", e)
+
+
 def get_user_settings(chat_id) -> dict:
     """User ရဲ့ settings (မရှိရင် default) — အမြဲ မိတ္တူ dict ပြန်ပေးတယ်။"""
     s = dict(DEFAULT_SETTINGS)
@@ -1340,6 +1578,9 @@ class ProgressTracker:
     async def update(self, text: str, force: bool = False):
         if not self.message_id or text == self.last_text:
             return
+        # Heartbeat the job registry even when the Telegram edit is
+        # throttled: the watchdog must know the job is still alive.
+        touch_active_job(self.chat_id, text)
         now = time.monotonic()
         if not force and (now - self.last_ts) < 3.0:
             return
@@ -7761,6 +8002,7 @@ def _create_worker_job(
                 changed = True
         if state.get("status") not in ("delivered", "cancelled", "failed"):
             ACTIVE_JOBS[chat_id] = job_id
+            register_active_job(chat_id, job_id, stage="job စတင်နေသည်")
         return _save_worker_job(state) if changed else state
 
     settings = get_user_settings(chat_id)
@@ -7796,6 +8038,7 @@ def _create_worker_job(
         },
     }
     ACTIVE_JOBS[chat_id] = job_id
+    register_active_job(chat_id, job_id, stage="job စတင်နေသည်")
     return _save_worker_job(state)
 
 
@@ -12293,6 +12536,7 @@ async def _handle_manual_source_job(
         logger.exception("Manual source job error")
         if str(e) == "cancelled" or session_id in CANCELLED_JOBS:
             bump_stat(chat_id, "cancelled")
+            finish_active_job(chat_id, "cancelled", "cancelled")
             if state is not None:
                 _delete_manual_session(session_id)
             await edit_text(
@@ -12304,6 +12548,7 @@ async def _handle_manual_source_job(
         else:
             bump_stat(chat_id, "failed")
             message = _user_error_text(e)
+            finish_active_job(chat_id, "failed", message)
             retain_session = False
             if state is not None:
                 has_sent_part = sent_any_original or any(
@@ -12348,6 +12593,8 @@ async def _handle_manual_source_job(
     finally:
         if ACTIVE_JOBS.get(chat_id) == session_id:
             ACTIVE_JOBS.pop(chat_id, None)
+        # Safety net: never leave a phantom "running" entry behind.
+        finish_active_job(chat_id)
         gc.collect()
 
 
@@ -13755,6 +14002,8 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
             )
             return
     ACTIVE_JOBS[chat_id] = job_id
+    register_active_job(chat_id, job_id, stage="job စတင်နေသည်")
+    JOB_TASKS[_job_chat_key(chat_id)] = asyncio.current_task()
     if MANUAL_PARTS_ENABLED:
         initial_text = (
             f"⚡ Recap ပြင်ဆင်နေပါပြီ...\n"
@@ -13841,6 +14090,7 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         except Exception as e:
             logger.warning(f"failed to remove unforwarded worker record {job_id}: {e}")
         ACTIVE_JOBS[chat_id] = job_id
+        register_active_job(chat_id, job_id, stage="job စတင်နေသည်")
         if was_cancelled:
             CANCELLED_JOBS.add(job_id)
 
@@ -14046,6 +14296,7 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
             )
 
         bump_stat(chat_id, "done")
+        finish_active_job(chat_id, "done")
         try:
             await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_id})
         except Exception:
@@ -14064,14 +14315,51 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         logger.exception("Job Error")
         if str(e) == "cancelled":
             bump_stat(chat_id, "cancelled")
+            finish_active_job(chat_id, "cancelled", "cancelled")
             await edit_text(chat_id, status_id, "🛑 အလုပ်ကို ရပ်လိုက်ပါပြီ။", reply_markup=main_menu_keyboard(chat_id))
         else:
             bump_stat(chat_id, "failed")
+            finish_active_job(chat_id, "failed", _user_error_text(e))
             await edit_text(chat_id, status_id, f"❌ အမှား: {_user_error_text(e)}", reply_markup=main_menu_keyboard(chat_id))
     finally:
         ACTIVE_JOBS.pop(chat_id, None)
+        # Safety net: if the job died on a path that never reached the
+        # handlers above, its registry entry must not stay behind as a
+        # phantom "running" job.
+        finish_active_job(chat_id)
+        JOB_TASKS.pop(_job_chat_key(chat_id), None)
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
+
+
+def _last_job_note(chat_id) -> str:
+    """One honest line about the previous job (never a bare "idle")."""
+    last = LAST_JOB_RESULTS.get(_job_chat_key(chat_id))
+    if not isinstance(last, dict):
+        return ""
+    try:
+        minutes = max(0, int((time.time() - float(last.get("at") or 0)) // 60))
+    except (TypeError, ValueError):
+        minutes = 0
+    ago = f"{minutes} မိနစ်က" if minutes else "မကြာမီက"
+    status = str(last.get("status") or "")
+    if status == "done":
+        return f"\n\n🕓 နောက်ဆုံး job ({ago}): ✅ ပြီးဆုံးပါပြီ"
+    if status == "cancelled":
+        return f"\n\n🕓 နောက်ဆုံး job ({ago}): 🛑 ရပ်လိုက်ပါသည်"
+    if status == "interrupted":
+        stage = str(last.get("error") or "").replace("server restart", "").strip(" ()")
+        return (
+            f"\n\n🕓 နောက်ဆုံး job ({ago}): 🔁 server restart ကြောင့် ရပ်သွားပါသည်"
+            + (f" ({stage})" if stage else "")
+            + "\nvideo/link ကို ပြန်ပို့ပေးပါ။"
+        )
+    if status == "failed":
+        error = str(last.get("error") or "အမှား")
+        if len(error) > 300:
+            error = error[:300] + "…"
+        return f"\n\n🕓 နောက်ဆုံး job ({ago}): ❌ မအောင်မြင်ပါ — {error}"
+    return ""
 
 
 def job_status_text(chat_id) -> str:
@@ -14088,15 +14376,25 @@ def job_status_text(chat_id) -> str:
                 )
         except Exception:
             pass
-        return (f"📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n🟢 လုပ်နေဆဲ (Job: <code>{job}</code>)\n"
+        state = ACTIVE_JOB_STATE.get(_job_chat_key(chat_id)) or {}
+        stage = str(state.get("stage") or "").strip()
+        stage_note = f"\n⏱ လက်ရှိအဆင့်: {stage}" if stage else ""
+        try:
+            age = int(time.time() - float(state.get("started_at") or 0))
+            age_note = f" ({fmt_time(age)} ကြာပြီ)" if age > 0 else ""
+        except (TypeError, ValueError):
+            age_note = ""
+        return (f"📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n"
+                f"🟢 လုပ်နေဆဲ (Job: <code>{job}</code>){age_note}\n"
                 f"🎯 Final duration: မူရင်း၏ {s['coverage']}% · 🎙️ {s['voice']}"
-                f"{manual_note}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
+                f"{stage_note}{manual_note}\n\nရပ်ချင်ရင် 🛑 ခလုတ်နှိပ်ပါ။")
     if MANUAL_PARTS_ENABLED:
         manual_state = _find_manual_session_for_chat(chat_id)
         if manual_state:
             return _manual_status_text(manual_state)
     return ("📊 <b>အလုပ်အခြေအနေ</b>\n━━━━━━━━━━━━━━━\n⚪ လက်ရှိ လုပ်နေတာ မရှိပါ။\n\n"
-            "🎬 Recap စဖို့ video file သို့မဟုတ် link ပို့လိုက်ပါ (သို့) ခလုတ်နှိပ်ပါ။")
+            "🎬 Recap စဖို့ video file သို့မဟုတ် link ပို့လိုက်ပါ (သို့) ခလုတ်နှိပ်ပါ။"
+            + _last_job_note(chat_id))
 
 
 def _status_keyboard(chat_id) -> dict:
@@ -14392,14 +14690,25 @@ async def lifespan(_app: FastAPI):
         _rednote_cookie_configured(),
         "manual_sequential_per_part" if MANUAL_PARTS_ENABLED else "auto",
     )
+    try:
+        interrupted = await _recover_interrupted_jobs()
+        if interrupted:
+            logger.warning(
+                "%s job(s) were interrupted by the previous process and "
+                "have been reported to their chats",
+                interrupted,
+            )
+    except Exception as e:
+        logger.warning("job recovery failed: %s", e)
     setup_task = _spawn_background(_setup_bot(), name="telegram-setup")
     keepalive_task = _spawn_background(
         _keep_awake_while_working(), name="keepalive"
     )
+    watchdog_task = _spawn_background(_job_watchdog(), name="job-watchdog")
     try:
         yield
     finally:
-        for _task in (setup_task, keepalive_task):
+        for _task in (setup_task, keepalive_task, watchdog_task):
             _task.cancel()
             try:
                 await _task
@@ -14410,7 +14719,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.18-duration-calibration"
+BUILD_VERSION = "v5.19-job-recovery"
 BUILD_FEATURES = 20
 
 
@@ -14431,6 +14740,22 @@ async def root():
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         "telegram_pipeline": _telegram_pipeline_name(),
         "n8n_telegram_handoff_enabled": N8N_TELEGRAM_HANDOFF_ENABLED,
+        "job_registry": "disk_mirrored_active_jobs_with_stall_watchdog",
+        "active_jobs": active_jobs_snapshot(),
+        "last_job_results": {
+            key: {
+                "status": str(value.get("status") or ""),
+                "at": round(float(value.get("at") or 0)),
+            }
+            for key, value in list(LAST_JOB_RESULTS.items())[-10:]
+            if isinstance(value, dict)
+        },
+        "interrupted_jobs_last_restart": _LAST_INTERRUPTED_JOBS[-10:],
+        "job_watchdog": {
+            "enabled": True,
+            "stall_seconds": JOB_STALL_SECONDS,
+            "interval_seconds": JOB_WATCHDOG_INTERVAL_SECONDS,
+        },
         "auto_retry": {
             "source_attempts": AUTO_SOURCE_ATTEMPTS,
             "segment_attempts": AUTO_SEGMENT_ATTEMPTS,
@@ -14538,6 +14863,22 @@ async def health():
         "manual_parts_enabled": MANUAL_PARTS_ENABLED,
         "telegram_pipeline": _telegram_pipeline_name(),
         "n8n_telegram_handoff_enabled": N8N_TELEGRAM_HANDOFF_ENABLED,
+        "job_registry": "disk_mirrored_active_jobs_with_stall_watchdog",
+        "active_jobs": active_jobs_snapshot(),
+        "last_job_results": {
+            key: {
+                "status": str(value.get("status") or ""),
+                "at": round(float(value.get("at") or 0)),
+            }
+            for key, value in list(LAST_JOB_RESULTS.items())[-10:]
+            if isinstance(value, dict)
+        },
+        "interrupted_jobs_last_restart": _LAST_INTERRUPTED_JOBS[-10:],
+        "job_watchdog": {
+            "enabled": True,
+            "stall_seconds": JOB_STALL_SECONDS,
+            "interval_seconds": JOB_WATCHDOG_INTERVAL_SECONDS,
+        },
         "auto_retry": {
             "source_attempts": AUTO_SOURCE_ATTEMPTS,
             "segment_attempts": AUTO_SEGMENT_ATTEMPTS,
@@ -14811,6 +15152,7 @@ async def worker_start_stage(job_id: str, stage: str, request: Request):
         state["cancel_requested"] = False
         if chat_id:
             ACTIVE_JOBS[chat_id] = job_id
+            register_active_job(chat_id, job_id, stage="job စတင်နေသည်")
         _set_worker_stage(state, stage, "running")
         state["status"] = "running"
         state["current_stage"] = stage
