@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.26-story-clarity-replay2` is a **one-shot automatic flow**: the user
+Version `v5.27-freeze-span-repair` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -318,8 +318,12 @@ on a single frame. When the shortage is severe enough that one
 slow pass would itself look frozen (narration/footage ratio over
 1.5), that same scene is replayed from its own start for a second
 pass — **two total showings, never three** — so both passes can
-move at a near-natural speed. A frozen frame now covers only what
-two capped passes still cannot. The segment renders
+move at a near-natural speed. Before those passes are planned, the
+preferred boundaries go through a minimum-span repair: if clustered
+model timestamps would leave a scene with less unique footage than
+two moving passes need, only the affected starts move enough to
+reserve that span, so normal plans need no frozen-frame tail at
+all. The segment renders
 pass their length as an ffmpeg *input* option and the concatenated
 video track is length-checked against the narration before muxing:
 an output-side `-t` used to silently truncate every slowed (or
@@ -546,7 +550,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.26-story-clarity-replay2"`,
+URLs must show `"version":"v5.27-freeze-span-repair"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -554,7 +558,7 @@ URLs must show `"version":"v5.26-story-clarity-replay2"`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"script_trim_policy":"sentence_then_word_tail_boundaries"`,
 `"duration_calibration":"script_first_dedupe_expand_short_shave_over_source"`,
-`"edit_sync":"proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation"`,
+`"edit_sync":"proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze"`,
 `"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
 `"last_duration_calibration":{}`,
