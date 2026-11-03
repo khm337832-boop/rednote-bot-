@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.22-script-first-no-overshoot` is a **one-shot automatic flow**: the user
+Version `v5.23-pro-sync-no-freeze` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -293,6 +293,17 @@ once stalled calibration entirely. This repeats for up to four
 calibration rounds. The rendered MP4 is then probed again, and delivery is
 refused if its actual duration is outside the window.
 
+Edit sync is treated as a first-class concern, not an afterthought:
+scripts are written in finer scenes (~8 seconds each) with the text
+amount proportional to each scene's on-screen span and the key story
+beats front-loaded, model timestamps are repaired so no scene can
+end up with zero footage, scene starts snap to real detected shot
+cuts, and when a scene's narration still outruns its footage the
+*footage is slowed down* (never the audio) instead of freezing on a
+single frame — a still picture under continuing speech reads as a
+broken video, while slow-moving footage of the right event reads as
+an edit.
+
 Every narration scene must visibly speak in the protagonist's first person
 with one consistent pronoun (`ကျွန်တော်` or `ကျွန်မ`) in the Burmese text
 itself. A JSON `pronoun` field alone does not pass. Third-person scenes are
@@ -498,7 +509,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.22-script-first-no-overshoot"`,
+URLs must show `"version":"v5.23-pro-sync-no-freeze"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,

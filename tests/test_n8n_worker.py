@@ -2180,7 +2180,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         await bot._maybe_send_update_notice(919191)
         self.assertNotIn("_seen_version", users.get("919191", {}))
 
-    def test_alignment_borrows_only_to_next_scene_and_freezes_last(self):
+    def test_alignment_borrows_only_to_next_scene_and_stretches_not_freezes(self):
         scenes = [
             {"group_id": 1, "source_segment_ids": [1], "start": 0, "end": 10},
             {"group_id": 2, "source_segment_ids": [2], "start": 20, "end": 28},
@@ -2190,18 +2190,38 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(plan[0]["input_seconds"], 2.2)
         self.assertEqual(plan[0]["borrowed_seconds"], 0.0)
+        self.assertEqual(plan[0]["stretch_factor"], 1.0)
         self.assertEqual(plan[0]["freeze_seconds"], 0.0)
         self.assertEqual(plan[0]["output_end"], 2.2)
 
         self.assertEqual(plan[1]["source_limit"], 40.0)
         self.assertEqual(plan[1]["input_seconds"], 15.2)
         self.assertEqual(plan[1]["borrowed_seconds"], 7.2)
+        self.assertEqual(plan[1]["stretch_factor"], 1.0)
         self.assertEqual(plan[1]["freeze_seconds"], 0.0)
 
+        # 12s of narration over 10s of available footage: the footage
+        # is slowed (1.2x timestamps) instead of frozen for 2s -- the
+        # "video stopped, only audio working" user report.
         self.assertEqual(plan[2]["input_seconds"], 10.0)
         self.assertEqual(plan[2]["borrowed_seconds"], 5.0)
-        self.assertEqual(plan[2]["freeze_seconds"], 2.0)
+        self.assertAlmostEqual(plan[2]["stretch_factor"], 1.2, places=6)
+        self.assertEqual(plan[2]["freeze_seconds"], 0.0)
         self.assertEqual(plan[2]["desired_output_seconds"], 12.0)
+
+        # Beyond the stretch cap, only the remainder freezes.
+        extreme = bot._build_alignment_plan(
+            [{"start": 45, "end": 46}], [30.0], 50, pause_seconds=0.0
+        )
+        self.assertEqual(extreme[0]["input_seconds"], 5.0)
+        self.assertAlmostEqual(
+            extreme[0]["stretch_factor"], bot.ALIGNMENT_MAX_STRETCH, places=6
+        )
+        self.assertAlmostEqual(
+            extreme[0]["freeze_seconds"],
+            30.0 - 5.0 * bot.ALIGNMENT_MAX_STRETCH,
+            places=6,
+        )
 
         invalid_pause_plan = bot._build_alignment_plan(
             scenes, [1, 1, 1], 50, pause_seconds="invalid"
@@ -2212,6 +2232,80 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot._build_alignment_plan(scenes, [1], 50)
         with self.assertRaises(bot.WorkerJobError):
             bot._build_alignment_plan(scenes, [1, 1, 1], 0)
+
+    def test_alignment_snaps_scene_starts_to_shot_cuts(self):
+        scenes = [
+            {"start": 0, "end": 18},
+            {"start": 20, "end": 38},
+            {"start": 40, "end": 50},
+        ]
+        plan = bot._build_alignment_plan(
+            scenes, [5, 5, 5], 60, pause_seconds=0.0,
+            cut_times=[19.0, 30.0, 41.5],
+        )
+        # Starts snap to the nearest real cut within tolerance; the
+        # 30.0 cut is not near any scene start and changes nothing.
+        self.assertEqual(plan[0]["source_start"], 0.0)
+        self.assertEqual(plan[1]["source_start"], 19.0)
+        self.assertEqual(plan[2]["source_start"], 41.5)
+        # Limits follow the snapped starts.
+        self.assertEqual(plan[0]["source_limit"], 19.0)
+        self.assertEqual(plan[1]["source_limit"], 41.5)
+        # Without cuts the model timings are used as-is.
+        plain = bot._build_alignment_plan(scenes, [5, 5, 5], 60)
+        self.assertEqual(plain[1]["source_start"], 20.0)
+        self.assertEqual(plain[2]["source_start"], 40.0)
+
+    def test_parse_scene_cut_times(self):
+        stderr = (
+            "[Parsed_metadata_2 @ 0x1] frame:0    pts:38400   pts_time:3\n"
+            "[Parsed_metadata_2 @ 0x1] lavfi.scene_score=0.400000\n"
+            "[Parsed_metadata_2 @ 0x1] frame:1    pts:76800   pts_time:6.25\n"
+            "unrelated line pts_time:not-a-number\n"
+        )
+        self.assertEqual(bot._parse_scene_cut_times(stderr), [3.0, 6.25])
+        self.assertEqual(bot._parse_scene_cut_times(""), [])
+
+    def test_normalize_repairs_degenerate_scene_timings(self):
+        # Duplicate/reversed model starts used to leave a scene with
+        # zero available footage -> its whole narration rendered over
+        # one frozen frame.
+        payload = {
+            "scenes": [
+                {"start": 10, "end": 10, "burmese": MALE_PRONOUN + " တစ်တယ်။"},
+                {"start": 10, "end": 25, "burmese": MALE_PRONOUN + " နှစ်တယ်။"},
+                {"start": 5, "end": 9, "burmese": MALE_PRONOUN + " သုံးတယ်။"},
+            ]
+        }
+        normalized = bot._normalize_direct_script_payload(
+            payload, chunk_duration=30.0
+        )
+        scenes = normalized["scenes"]
+        self.assertEqual(len(scenes), 3)
+        starts = [float(s["start"]) for s in scenes]
+        self.assertEqual(starts, sorted(starts))
+        for earlier, later in zip(starts, starts[1:]):
+            self.assertGreater(later, earlier)
+        for scene in scenes:
+            self.assertGreater(float(scene["end"]), float(scene["start"]))
+            self.assertLessEqual(float(scene["end"]), 30.0)
+        # And the alignment plan now gives every scene real footage.
+        plan = bot._build_alignment_plan(scenes, [5.0, 5.0, 5.0], 30.0)
+        for item in plan:
+            self.assertGreaterEqual(item["input_seconds"], 0.99)
+
+    def test_video_filter_adds_setpts_only_when_stretched(self):
+        stretched = bot._worker_video_filter(
+            64, 64, {}, 0.0, stretch_factor=1.5
+        )
+        self.assertIn("setpts=1.5000*PTS", stretched)
+        # Stretch must happen before fps normalization so every
+        # segment still concats with identical parameters.
+        self.assertLess(stretched.index("setpts="), stretched.index("fps=25"))
+        plain = bot._worker_video_filter(64, 64, {}, 0.0)
+        self.assertNotIn("setpts=", plain)
+        frozen = bot._worker_video_filter(64, 64, {}, 2.0)
+        self.assertIn("tpad=stop_mode=clone:stop_duration=2.000", frozen)
 
     async def test_tts_writes_sorted_pcm_wav_and_audio_metadata(self):
         state = self.create_job(
@@ -3145,6 +3239,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["duration_calibration"],
                 "script_first_dedupe_expand_short_shave_over_source",
+            )
+            self.assertEqual(
+                health.json()["edit_sync"],
+                "shot_cut_snapped_stretch_instead_of_freeze",
             )
             self.assertEqual(
                 health.json()["script_plain_text_fallback"],
