@@ -580,7 +580,7 @@ TELEGRAM_VIDEO_EXTENSIONS = {
 # fed back into Gemini expansion/trimming rounds until it is on target.
 SCRIPT_TARGET_RATIO = 0.90      # default final duration = 90% of input
 MINIMUM_SCRIPT_COVERAGE_PERCENT = 90  # every job/link must target at least 90%
-SCRIPT_CHARS_PER_SEC = 6.5      # initial estimate only; TTS is re-measured
+SCRIPT_CHARS_PER_SEC = 6.5      # fallback estimate only; the real rate is learned
 SCRIPT_MAX_RATIO = 1.05         # initial script cap before measured calibration
 SCRIPT_TOPUP_ATTEMPTS = 6       # character-estimate top-ups before TTS
 SCRIPT_MIN_CHAR_RATIO = 0.85    # coarse anti-summary floor only: the
@@ -597,6 +597,131 @@ DURATION_CALIBRATION_ROUNDS = 4  # measured TTS -> expand/trim -> TTS again
 FIRST_PERSON_REPAIR_ROUNDS = 3   # rewrite scenes missing ကျွန်တော်/ကျွန်မ
 FINAL_DURATION_TOLERANCE_RATIO = 0.02  # final must be target ±2% of source
 FINAL_DURATION_TOLERANCE_MIN_SECONDS = 0.35
+
+# --- Learned script length rate (chars per second of real narration) ---
+# Sizing a script with a hard-coded rate is what broke whole jobs: 6.5
+# chars/second matches the Gemini voices, but the free Microsoft Edge
+# Burmese neural voices actually speak ~2.1-2.5 chars/second (counted as
+# script_total_chars / measured speech seconds).  Every script therefore
+# came out ~3x too long -- one 2-minute window planned 112s and measured
+# 341s -- and the duration calibration then had to shred ~2/3 of the text
+# (heard as broken, chopped speech).  Instead of guessing, the bot now
+# keeps a process-global chars/second per TTS provider, updated after
+# every measured chunk from `_narration_measurements`'
+# effective_chars_per_second, and sizes every script with it.  Seeded at
+# the real measured Edge rate so even the very first job on a fresh
+# process is sized correctly for the default `edge,gemini` order.
+SCRIPT_CHARS_PER_SEC_SEED = {"edge": 2.3, "gemini": SCRIPT_CHARS_PER_SEC}
+SCRIPT_CHARS_PER_SEC_MIN = 1.2
+SCRIPT_CHARS_PER_SEC_MAX = 9.0
+SCRIPT_CHARS_PER_SEC_LEARN_WEIGHT = 0.5  # EMA weight of the newest measurement
+SCRIPT_CHARS_PER_SEC_LEARN_MIN_SECONDS = 3.0  # ignore tiny/partial clips
+SCRIPT_CHARS_PER_SEC_LEARN_MIN_CHARS = 20
+# provider -> learned chars/second (process-global, resets on redeploy)
+_LEARNED_CHARS_PER_SEC: dict = {}
+
+
+def clamp_script_chars_per_second(rate) -> float:
+    """Keep a chars/second rate inside the physically believable range."""
+    try:
+        value = float(rate or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        return float(SCRIPT_CHARS_PER_SEC_SEED.get("edge", 2.3))
+    return float(
+        min(SCRIPT_CHARS_PER_SEC_MAX, max(SCRIPT_CHARS_PER_SEC_MIN, value))
+    )
+
+
+def _active_tts_rate_provider() -> str:
+    """Provider whose voice will speak the next script.
+
+    The last provider that actually synthesized audio wins; before any
+    TTS has run (fresh process) it is the first provider in
+    `TTS_PROVIDER_ORDER`, which defaults to the free Edge voice.
+    """
+    used = str(_LAST_TTS_PROVIDER or "").strip().lower()
+    if used in SCRIPT_CHARS_PER_SEC_SEED:
+        return used
+    for name in TTS_PROVIDER_ORDER or ():
+        if name in SCRIPT_CHARS_PER_SEC_SEED:
+            return name
+    return "edge"
+
+
+def _rate_provider_key(provider=None) -> str:
+    name = str(provider or "").strip().lower()
+    if name in SCRIPT_CHARS_PER_SEC_SEED:
+        return name
+    return _active_tts_rate_provider()
+
+
+def learned_chars_per_second(provider=None) -> float:
+    """Chars/second used to size scripts for the active (or given) voice."""
+    key = _rate_provider_key(provider)
+    if key in _LEARNED_CHARS_PER_SEC:
+        return clamp_script_chars_per_second(_LEARNED_CHARS_PER_SEC[key])
+    return clamp_script_chars_per_second(
+        SCRIPT_CHARS_PER_SEC_SEED.get(key, SCRIPT_CHARS_PER_SEC)
+    )
+
+
+def learned_chars_per_second_by_provider() -> dict:
+    return {
+        name: round(learned_chars_per_second(name), 4)
+        for name in SCRIPT_CHARS_PER_SEC_SEED
+    }
+
+
+def learned_script_rate_state() -> dict:
+    """/healthz view of the learned script-length rate."""
+    active = _active_tts_rate_provider()
+    return {
+        "learned_chars_per_second": round(learned_chars_per_second(active), 4),
+        "active_provider": active,
+        "by_provider": learned_chars_per_second_by_provider(),
+        "measured_providers": sorted(_LEARNED_CHARS_PER_SEC),
+        "seed_by_provider": dict(SCRIPT_CHARS_PER_SEC_SEED),
+        "clamp": [SCRIPT_CHARS_PER_SEC_MIN, SCRIPT_CHARS_PER_SEC_MAX],
+        "learning_source": "measured_tts_effective_chars_per_second",
+        "default_setting_is_auto": True,
+    }
+
+
+def record_narration_rate(measurements: dict, provider=None) -> float:
+    """Fold a measured TTS rate into the process-global learned rate.
+
+    Only real, non-trivial audio counts: a silent/partial batch would
+    otherwise poison the estimate.  Returns the rate now in effect.
+    """
+    m = measurements or {}
+    try:
+        seconds = float(m.get("speech_seconds") or 0)
+        chars = int(m.get("spoken_chars_measured") or 0)
+        measured = float(m.get("effective_chars_per_second") or 0)
+    except (TypeError, ValueError):
+        return learned_chars_per_second(provider)
+    if (
+        seconds < SCRIPT_CHARS_PER_SEC_LEARN_MIN_SECONDS
+        or chars < SCRIPT_CHARS_PER_SEC_LEARN_MIN_CHARS
+        or measured <= 0
+    ):
+        return learned_chars_per_second(provider)
+    key = _rate_provider_key(provider)
+    previous = learned_chars_per_second(key)
+    weight = SCRIPT_CHARS_PER_SEC_LEARN_WEIGHT
+    updated = clamp_script_chars_per_second(
+        (weight * measured) + ((1.0 - weight) * previous)
+    )
+    _LEARNED_CHARS_PER_SEC[key] = updated
+    return updated
+
+
+def reset_learned_chars_per_second() -> None:
+    """Forget learned rates (tests / explicit diagnostics)."""
+    _LEARNED_CHARS_PER_SEC.clear()
+
 
 PUBLISH_CACHE_DIR = os.path.join(WORK_ROOT, "publish_cache")
 os.makedirs(PUBLISH_CACHE_DIR, exist_ok=True)
@@ -759,8 +884,8 @@ FEATURES = [
      "desc": "Download လုပ်ပြီး ၂ မိနစ်ပိုင်းချိန် Plan သာဆောက်မည် — ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပို့ပြီး ခလုတ်နှိပ်မှ Recap၊ ပြီးမှ နောက်တစ်ပိုင်း",
      "options": [(SOURCE_SEGMENT_SECONDS, "2 မိနစ် ⭐ (အမြဲတမ်း)")]},
     {"key": "rate", "icon": "🗣️", "label": "Script အလျင် ချိန်ညှိ", "kind": "cycle",
-     "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — စာသား ပမာဏ တွက်ရန်",
-     "options": [(5.5, "5.5 နှေး"), (6.5, "6.5 ⭐"), (7.5, "7.5 မြန်")]},
+     "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — «6.5 ⭐» သည် အလိုအလျောက် (အသံအမှန်ကို တိုင်းပြီး ချိန်သည်၊ Edge မြန်မာအသံ ~2.3)။ 5.5/7.5 ကို ကိုယ်တိုင် ရွေးမှသာ အတင်းသတ်မှတ်မည်",
+     "options": [(5.5, "5.5 နှေး"), (6.5, "6.5 ⭐ အလိုအလျောက်"), (7.5, "7.5 မြန်")]},
     {"key": "pov", "icon": "👤", "label": "ပြောပြသူ ရှုထောင့်", "kind": "cycle",
      "desc": "အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောပြသလို ပထမလူ — အမြဲတမ်း",
      "options": [("first", "ပထမလူ (ကျွန်တော်/ကျွန်မ) ⭐")]},
@@ -3199,8 +3324,9 @@ def _validate_scene_clip(clip, text: str) -> None:
     interrupted Edge stream can end mid-word yet decode cleanly,
     and the old >=400-byte check waved it through -- heard as
     cut-off speech in the final video.  Bounds are deliberately
-    lenient against the ~6.5 chars/sec planning rate so only
-    obvious truncation/runaway results are rejected.
+    lenient against the ~2.1-2.5 chars/second the free Edge Burmese
+    voices actually speak at, so only obvious truncation/runaway
+    results are rejected (and never a clip for being spoken slowly).
     """
     arr = _clip_array(clip)
     if _clip_is_silent(arr):
@@ -3208,7 +3334,7 @@ def _validate_scene_clip(clip, text: str) -> None:
     chars = max(1, len(str(text or "").strip()))
     seconds = float(arr.size) / SAMPLE_RATE
     min_seconds = max(0.30, chars / 16.0)
-    max_seconds = chars / 2.0 + 3.0
+    max_seconds = chars / 1.7 + 3.5
     if seconds < min_seconds:
         raise RuntimeError(
             f"synthesized clip too short for {chars} chars: "
@@ -4433,12 +4559,27 @@ def _settings_coverage_ratio(settings: dict = None) -> float:
 
 
 def _settings_script_rate(settings: dict = None) -> float:
+    """Chars/second used to size scripts (chars = seconds x rate).
+
+    The *learned* rate for the voice that will actually speak wins, so a
+    free Edge Burmese voice (measured ~2.1-2.5 chars/s) is not sized with
+    the Gemini-shaped 6.5 chars/s estimate and then shredded by the
+    duration calibration.  An explicitly changed 🗣️ setting (anything
+    other than the shipped default) is still honoured as a manual
+    override -- that is the user deliberately asking for a different
+    reading speed.
+    """
     s = {**DEFAULT_SETTINGS, **(settings or {})}
     try:
-        rate = float(s.get("rate") or SCRIPT_CHARS_PER_SEC)
+        configured = float(s.get("rate") or 0)
     except (TypeError, ValueError):
-        rate = SCRIPT_CHARS_PER_SEC
-    return rate if rate > 0 else SCRIPT_CHARS_PER_SEC
+        configured = 0.0
+    learned = learned_chars_per_second()
+    if configured <= 0:
+        return learned
+    if abs(configured - float(DEFAULT_SETTINGS.get("rate") or 0)) < 1e-9:
+        return learned
+    return configured
 
 
 def _minimum_script_chars(target_chars: int) -> int:
@@ -4553,7 +4694,7 @@ def _narration_measurements(scenes: list, clips: list, settings: dict = None) ->
     effective_rate = (
         (total_script_chars / speech_seconds) if speech_seconds > 0 else 0.0
     )
-    return {
+    measurements = {
         "speech_seconds": round(float(speech_seconds), 6),
         "pause_seconds": round(float(pause_seconds), 6),
         "pause_total_seconds": round(float(pause_total), 6),
@@ -4565,6 +4706,13 @@ def _narration_measurements(scenes: list, clips: list, settings: dict = None) ->
         ),
         "spoken_chars_measured": int(spoken_chars),
     }
+    # Every measurement of real TTS audio teaches the process-wide
+    # script-length rate, so the next window/next job is sized at the
+    # voice's true speaking rate instead of a hard-coded guess.
+    measurements["learned_chars_per_second"] = round(
+        record_narration_rate(measurements), 4
+    )
+    return measurements
 
 
 def _calibration_desired_total_chars(
@@ -4624,77 +4772,180 @@ def sort_scenes(scenes: list) -> list:
     return sorted(valid, key=_start)
 
 
+# Burmese sentence terminators.  A spoken recap may only ever lose whole
+# sentences: a mid-sentence cut leaves a dangling clause that the TTS
+# reads out as broken, chopped speech (the v5.14 report: 341s narration
+# shredded down to 112s).
+SCRIPT_SENTENCE_END_CHARS = "။!?…"
+
+
+def _split_sentences(text: str) -> list:
+    """Split text into whole sentences, keeping their terminators."""
+    value = str(text or "").strip()
+    if not value:
+        return []
+    spans = []
+    start = 0
+    index = 0
+    length = len(value)
+    while index < length:
+        if value[index] in SCRIPT_SENTENCE_END_CHARS:
+            end = index + 1
+            # eat repeated terminators ("။။") and the spaces after them
+            while end < length and (
+                value[end] in SCRIPT_SENTENCE_END_CHARS or value[end].isspace()
+            ):
+                end += 1
+            chunk = value[start:end]
+            if chunk.strip():
+                spans.append(chunk)
+            start = end
+            index = end
+        else:
+            index += 1
+    tail = value[start:]
+    if tail.strip():
+        spans.append(tail)
+    return spans
+
+
+def _text_is_sentence_structured(text: str) -> bool:
+    """True when the text has at least one sentence terminator."""
+    return any(ch in SCRIPT_SENTENCE_END_CHARS for ch in str(text or ""))
+
+
+def _drop_last_sentence(text: str) -> str:
+    """Remove the final whole sentence; returns '' when nothing is left."""
+    sentences = _split_sentences(text)
+    if len(sentences) <= 1:
+        return ""
+    return "".join(sentences[:-1]).strip()
+
+
 def _trim_text_to_char_budget(text: str, budget: int) -> str:
+    """Shorten text to (about) a character budget at sentence boundaries.
+
+    Whole sentences are kept as long as they fit, so the TTS never reads
+    half a clause.  When even the first sentence is over budget the text
+    is dropped (the caller then removes that empty scene) instead of
+    shipping a chopped sentence.  Only text with no sentence terminator
+    at all -- e.g. a model that returned one unpunctuated run -- falls
+    back to a whitespace boundary and finally to the exact budget.
+    """
     value = str(text or "").strip()
     budget = max(0, int(budget or 0))
     if len(value) <= budget:
         return value
     if budget <= 0:
         return ""
-    cut = value.rfind("။", 0, budget)
-    # Keep a complete sentence when it does not remove too much of the
-    # scene; otherwise use the exact character budget as a last resort.
-    if cut >= max(25, int(budget * 0.55)):
-        return value[:cut + 1].strip()
+    if _text_is_sentence_structured(value):
+        kept = ""
+        for sentence in _split_sentences(value):
+            candidate = kept + sentence
+            if len(candidate.strip()) <= budget:
+                kept = candidate
+            else:
+                break
+        return kept.strip()
+    # No punctuation to cut on: prefer the last word boundary.
+    cut = value.rfind(" ", 0, budget + 1)
+    if cut >= max(10, int(budget * 0.5)):
+        return value[:cut].strip()
     return value[:budget].strip()
 
 
 def trim_scenes_proportionally(scenes: list, desired_total_chars: int) -> list:
-    """Shorten every scene proportionally instead of deleting the ending.
+    """Shorten the script only at sentence boundaries.
 
-    This is used after actual TTS measurement shows the narration is too
-    long.  Keeping the beginning of every chronological scene preserves the
-    first-person framing and avoids the old behaviour of dropping all late
-    scenes simply because the total estimate was over target.
+    Used after measured TTS shows the narration is too long.  Each step
+    removes one whole trailing sentence -- choosing the scene whose
+    trailing sentence comes closest to the exact excess, so the script
+    lands on the target instead of being rounded down wildly -- and a
+    scene whose single sentence is still too long is dropped whole rather
+    than chopped.  The v5.14 report was narration shredded proportionally
+    through the middle of sentences, which the TTS read as broken, chopped
+    speech.  Text with no sentence terminator at all (a punctuation-free
+    model reply) falls back to a word-boundary character cut.
+
+    With the learned script-length rate the script now arrives at (or just
+    above) the requested size, so this is a small correction -- usually
+    dropping the last sentence of a few scenes -- instead of deleting two
+    thirds of the narration.
     """
-    valid = [dict(s) for s in (scenes or []) if isinstance(s, dict)]
+    trimmed = [dict(s) for s in (scenes or []) if isinstance(s, dict)]
     desired = max(0, int(desired_total_chars or 0))
-    total = script_total_chars(valid)
-    if not valid or desired <= 0 or total <= desired:
-        return valid
+    total = script_total_chars(trimmed)
+    if not trimmed or desired <= 0 or total <= desired:
+        return trimmed
 
-    ratio = desired / float(total)
-    trimmed = []
-    for scene in valid:
-        text = str(scene.get("burmese") or "").strip()
-        budget = max(1, int(math.floor(len(text) * ratio))) if text else 0
-        new_scene = dict(scene)
-        new_scene["burmese"] = _trim_text_to_char_budget(text, budget)
-        trimmed.append(new_scene)
+    max_attempts = 20 + 6 * sum(
+        len(_split_sentences(scene.get("burmese") or "")) for scene in trimmed
+    )
+    attempts = 0
+    while total > desired and attempts < max_attempts:
+        attempts += 1
+        excess = total - desired
+        best = None  # (distance from the excess, scene index, new text)
+        for index, scene in enumerate(trimmed):
+            current = str(scene.get("burmese") or "").strip()
+            if not current:
+                continue
+            sentences = _split_sentences(current)
+            if len(sentences) > 1:
+                shortened = "".join(sentences[:-1]).strip()
+            elif sentences and not _text_is_sentence_structured(current):
+                # No sentence terminator at all: the only boundary left is
+                # a word boundary / exact budget.
+                shortened = _trim_text_to_char_budget(
+                    current, max(1, len(current) - excess)
+                )
+            else:
+                # One whole sentence that cannot be split: remove the
+                # scene instead of shipping a half sentence.
+                shortened = ""
+            if shortened == current:
+                continue
+            distance = abs((len(current) - len(shortened)) - excess)
+            if best is None or distance < best[0]:
+                best = (distance, index, shortened)
+        if best is None:
+            break
+        trimmed[best[1]]["burmese"] = best[2]
+        new_total = script_total_chars(trimmed)
+        if new_total >= total:
+            break
+        total = new_total
 
-    # Sentence-boundary choices can leave a small remainder either way.
-    # Remove any remaining excess from the longest scenes first, while
-    # preserving at least a short first-person opening where possible.
-    excess = script_total_chars(trimmed) - desired
-    while excess > 0:
-        candidates = [
-            i for i, scene in enumerate(trimmed)
-            if len(str(scene.get("burmese") or "")) > 30
-        ]
-        if not candidates:
-            break
-        index = max(
-            candidates,
-            key=lambda i: len(str(trimmed[i].get("burmese") or "")),
-        )
-        current = str(trimmed[index].get("burmese") or "")
-        reduction = min(excess, max(1, len(current) - 25))
-        trimmed[index]["burmese"] = _trim_text_to_char_budget(
-            current, len(current) - reduction
-        )
-        new_excess = script_total_chars(trimmed) - desired
-        if new_excess >= excess:
-            break
-        excess = new_excess
-    return [s for s in trimmed if str(s.get("burmese") or "").strip()]
+    kept = [scene for scene in trimmed if str(scene.get("burmese") or "").strip()]
+    if not kept:
+        # Never trim the narration away entirely (an over-aggressive
+        # desired_total_chars must not yield silence): keep the opening
+        # scene's first whole sentence, which carries the protagonist's
+        # first person.
+        for scene in trimmed:
+            sentences = _split_sentences(str(scene.get("burmese") or ""))
+            if sentences:
+                fallback = dict(scene)
+                fallback["burmese"] = sentences[0].strip()
+                kept = [fallback]
+                break
+    return kept
 
 
 def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
-    """Cap an initially over-long script without deleting its ending."""
+    """Cap an initially over-long script without deleting its ending.
+
+    The cap is the 1.05x allowance, not the target itself: the first
+    prompt deliberately asks for ~15% extra text (models undershoot
+    character counts), and trimming all the way down to the target here
+    would needlessly land the narration *short*, which costs an expensive
+    Gemini video call to expand it.  A few percent long is corrected for
+    free by the measured-duration trim after TTS.
+    """
     limit = int(max(0, int(target_chars or 0)) * SCRIPT_MAX_RATIO)
     if script_total_chars(scenes) <= limit:
         return scenes
-    return trim_scenes_proportionally(scenes, int(target_chars or 0))
+    return trim_scenes_proportionally(scenes, limit)
 
 
 # The narration is *spoken*, so the script must be in spoken
@@ -4839,7 +5090,15 @@ async def build_chunk_recap(
     # Keep the requested scene count and per-scene length mathematically
     # consistent.  The old values required at least 15 x 80 chars even for
     # a 120s part whose full 90% target is only about 702 chars.
+    #
+    # With the learned rate the same 120s window now targets ~250 chars
+    # (free Edge Burmese speaks ~2.3 chars/second), so the time-based
+    # count (120/12 = 10 scenes) would ask for ~25 characters per scene --
+    # fragments that are hard to speak and hard to trim without losing
+    # content.  Cap the count so a scene keeps roughly a full sentence.
     scene_count = max(1, min(15, int(round(float(chunk_dur or 0) / 12.0)) or 1))
+    chars_scene_cap = max(1, int(round(float(target_chars or 0) / 45.0)))
+    scene_count = max(1, min(scene_count, chars_scene_cap))
     # Models reliably undershoot explicit character counts, which used
     # to trigger extra full-video top-up calls on most windows (each
     # one re-processes the whole clip -- slow).  Ask for ~15% more
@@ -13471,7 +13730,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.14-audio-smooth"
+BUILD_VERSION = "v5.15-learned-rate"
 BUILD_FEATURES = 20
 
 
@@ -13519,6 +13778,11 @@ async def root():
         "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
+        # Script length is planned from the voice's *measured* chars/second
+        # (learned process-wide), not a hard-coded 6.5; the free Edge
+        # Burmese voices speak ~2.1-2.5 chars/second.
+        "script_length_rate": learned_script_rate_state(),
+        "script_trim_policy": "sentence_boundaries_only",
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -13602,6 +13866,11 @@ async def health():
         "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
+        # Script length is planned from the voice's *measured* chars/second
+        # (learned process-wide), not a hard-coded 6.5; the free Edge
+        # Burmese voices speak ~2.1-2.5 chars/second.
+        "script_length_rate": learned_script_rate_state(),
+        "script_trim_policy": "sentence_boundaries_only",
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
