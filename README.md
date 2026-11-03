@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.11-calibration-converge` is a **one-shot automatic flow**: the user
+Version `v5.12-spoken-style` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -74,8 +74,14 @@ silent-scene failures, and exposed on `/healthz` as
 (default `edge,gemini` -- completely free first, no quota queue):
 Microsoft Edge Burmese neural voices (`my-MM-ThihaNeural` /
 `my-MM-NilarNeural`, gender-matched to the selected voice's
-pronoun) synthesize each batch in seconds with no plan quota, and
-Gemini Charon is the fallback if Edge ever fails. (In production
+pronoun) synthesize each *scene* separately in seconds with no
+plan quota -- per-scene requests mean every clip is exactly its
+own scene's audio (joined-batch slicing guesses were heard as
+doubled/cut speech), and one flaky scene degrades to a short
+silence instead of sinking the batch. Scripts are prompted in
+spoken Burmese register (စကားပြောဟန်, short sentences -- written
+"book" Burmese made the narration sound read-aloud), and Gemini
+Charon is the fallback if Edge ever fails. (In production
 the free-tier key's Gemini TTS plan quota was exhausted, which is
 what put Edge first.) Set `TTS_PROVIDER_ORDER=gemini,edge` to put
 Charon first again, or `EDGE_TTS_FALLBACK_ENABLED=0` to disable
@@ -300,7 +306,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.11-calibration-converge"`,
+URLs must show `"version":"v5.12-spoken-style"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
