@@ -2256,6 +2256,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "gemini-2.5-flash-tts", health.json()["direct_tts_models"]
             )
             self.assertEqual(
+                health.json()["last_tts_provider"], bot._LAST_TTS_PROVIDER
+            )
+            self.assertTrue(health.json()["edge_tts_fallback_enabled"])
+            self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
                 bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
             )
@@ -5128,8 +5132,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "_make_gemini_client", lambda: fake_client)
         )
         self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        edge_mock = AsyncMock()
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=edge_mock)
+        )
         self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
         self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+        self.addCleanup(setattr, bot, "_LAST_TTS_PROVIDER", "")
 
         clips = await bot._tts_one_batch(
             batch, 0, 1, str(self.tmp_path), None
@@ -5139,6 +5148,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(clips), 2)
         self.assertIn("bad-tts", bot._LAST_TTS_ERROR)
         self.assertIn("400", bot._LAST_TTS_ERROR)
+        # Gemini worked -> fallback untouched, provider recorded.
+        edge_mock.assert_not_called()
+        self.assertEqual(bot._LAST_TTS_PROVIDER, "gemini")
 
     async def test_tts_one_batch_all_fail_records_error_for_gates(self):
         # When every TTS model fails, the batch returns None (silence
@@ -5156,8 +5168,19 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.start_patch(
             patch.object(bot, "_make_gemini_client", lambda: fake_client)
         )
+        # Edge fallback is tried after Gemini -- make it fail too so
+        # the batch exercises the total-failure path (and no network).
+        self.start_patch(
+            patch.object(
+                bot,
+                "_edge_tts_synthesize_to_file",
+                new=AsyncMock(side_effect=RuntimeError("edge down")),
+            )
+        )
         self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
         self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "only-tts", None)
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "edge-tts", None)
 
         clips = await bot._tts_one_batch(
             [{"burmese": "က"}], 0, 1, str(self.tmp_path), None
@@ -5166,6 +5189,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(clips)
         self.assertIn("only-tts", bot._LAST_TTS_ERROR)
         self.assertIn("last TTS error", bot._last_tts_error_suffix())
+        self.assertIn("edge down", bot._LAST_TTS_ERROR_BY_MODEL["edge-tts"])
 
     async def test_tts_one_batch_remembers_quota_exhausted_model(self):
         # Production: gemini-2.5-flash-preview-tts answered 429
@@ -5191,8 +5215,17 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.start_patch(
             patch.object(bot, "_make_gemini_client", lambda: fake_client)
         )
+        # Keep the Edge fallback out of this test (and off network).
+        self.start_patch(
+            patch.object(
+                bot,
+                "_edge_tts_synthesize_to_file",
+                new=AsyncMock(side_effect=RuntimeError("edge down")),
+            )
+        )
         self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
         self.addCleanup(bot._QUOTA_EXHAUSTED_MODELS.pop, "quota-tts", None)
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "edge-tts", None)
         self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "quota-tts", None)
         self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
 
@@ -5257,6 +5290,74 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen_cmds), 1)
         input_args = seen_cmds[0][: seen_cmds[0].index("-i")]
         self.assertNotIn("s16le", input_args)
+
+    async def test_tts_one_batch_edge_fallback_when_gemini_quota_dead(self):
+        # Production endgame: every Gemini TTS model quota-exhausted
+        # (429) failed whole jobs at 100% silent scenes.  The batch
+        # must now complete via the free Edge Burmese voice instead.
+        batch = [{"burmese": "က"}, {"burmese": "ခ"}]
+        edge_calls = []
+
+        def gen(model, contents, config):
+            raise RuntimeError(
+                "429 RESOURCE_EXHAUSTED. You exceeded your current "
+                "quota, please check your plan and billing details."
+            )
+
+        async def fake_edge_save(text, voice, out_path):
+            edge_calls.append((text, voice))
+            with open(out_path, "wb") as f:
+                f.write(b"\xff\xfb" + b"\x00" * 4000)  # fake MP3 bytes
+
+        def fake_run_cmd(cmd, timeout):
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x10\x00" * bot.SAMPLE_RATE * 2)
+            return SimpleNamespace(returncode=0)
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(bot, "PREFERRED_TTS_MODELS", ["quota-tts-e1"])
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", lambda: fake_client)
+        )
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=fake_edge_save)
+        )
+        self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(bot._QUOTA_EXHAUSTED_MODELS.pop, "quota-tts-e1", None)
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "quota-tts-e1", None)
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+        self.addCleanup(setattr, bot, "_LAST_TTS_PROVIDER", "")
+
+        clips = await bot._tts_one_batch(
+            batch, 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(clips), 2)
+        self.assertEqual(bot._LAST_TTS_PROVIDER, "edge")
+        self.assertEqual(len(edge_calls), 1)
+        # Default voice is Charon (male pronoun) -> male Burmese voice.
+        self.assertEqual(edge_calls[0][1], "my-MM-ThihaNeural")
+        self.assertIn("quota-tts-e1", bot._quota_exhausted_active())
+
+    def test_edge_tts_voice_mapping_matches_pronoun(self):
+        self.assertEqual(
+            bot._edge_tts_voice_for({"voice": "Charon"}),
+            "my-MM-ThihaNeural",
+        )
+        self.assertEqual(
+            bot._edge_tts_voice_for({"voice": "Kore"}),
+            "my-MM-NilarNeural",
+        )
+        self.assertEqual(
+            bot._edge_tts_voice_for({"voice": "Aoede"}),
+            "my-MM-NilarNeural",
+        )
 
     def test_tts_speech_config_shapes(self):
         new_cfg = bot._tts_speech_config("Charon", "voice")
