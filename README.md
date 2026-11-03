@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.23-pro-sync-no-freeze` is a **one-shot automatic flow**: the user
+Version `v5.24-pro-edit-natural` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -297,12 +297,29 @@ Edit sync is treated as a first-class concern, not an afterthought:
 scripts are written in finer scenes (~8 seconds each) with the text
 amount proportional to each scene's on-screen span and the key story
 beats front-loaded, model timestamps are repaired so no scene can
-end up with zero footage, scene starts snap to real detected shot
-cuts, and when a scene's narration still outruns its footage the
-*footage is slowed down* (never the audio) instead of freezing on a
-single frame — a still picture under continuing speech reads as a
-broken video, while slow-moving footage of the right event reads as
-an edit.
+end up with zero footage, and at render time the scene boundaries
+are placed *proportionally to the measured narration durations*
+(each scene gets about as much footage as its speech needs, pulled
+toward the model's timestamps within a few seconds of drift and
+snapped to real detected shot cuts). When a scene's narration still
+outruns its footage the *footage is slowed down* (never the audio)
+instead of freezing on a single frame — a still picture under
+continuing speech reads as a broken video, while slow-moving
+footage of the right event reads as an edit. The segment renders
+pass their length as an ffmpeg *input* option and the concatenated
+video track is length-checked against the narration before muxing:
+an output-side `-t` used to silently truncate every slowed (or
+frozen) segment back to its input length, so the video track ended
+early while container duration probes (which report the audio)
+still passed — the root cause of two releases of "the video froze
+but the audio kept going" reports.
+
+Narration text is written to be *spoken*: everyday colloquial
+Burmese with storyteller connectors and short punchy sentences, no
+bookish endings, no Latin/foreign script or digits (foreign words
+are transliterated into Burmese sound and numbers are spelled out
+as Burmese words — enforced deterministically before synthesis),
+so the voice never stumbles over unreadable tokens.
 
 Every narration scene must visibly speak in the protagonist's first person
 with one consistent pronoun (`ကျွန်တော်` or `ကျွန်မ`) in the Burmese text
@@ -509,7 +526,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.23-pro-sync-no-freeze"`,
+URLs must show `"version":"v5.24-pro-edit-natural"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,

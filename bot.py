@@ -5816,11 +5816,100 @@ def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
 _SPEECH_MAX_SENTENCE_CHARS = 150
 
 
+_BURMESE_DIGIT_WORDS = (
+    "သုည", "တစ်", "နှစ်", "သုံး", "လေး",
+    "ငါး", "ခြောက်", "ခုနစ်", "ရှစ်", "ကိုး",
+)
+_BURMESE_NUMBER_PLACES = (
+    (10_000_000, "ကုဋေ"),
+    (1_000_000, "သန်း"),
+    (100_000, "သိန်း"),
+    (10_000, "သောင်း"),
+    (1_000, "ထောင်"),
+    (100, "ရာ"),
+    (10, "ဆယ်"),
+)
+_MYANMAR_DIGIT_MAP = str.maketrans("၀၁၂၃၄၅၆၇၈၉", "0123456789")
+_SPOKEN_NUMBER_RE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
+
+
+def _burmese_number_words(value) -> str:
+    """Render an integer as spoken Burmese words.
+
+    15 -> တစ်ဆယ့်ငါး, 250 -> နှစ်ရာ့ငါးဆယ်,
+    1234 -> တစ်ထောင့်နှစ်ရာ့သုံးဆယ့်လေး, 2000000 -> နှစ်သန်း.
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return str(value or "")
+    if number < 0:
+        return "အနုတ်" + _burmese_number_words(-number)
+    if number == 0:
+        return _BURMESE_DIGIT_WORDS[0]
+    parts = []
+    remainder = number
+    for place, name in _BURMESE_NUMBER_PLACES:
+        if remainder >= place:
+            digit = remainder // place
+            if digit > 9:
+                # Beyond 9x10^7: read digit by digit rather than
+                # inventing a wrong place name.
+                return "".join(
+                    _BURMESE_DIGIT_WORDS[int(ch)] for ch in str(number)
+                )
+            parts.append((f"{_BURMESE_DIGIT_WORDS[digit]}{name}", place))
+            remainder -= digit * place
+    if remainder:
+        parts.append((_BURMESE_DIGIT_WORDS[remainder], 1))
+    spoken = ""
+    for index, (part_text, place) in enumerate(parts):
+        spoken += part_text
+        # Places up to ထောင် take a linking ့ before what follows
+        # (တစ်ဆယ့်ငါး, နှစ်ရာ့ငါးဆယ်); သောင်း and above do not.
+        if index + 1 < len(parts) and place <= 1000:
+            spoken += "့"
+    return spoken
+
+
+def _spoken_numbers(text: str) -> str:
+    """Replace ASCII/Myanmar digit runs with Burmese number words.
+
+    TTS voices mispronounce or skip digit strings, and a raw
+    "50%" or "1234" inside narration breaks the natural spoken
+    flow. The script prompts forbid digits outright; this is the
+    deterministic safety net for any that slip through.
+    """
+    value = str(text or "").translate(_MYANMAR_DIGIT_MAP)
+
+    def _replace(match) -> str:
+        token = match.group(0)
+        percent = token.endswith("%")
+        if percent:
+            token = token[:-1]
+        token = token.replace(",", "")
+        try:
+            if "." in token:
+                whole, fraction = token.split(".", 1)
+                words = _burmese_number_words(int(whole)) + "ပွိုင့်" + "".join(
+                    _BURMESE_DIGIT_WORDS[int(ch)]
+                    for ch in fraction
+                    if ch.isdigit()
+                )
+            else:
+                words = _burmese_number_words(int(token))
+        except (TypeError, ValueError):
+            return match.group(0)
+        return words + ("ရာခိုင်နှုန်း" if percent else "")
+
+    return _SPOKEN_NUMBER_RE.sub(_replace, value)
+
+
 def _polish_text_for_speech(text: str) -> str:
     """Make one scene's text easier for the TTS voice to speak naturally.
 
-    Punctuation/whitespace only -- words are never added, dropped or
-    reordered:
+    - digit runs are spelled out as Burmese number words (the
+      voice cannot be trusted with raw "1234" or "90%");
     - whitespace runs collapse to single spaces;
     - a runaway "sentence" longer than ``_SPEECH_MAX_SENTENCE_CHARS``
       that is chained with Burmese clause commas (၊) is re-grouped
@@ -5829,7 +5918,7 @@ def _polish_text_for_speech(text: str) -> str:
       voice lands instead of trailing off mid-thought.
     """
     polished_sentences = []
-    for raw_sentence in _split_sentences(text):
+    for raw_sentence in _split_sentences(_spoken_numbers(text)):
         sentence = " ".join(str(raw_sentence or "").split())
         if not sentence:
             continue
@@ -6003,13 +6092,18 @@ def _dedupe_scripts_in_order(scripts: list) -> dict:
 # the TTS sounds like someone reading a book aloud (user report).
 _SPOKEN_STYLE_GUIDE = """
 ## အပြောဟန် (အလွန် အရေးကြီးပါသည်)
-ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်သည် — «စကားပြောဟန်» (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ စာအုပ်ထဲက ရေးသားဟန်ကို လုံးဝ မသုံးပါနှင့်။
-- ❌ မသုံးရ (ရေးသားဟန်): "…ပါသည်။" "…သည်။" "…၍" "…သောကြောင့်" "…အလို့ငှါ" "…စေရန်" "…ခဲ့ပါသည်" "…ဖြစ်စေသည်" "…ပြုလုပ်" "…ရောက်ရှိလာ" "…ပြောကြား"
-- ✅ သုံးရန် (အပြောဟန်): "…တယ်။" "…ခဲ့တယ်။" "…လို့" "…မို့" "…တဲ့" "…ဆိုတော့" "အဲ့ဒါနဲ့" "ပြီးတော့" "အဲဒါကြောင့်" "…လုပ်" "…ရောက်လာ" "…ပြော"
+ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်သည် — «စကားပြောဟန်» (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ စာအုပ်ထဲက ရေးသားဟန်ကို လုံးဝ မသုံးပါနှင့်။ နေ့တိုင်း လူတွေ တကယ် သုံးနေကျ စကားလုံးတွေ၊ စကားဆက်တွေနဲ့ Professional narrator တစ်ယောက်က စိတ်လှုပ်ရှားဖွယ် ဇာတ်လမ်း ပြန်ပြောပြနေသလို ရေးပါ။
+- ❌ မသုံးရ (ရေးသားဟန်): "…ပါသည်။" "…သည်။" "…၍" "…သောကြောင့်" "…အလို့ငှါ" "…စေရန်" "…ခဲ့ပါသည်" "…ဖြစ်စေသည်" "…ပြုလုပ်" "…ရောက်ရှိလာ" "…ပြောကြား" "…မှတ်ချက်ပြု" "…ရရှိ" "…ဆောင်ရွက်" "…ယင်းနောက်" "…ထို့နောက်" "…စဉ်" "…ချင်း" (ရေးဟန်)
+- ✅ သုံးရန် (အပြောဟန်): "…တယ်။" "…ခဲ့တယ်။" "…လို့" "…မို့" "…တဲ့" "…ဆိုတော့" "အဲ့ဒါနဲ့" "ပြီးတော့" "အဲဒါကြောင့်" "…လုပ်" "…ရောက်လာ" "…ပြော" "…ရ" "…လုပ်လိုက်" "အဲ့ဒီနောက်" "အဲဒီနောက်" "…တုန်း" "…ချင်တိုင်း"
+- နေ့တိုင်း အသုံးများ စကားဆက် (storyteller connectors) တွေနဲ့ ချိတ်ဆက်ရေးပါ — အလှည့်ကျ သုံးပါ၊ တစ်မျိုးတည်းကို ထပ်ခါတလဲလဲ မသုံးပါနှင့်: "အဲ့ဒီမှာ…" "ဒါပေမဲ့…" "ဒါနဲ့…" "နောက်တော့…" "ဒီလိုနဲ့…" "ဒီအချိန်မှာ…" "တကယ့်ပြဿနာက ဘာလဲဆိုတော့…" "ဒီမှာ အရေးကြီးတဲ့အချက်က…" "အံ့ဩစရာကောင်းတာက…" "တကယ်တော့…" "နောက်ဆုံး…"
+- စည်း (rhythm): စာကြောင်း တိုတို ရိုက်နှက်ချက် ပြင်းပြင်းနဲ့ အလတ်စား ရှင်းပြကြောင်းကို ရောရေးပါ။ တစ်ခါတစ်လေ မေးခွန်းပုံစံနဲ့ ပရိသတ်ကို ဆွဲဆက်ပါ (ဥပမာ: "ဒီလို အခြေအနေမှာ ကျွန်တော် ဘာဆက်လုပ်မလို့လဲ။" "အဲ့ဒီလူက ဘယ်သူဖြစ်မလဲ။") — အများကြီး မများစေနှင့်၊ နေရာတိုင်းလည်း မလုပ်နှင့်။
+- လှုပ်ရှားမှု ပြ ကြိယာတွေ ပြတ်ပြတ်သားသား သုံးပါ: "ရုတ်တရက်" "တက်တက်စင်" "ချက်ချင်း" "တစ်ချက်တည်း" "အားရပါးရ" "ညင်ညင်သာသာ" "တုန်လှုပ်သွား" "စိတ်လှုပ်ရှား" "ရယ်ရတာ အသား" လို ခံစားချက်ပါ စကားလုံးတွေ နေရာကျရာ ထည့်ပါ။ ဒါပေမဲ့ ဖန်တီးတာ မလုပ်ရဘူး — video မှာ တကယ် ပြထားတဲ့ အရာကိုပဲ ရေးပါ။
 - ဥပမာ ❌: "ကျွန်တော် အိမ်သို့ ပြန်လာခဲ့ပါသည်။ အမေ့ကို မြင်လိုက်ရသောအခါ အံ့သြခဲ့သည်။"
 - ဥပမာ ✅: "ကျွန်တော် အိမ်ပြန်ရောက်လာခဲ့တယ်။ အမေ့ကို မြင်လိုက်ရတော့ ကျွန်တော် အံ့သြသွားတယ်။"
+- ဥပမာ ✅ (storyteller ဟန်): "အဲ့ဒီမှာ တကယ့်ပြဿနာ စတယ်။ ကျွန်တော်က ဒီသူကို အထင်သေးခဲ့မိတယ်။ ဒါပေမဲ့ သူက ကျွန်တော်ထင်သလို မဟုတ်ဘူး။ နောက်ပြီး သူ ဘာလုပ်သွားလဲဆိုတော့…"
 - စာကြောင်းတွေကို တိုတိုထားပါ — တစ်ကြောင်းကို စာလုံး ၂၅ လုံးထက် မရှည်ပါစေနှင့်။ ရှည်တဲ့ စာကြောင်းကို နှစ်ကြောင်း ခွဲရေးပါ။ အသံနားထောင်ရတာ ရှင်းလင်း သဘာဝကျဖို့ အရေးကြီးသည်။
 - သူငယ်ချင်းတစ်ယောက်ကို ဇာတ်လမ်းပြန်ပြောပြနေသလို ရေးပါ။ ဒါပေမဲ့ slang အလွန်အကျွံ (ဗျာ၊ ရှင်၊ ဟဲဟဲ စသည်) မသုံးပါနှင့်။
+- ⛔ အင်္ဂလိပ်အက္ခရာ (A-Z)၊ တရုတ်/နိုင်ငံခြား စာလုံး၊ ဂဏန်း (123 / ၁၂၃) ကို narration စာသားမှာ လုံးဝ မထည့်ရဘူး — အသံက အဲ့ဒါတွေကို မဖတ်နိုင်ဘူး၊ အသံထွက် ပျက်တယ်။ နိုင်ငံခြားစကားလုံးတွေကို မြန်မာအသံထွက်အတိုင်း ရေးပါ (ဥပမာ: Level → လယ်ဗယ်၊ Game → ဂိမ်း၊ Boss → ဗောစ်၊ Skill → စကေး)။ နိုင်ငံခြားစကားပြောတွေကိုတော့ အဓိပ္ပါယ်အတိုင်း မြန်မာလို ဘာသာပြန်ရေးပါ။ ဂဏန်းတွေကိုလည်း မြန်မာစာလုံးနဲ့ ရေးပါ (ဥပမာ: 50 → ငါးဆယ်၊ 1000 → တစ်ထောင်၊ 90% → ကိုးဆယ်ရာခိုင်နှုန်း)။
 - အရေးကြီးတဲ့ စကားပြောခန်းတွေမှာ ဇာတ်ကောင်တွေ ပြောတဲ့စကားကို တိုက်ရိုက်ပုံစံနဲ့ ထည့်ပြောပါ (ဥပမာ: အဖေက \"ဒီနေ့ ငါးအကြီးကြီး ရခဲ့တယ်\" လို့ ပြောတယ်)။ နားထောင်သူက ဇာတ်လမ်းထဲမှာ ကိုယ်တိုင် ပါနေသလို ခံစားရဖို့ ဖြစ်ပါတယ်။ ဒါပေမဲ့ စာသားတစ်ခုလုံးက ကျွန်တော်/ကျွန်မ ပြန်ပြောပြနေတဲ့ ပထမလူပုံစံကနေ မလွဲစေပါနှင့်။
 """.strip()
 
@@ -6042,7 +6136,7 @@ Scene တိုင်းတွင် «{pronoun}» ကို ပထမဝါက�
 ကိုယ်တိုင်မရှိသော မြင်ကွင်းဆိုလျှင် «အဲဒီတုန်းက {pronoun} မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှ {pronoun} သိလိုက်ရတာက…» ဟုစပါ။
 အဓိကဇာတ်ကောင်အမည်: {protagonist or "မသိရသေး"}
 ပြန်ရေးပြီးစာသားအရှည်သည် current_burmese_chars ထက် မနည်းရပါ။
-ပြန်ရေးရာတွင် စကားပြောဟန် (အပြောမြန်မာ) ကိုပါ ထိန်းပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးပါနှင့်၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။
+ပြန်ရေးရာတွင် စကားပြောဟန် (အပြောမြန်မာ) ကိုပါ ထိန်းပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးပါနှင့်၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 
 Scenes:
 {payload_json}
@@ -6253,7 +6347,7 @@ async def build_chunk_recap(
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
-JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — တစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
+JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — တစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ (၇) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
 
 ## အဖြေထုတ်ပုံ
 အောက်ပါပုံစံအတိုင်း JSON ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် ရှင်းလင်းချက် သို့မဟုတ် အခြားစာသား မရေးပါနှင့်။
@@ -6387,7 +6481,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့် (ခန်းပျမ်းမျှ {request_chars_per_scene} လုံး) ရေးပါ။
 - အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် ရွေးထားသော နာမ်စား ပါရမည်။
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
-- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဥပမာ ❌ "ကျွန်တော် ပြန်လာခဲ့ပါသည်။" ✅ "ကျွန်တော် ပြန်ချလာခဲ့တယ်။"
+- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဥပမာ ❌ "ကျွန်တော် ပြန်လာခဲ့ပါသည်။" ✅ "ကျွန်တော် ပြန်ချလာခဲ့တယ်။" အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 - JSON key များမှာ "protagonist", "pronoun", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
 
 {{
@@ -6477,7 +6571,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - လေသံ: {tone_line}
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့်။
 - အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။
-- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ၊ စာကြောင်းတိုတို ရေးပါ။
+- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ၊ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 - JSON မလိုပါ။ မြန်မာစာသားချည်း တိုက်ရိုက် ရေးပါ။ ခေါင်းစဉ်၊ ရှင်းလင်းချက်၊ အင်္ဂလိပ်စာ မထည့်ပါနှင့်။
 """.strip()
                 try:
@@ -6580,7 +6674,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ပထမလူ အမြင် (First person) ကို ဆက်ထိန်းပါ — ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်၍ နာမ်စား «{new_pronoun or pronoun or 'ယခင် script တွင် သုံးထားသော ကျွန်တော်/ကျွန်မ'}» ကိုသာ ဆက်သုံးပါ။ ကိုယ့်အကြောင်းကို «သူ/သူမ» ဟု မပြောင်းပါနှင့်။
 ကိုယ် မရှိခဲ့၊ မမြင်ရသေးသည့် မြင်ကွင်းဖြစ်လျှင် «အဲဒီတုန်းက ကျွန်တော် မသိသေးပေမယ့် ...» ဟု ဆက်စပ် ဖော်ပြပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
-စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။
+စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 🎯 အသစ်စာသားကို {missing} လုံးမှ {int(missing * 1.2)} လုံးအတွင်းသာ ထပ်ဖြည့်ပါ (အဲဒီထက် မပိုရ)။ ပေါင်းလျှင် စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ဝန်းကျင် ဖြစ်ရပါမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဦးစားပေး ဖြည့်ပါ။
 
 ယခင် script:
@@ -6902,7 +6996,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{new_pronoun}» တစ်မျိုးတည်းကိုသာ သုံးရမည်။
 Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမည်။
 ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။
-စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
+စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
 
 ရှိပြီးသား script:
 {json.dumps(scenes, ensure_ascii=False)}
@@ -7121,6 +7215,31 @@ JSON ကိုသာပြန်ပေးပါ:
         pause_seconds=pause_seconds,
         cut_times=cut_times,
     )
+    # Persist alignment diagnostics to /healthz: container duration
+    # probes cannot see freeze/stretch pressure, and the previous
+    # freeze bug stayed invisible precisely because nothing
+    # recorded how hard the plan had to stretch each scene.
+    if isinstance(_LAST_DURATION_CALIBRATION, dict):
+        _LAST_DURATION_CALIBRATION["alignment"] = {
+            "scenes": len(plan),
+            "cut_points": len(cut_times or []),
+            "freeze_seconds_total": round(
+                sum(float(i.get("freeze_seconds") or 0) for i in plan), 3
+            ),
+            "max_stretch": round(
+                max(
+                    (float(i.get("stretch_factor") or 1.0) for i in plan),
+                    default=1.0,
+                ),
+                3,
+            ),
+            "stretched_scenes": sum(
+                1 for i in plan if float(i.get("stretch_factor") or 1.0) > 1.01
+            ),
+            "starts": [
+                round(float(i.get("source_start") or 0), 2) for i in plan
+            ],
+        }
     expected_final_seconds = sum(
         float(item.get("desired_output_seconds") or 0) for item in plan
     )
@@ -7170,9 +7289,17 @@ JSON ကိုသာပြန်ပေးပါ:
         )
         result = await asyncio.to_thread(run_cmd, [
             FFMPEG_BIN, "-y",
+            # -t must stay an *input* option: as an output option it
+            # measured post-filter timestamps and silently truncated
+            # every setpts-stretched (and tpad-frozen) segment back
+            # to input_seconds, so the video track came out shorter
+            # than the narration and played as a frozen last frame
+            # under continuing speech (the persistent freeze bug,
+            # proven with ffmpeg: setpts=2 + output -t 5 -> 5.0s out
+            # instead of 10.0s; input-side -t gives the full 10.0s).
             "-ss", f"{float(item.get('source_start') or 0):.3f}",
-            "-i", chunk_path,
             "-t", f"{max(0.04, float(item.get('input_seconds') or 0.04)):.3f}",
+            "-i", chunk_path,
             "-an",
             "-vf", ffmpeg_filter,
             "-c:v", "libx264",
@@ -7198,6 +7325,20 @@ JSON ကိုသာပြန်ပေးပါ:
     ], 300)
     if result.returncode != 0 or not os.path.exists(video_only):
         raise RuntimeError("direct video concat failed")
+
+    # The video *track* must really be as long as the narration.
+    # A shorter video track muxed with full-length audio passes
+    # every container-duration probe (the container reports the
+    # audio length) yet plays as a frozen last frame under
+    # continuing speech -- exactly how the segment -t truncation
+    # above stayed invisible through two releases.
+    video_track_seconds, _, _ = probe_video_info(video_only)
+    if video_track_seconds < expected_final_seconds - 1.0:
+        raise RuntimeError(
+            "Direct video track is shorter than the narration: "
+            f"{video_track_seconds:.1f}s of video vs "
+            f"{expected_final_seconds:.1f}s of planned narration"
+        )
 
     out_chunk = str(output_path or "") or chunk_path.replace(".mp4", "_recap.mp4")
     if os.path.dirname(os.path.abspath(out_chunk)):
@@ -9399,7 +9540,7 @@ def _rewrite_prompt(
 အဓိကတာဝန်: {task_line}
 လေသံ: {_worker_tone_line(st)}
 နာမ်စား: {pronoun_line}
-စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်လို့ သူငယ်ချင်းကို ဇာတ်လမ်းပြောပြနေသလို သဘာဝကျရမည်။
+စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်လို့ သူငယ်ချင်းကို ဇာတ်လမ်းပြောပြနေသလို သဘာဝကျရမည်။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 
 လိုက်နာရမည်များ:
 - Output သည် Burmese သာ ဖြစ်ရမည်။ မူရင်းဘာသာစကားကို ဘာသာပြန်ပါ။
@@ -10673,8 +10814,12 @@ def _detect_shot_cuts(video_path: str, duration: float = 0.0) -> list:
 def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: float, pause_seconds: float = 0.0, cut_times: list = None) -> list:
     """Build start-aligned video cuts without changing narration speed.
 
-    - Scene starts snap to nearby *real* shot cuts (``cut_times``)
-      so the picture changes when the narration changes scene.
+    - Scene boundaries are placed proportionally to the narration
+      durations (each scene gets about as much footage as its
+      speech needs), pulled toward the model's timestamps within
+      a few seconds of drift, and snapped to nearby *real* shot
+      cuts (``cut_times``) so the picture changes when the
+      narration changes scene.
     - If narration is shorter than its source scene, only the
       beginning of that scene is kept.
     - If narration is longer, the scene's own footage (up to the
@@ -10707,22 +10852,61 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
             return float(best)
         return value
 
-    # Resolve every scene's start first (snapped + strictly
-    # increasing), because each scene's footage limit is the *next*
-    # scene's resolved start.
-    starts = []
-    cursor_min = 0.0
+    # Resolve every scene's start first, because each scene's
+    # footage limit is the *next* scene's start. Boundaries are
+    # primarily PROPORTIONAL: the source is divided in the same
+    # proportions as the narration durations, so every scene gets
+    # about as much footage as its speech needs. Trusting the
+    # model's timestamps alone let a small model front-load most
+    # of the narration onto a few early scenes with almost no
+    # footage -- a distribution mismatch no stretch factor could
+    # cover, which froze under the audio. The model's timestamp
+    # now acts only as an anchor: the proportional boundary may
+    # drift from it by a few seconds, and it still snaps to a
+    # nearby real shot cut.
     max_start = max(0.0, source_duration - 0.04)
+    anchors = []
     for index, scene in enumerate(scenes):
         try:
             raw_start = float(scene.get("start") or 0)
         except (TypeError, ValueError, AttributeError) as e:
             raise WorkerJobError(f"invalid scene timing at index {index + 1}") from e
-        start = _snap_start(max(0.0, min(raw_start, max_start)))
-        start = max(start, cursor_min)
-        start = min(start, max_start)
-        starts.append(start)
-        cursor_min = start + 0.05
+        anchors.append(max(0.0, min(raw_start, max_start)))
+
+    desired_list = []
+    for index, raw_audio_duration in enumerate(audio_durations):
+        try:
+            audio_value = max(0.0, float(raw_audio_duration or 0))
+        except (TypeError, ValueError):
+            audio_value = 0.0
+        pause_value = pause_seconds if index + 1 < len(scenes) else 0.0
+        desired_list.append(audio_value + pause_value)
+
+    total_desired = sum(desired_list)
+    first_start = _snap_start(anchors[0]) if anchors else 0.0
+    first_start = max(0.0, min(first_start, max_start))
+    proportional_scale = (
+        (source_duration - first_start) / total_desired
+        if total_desired > 0
+        else 1.0
+    )
+    anchor_drift = min(6.0, max(2.0, source_duration * 0.04))
+    starts = [first_start] if anchors else []
+    proportional_cursor = first_start
+    for index in range(1, len(anchors)):
+        proportional_cursor += desired_list[index - 1] * proportional_scale
+        anchor = anchors[index]
+        boundary = min(
+            max(proportional_cursor, anchor - anchor_drift),
+            anchor + anchor_drift,
+        )
+        boundary = _snap_start(boundary)
+        boundary = max(boundary, starts[-1] + 0.25)
+        latest = max_start - 0.25 * (len(anchors) - index - 1)
+        if boundary > latest and latest > starts[-1]:
+            boundary = latest
+        starts.append(max(0.0, min(boundary, max_start)))
+        proportional_cursor = starts[-1]
 
     plan = []
     output_cursor = 0.0
@@ -10916,9 +11100,13 @@ async def _worker_stage_render(state: dict, tracker=None):
             )
             result = await asyncio.to_thread(run_cmd, [
                 FFMPEG_BIN, "-y",
+                # -t must stay an *input* option (see the direct
+                # renderer): as an output option it truncated every
+                # setpts-stretched/tpad-frozen segment back to
+                # input_seconds and the video track ended early.
                 "-ss", f"{float(item.get('source_start') or 0):.3f}",
-                "-i", source_path,
                 "-t", f"{max(0.04, float(item.get('input_seconds') or 0.04)):.3f}",
+                "-i", source_path,
                 "-an",
                 "-vf", ffmpeg_filter,
                 "-c:v", "libx264",
@@ -10956,6 +11144,20 @@ async def _worker_stage_render(state: dict, tracker=None):
         if result.returncode != 0 or not os.path.exists(video_only_path) or os.path.getsize(video_only_path) <= 0:
             detail = result.stderr.decode(errors="ignore")[-600:]
             raise WorkerJobError(f"video concat failed: {detail}")
+
+        # Same video-track guard as the direct renderer: container
+        # duration after muxing would report the (longer) audio and
+        # hide a truncated video track, which then plays frozen.
+        planned_video_seconds = sum(
+            float(item.get("desired_output_seconds") or 0) for item in plan
+        )
+        video_track_seconds, _, _ = probe_video_info(video_only_path)
+        if video_track_seconds < planned_video_seconds - 1.0:
+            raise WorkerJobError(
+                "Rendered video track is shorter than the narration: "
+                f"{video_track_seconds:.1f}s of video vs "
+                f"{planned_video_seconds:.1f}s planned"
+            )
 
         _worker_check_cancelled(state)
         final_path = _worker_path(state, "final.mp4")
@@ -15494,7 +15696,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.23-pro-sync-no-freeze"
+BUILD_VERSION = "v5.24-pro-edit-natural"
 BUILD_FEATURES = 20
 
 
@@ -15581,7 +15783,7 @@ async def root():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
-        "edit_sync": "shot_cut_snapped_stretch_instead_of_freeze",
+        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
@@ -15705,7 +15907,7 @@ async def health():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
-        "edit_sync": "shot_cut_snapped_stretch_instead_of_freeze",
+        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -16193,10 +16395,9 @@ def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
         "ဒီတစ်ခါ ပြင်ထားတာတွေ —\n"
-        "• ဗီဒီယို <b>ရပ်တန့်နေပြီး အသံပဲ သွားနေတာ</b> မရှိတော့ပါ — "
-        "အသံရှည်ရင် footage ကိုပဲ ဖြေးဖြေးချပြီး ဆက်ပြပါတယ်\n"
-        "• အသံနဲ့ <b>ဇာတ်ကွက် ပိုကိုက်အောင်</b> တကယ့် shot-cut နေရာတွေနဲ့ ညှိထားပါတယ်\n"
-        "• Script မှာ <b>အဓိကအချက်တွေ မကျန်အောင်</b> ဦးစားပေး ရေးခိုင်းထားပါတယ်\n"
+        "• <b>Freeze ဖြစ်စေတဲ့ တကယ့် bug</b> ကို ရှာတွေ့ ပြင်ပြီးပါပြီ — ဗီဒီယိုက အသံထက် တိုပြီး ကုန်သွားလို့ နောက်ဆုံးမြင်ကွက်မှာ ရပ်တည်နေခဲ့တာ၊ အခု ဗီဒီယိုက အသံနဲ့အတူ အပြည့်အဝ သွားပါပြီ\n"
+        "• Scene အပိုင်းချိုးတွေကို <b>အသံပမာဏနဲ့ အချိုးကျအောင်</b> ချိန်ညှိထားပါတယ် — ဇာတ်ကွက်နဲ့ အသံ ပိုကိုက်ပါမယ်\n"
+        "• Script ကို <b>လူအသုံးများတဲ့ စကားလုံးတွေ</b>နဲ့ ပို သဘာဝကျ၊ ပို Professional ကျကျ ပြန်ပြောပုံစံ ပြောင်းထားပါတယ် (ဂဏန်းတွေကိုလည်း မြန်မာလိုပဲ ဖတ်ပါမယ်)\n"
         "• Final က မူရင်းထက် <b>မရှည်ပါ</b> · Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
         "🎬 ဗီဒီယို ဒါမှမဟုတ် link ပို့ပြီး စမ်းကြည့်ပါ။"
     )
