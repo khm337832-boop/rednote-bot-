@@ -5514,6 +5514,17 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             1500,
         )
 
+    def test_minimum_script_chars_allows_near_complete_script(self):
+        # Production regression: a complete first-person script of
+        # 715 chars for a 734-char estimate was refused for being
+        # 5 chars under the old 98% minimum -- before measured-TTS
+        # calibration (which enforces the real duration and can
+        # expand) ever ran.  The char gate is only an anti-summary
+        # floor now.
+        self.assertLessEqual(bot._minimum_script_chars(734), 715)
+        # A half-length summary is still refused.
+        self.assertGreater(bot._minimum_script_chars(734), 367)
+
     def test_tts_speech_config_shapes(self):
         new_cfg = bot._tts_speech_config("Charon", "voice")
         self.assertEqual(new_cfg.voice_config.voice, "Charon")
