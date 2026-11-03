@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.19-job-recovery` is a **one-shot automatic flow**: the user
+Version `v5.20-dialogue-beats` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -87,7 +87,9 @@ per-clip loudnorm made the speech stop-start with jumping
 loudness. Final part joins re-encode audio so AAC priming
 cannot leave a gap at each seam. Scripts are prompted in
 spoken Burmese register (စကားပြောဟန်, short sentences -- written
-"book" Burmese made the narration sound read-aloud), and Gemini
+"book" Burmese made the narration sound read-aloud; key dialogue
+lines are embedded as direct speech inside the first-person
+retelling, closer to popular recap-channel storytelling), and Gemini
 Charon is the fallback if Edge ever fails. (In production
 the free-tier key's Gemini TTS plan quota was exhausted, which is
 what put Edge first.) Set `TTS_PROVIDER_ORDER=gemini,edge` to put
@@ -481,7 +483,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.19-job-recovery"`,
+URLs must show `"version":"v5.20-dialogue-beats"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
