@@ -112,6 +112,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         start(patch.object(bot, "_LAST_TTS_PROVIDER", ""))
         start(patch.object(bot, "TTS_PROVIDER_ORDER", ("edge", "gemini")))
         start(patch.dict(bot._LEARNED_CHARS_PER_SEC, {}, clear=True))
+        # TTS diagnostics are process-global too; start every test clean so
+        # a previous test's provider error cannot leak into /healthz asserts.
+        start(patch.object(bot, "_LAST_TTS_ERROR", ""))
+        start(patch.object(bot, "_LAST_TTS_SILENCED_SCENES", 0))
+        start(patch.object(bot, "_LAST_TTS_RETRY_RECOVERED", 0))
+        start(patch.dict(bot._LAST_TTS_ERROR_BY_MODEL, {}, clear=True))
 
         if hasattr(bot, "USER_SETTINGS"):
             bot.USER_SETTINGS.clear()
@@ -2570,6 +2576,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["script_trim_policy"], "sentence_boundaries_only"
             )
+            self.assertEqual(
+                health.json()["tts_resilience"],
+                "per_scene_retries_then_sentence_pieces_then_fresh_pass",
+            )
+            self.assertIn("last_tts_retry_recovered_scenes", health.json())
+            self.assertEqual(health.json()["last_tts_silenced_scenes"], 0)
             self.assertEqual(
                 health.json()["final_duration_enforcement"],
                 "measured_tts_and_rendered_file",
@@ -5827,6 +5839,188 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bot._clip_is_silent(clips[0]))
         self.assertTrue(bot._clip_is_silent(clips[1]))
         self.assertIn("edge-tts", bot._LAST_TTS_ERROR_BY_MODEL)
+
+    # --- v5.16: Edge TTS resilience (production "3/5 silent scenes") ---
+    def _edge_text_clip_harness(self, fail_times=0, fail_always=False):
+        """Fake Edge save/master that returns audio sized to the text.
+
+        The audio for a text is ``len(text) / 2.3`` seconds of speech,
+        i.e. what the real free Edge Burmese voice produces, so the clip
+        validation bounds are exercised for real.
+        """
+        calls = []
+        sleeps = []
+
+        async def fake_save(text, voice, out_path):
+            calls.append((text, voice))
+            if fail_always or len(calls) <= fail_times:
+                raise RuntimeError("Cannot connect to host speech.platform.bing.com")
+            with open(out_path, "wb") as f:
+                # >400 bytes: Edge's "produced no audio file" check.
+                f.write(b"EDGE" + text.encode("utf-8") + b"\x00" * 600)
+
+        async def fake_master(tmp_raw, tmp_pcm, voice_filter, input_args):
+            with open(tmp_raw, "rb") as f:
+                payload = f.read()[4:].split(b"\x00", 1)[0]
+            text = payload.decode("utf-8")
+            return np.full(
+                max(1, int(bot.SAMPLE_RATE * len(text) / 2.3)),
+                0.5,
+                dtype=np.float32,
+            )
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=fake_save)
+        )
+        self.start_patch(patch.object(bot, "_audio_file_to_master", new=fake_master))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=fake_sleep))
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "edge-tts", None)
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+        self.addCleanup(setattr, bot, "_LAST_TTS_PROVIDER", "")
+        self.addCleanup(setattr, bot, "_LAST_TTS_SILENCED_SCENES", 0)
+        return calls, sleeps
+
+    async def test_edge_scene_retries_transient_failures_with_backoff(self):
+        text = MALE_PRONOUN + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။"
+        calls, sleeps = self._edge_text_clip_harness(fail_times=2)
+
+        clips = await bot._tts_one_batch_edge(
+            [{"burmese": text}], 0, 1, str(self.tmp_path),
+            dict(bot.DEFAULT_SETTINGS), "", text,
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(calls), 3)  # two transient failures, then OK
+        self.assertEqual(sleeps[:2], [0.6, 1.5])
+        self.assertFalse(bot._clip_is_silent(clips[0]))
+        self.assertEqual(bot._LAST_TTS_SILENCED_SCENES, 0)
+        self.assertEqual(bot._LAST_TTS_PROVIDER, "edge")
+
+    async def test_edge_scene_retries_sentence_by_sentence_before_silence(self):
+        # A single long request that keeps failing must not lose the
+        # scene: re-request it sentence by sentence and rejoin the audio.
+        first = MALE_PRONOUN + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။"
+        second = "လမ်းမှာ မိုးက သည်းသည်းမည်းမည်း ရွာနေတယ်။"
+        text = first + " " + second
+        calls = []
+        sleeps = []
+
+        async def fake_save(text_arg, voice, out_path):
+            calls.append(text_arg)
+            if text_arg.strip() == text.strip():
+                raise RuntimeError("edge ws closed")
+            with open(out_path, "wb") as f:
+                f.write(b"EDGE" + text_arg.encode("utf-8") + b"\x00" * 600)
+
+        async def fake_master(tmp_raw, tmp_pcm, voice_filter, input_args):
+            with open(tmp_raw, "rb") as f:
+                payload = f.read()[4:].split(b"\x00", 1)[0].decode("utf-8")
+            return np.full(
+                max(1, int(bot.SAMPLE_RATE * len(payload) / 2.3)),
+                0.5,
+                dtype=np.float32,
+            )
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=fake_save)
+        )
+        self.start_patch(patch.object(bot, "_audio_file_to_master", new=fake_master))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=fake_sleep))
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "edge-tts", None)
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+        self.addCleanup(setattr, bot, "_LAST_TTS_SILENCED_SCENES", 0)
+
+        clips = await bot._tts_one_batch_edge(
+            [{"burmese": text}], 0, 1, str(self.tmp_path),
+            dict(bot.DEFAULT_SETTINGS), "", text,
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertFalse(bot._clip_is_silent(clips[0]))
+        self.assertEqual(bot._LAST_TTS_SILENCED_SCENES, 0)
+        # Whole-scene attempts all failed, then each sentence succeeded.
+        sentence_calls = [c for c in calls if c.strip() in (first.strip(), second.strip())]
+        self.assertEqual(len(sentence_calls), 2)
+        expected = int(bot.SAMPLE_RATE * len(first) / 2.3) + int(
+            bot.SAMPLE_RATE * len(second) / 2.3
+        )
+        self.assertAlmostEqual(clips[0].size, expected, delta=bot.SAMPLE_RATE // 2)
+
+    async def test_edge_gives_up_early_when_the_free_voice_is_down(self):
+        scenes = [
+            {"burmese": MALE_PRONOUN + f" စာကြောင်း နံပါတ် {i} ဖြစ်တယ်။"}
+            for i in range(5)
+        ]
+        calls, _sleeps = self._edge_text_clip_harness(fail_always=True)
+
+        clips = await bot._tts_one_batch_edge(
+            scenes, 0, 1, str(self.tmp_path),
+            dict(bot.DEFAULT_SETTINGS), "", "",
+        )
+
+        self.assertIsNone(clips)  # next provider / retry pass takes over
+        # Zero successes after two dead scenes -> stop instead of
+        # grinding through every scene of the batch.
+        self.assertEqual(
+            len(calls),
+            bot.EDGE_TTS_BATCH_ABORT_AFTER_FAILURES * bot.EDGE_TTS_SCENE_ATTEMPTS,
+        )
+        self.assertIn("edge-tts", bot._LAST_TTS_ERROR)
+        self.assertIn("no success", bot._LAST_TTS_ERROR)
+        self.assertIn("speech.platform.bing.com", bot._LAST_TTS_ERROR)
+
+    async def test_synthesize_tts_recovers_silent_scenes_in_a_fresh_pass(self):
+        calls = []
+
+        async def fake_one_batch(batch, b_idx, total, work_dir, settings=None):
+            calls.append((b_idx, len(batch)))
+            if len(calls) == 1:
+                return [
+                    np.zeros(100, dtype=np.float32) for _ in batch
+                ]
+            return [np.full(1000, 0.4, dtype=np.float32) for _ in batch]
+
+        self.start_patch(patch.object(bot, "_tts_one_batch", new=fake_one_batch))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(setattr, bot, "_LAST_TTS_SILENCED_SCENES", 0)
+        self.addCleanup(setattr, bot, "_LAST_TTS_RETRY_RECOVERED", 0)
+
+        scenes = [{"burmese": "က"}, {"burmese": "ခ"}]
+        clips = await bot.synthesize_tts(scenes, str(self.tmp_path), {})
+
+        self.assertEqual(len(clips), 2)
+        self.assertEqual(len(calls), 2)  # first pass + silent-scene retry pass
+        self.assertEqual(calls[1][1], 2)
+        self.assertTrue(all(not bot._clip_is_silent(clip) for clip in clips))
+        self.assertEqual(bot._LAST_TTS_SILENCED_SCENES, 0)
+        self.assertEqual(bot._LAST_TTS_RETRY_RECOVERED, 2)
+
+    def test_edge_tts_has_a_short_timeout_and_bounded_batch_abort(self):
+        # A hung Edge WebSocket must not eat the 300s Gemini TTS timeout.
+        self.assertGreaterEqual(bot.EDGE_TTS_TIMEOUT_SECONDS, 10)
+        self.assertLessEqual(bot.EDGE_TTS_TIMEOUT_SECONDS, 120)
+        self.assertEqual(bot.EDGE_TTS_SCENE_ATTEMPTS, 4)
+        self.assertEqual(bot.EDGE_TTS_BATCH_ABORT_AFTER_FAILURES, 2)
+        self.assertEqual(len(bot.EDGE_TTS_RETRY_DELAYS), bot.EDGE_TTS_SCENE_ATTEMPTS - 1)
+
+    def test_silent_scene_error_names_the_real_cause_in_burmese(self):
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+        bot._LAST_TTS_ERROR = (
+            "edge-tts: 3/5 scene(s) silent (my-MM-ThihaNeural): edge ws closed"
+        )
+        message = bot._silent_scenes_error(3, 5)
+
+        self.assertIn("အသံသွင်းမှု မအောင်မြင်ပါ", message)
+        self.assertIn("3/5", message)
+        self.assertIn("edge ws closed", message)
+        # The free Edge voice is the working provider: never blame Gemini.
+        self.assertNotIn("Gemini", message)
 
     def test_polish_clip_trims_dead_air_and_fades_edges(self):
         # Per-scene MP3s carry service/encoder silence at both ends;
