@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.14-audio-smooth` is a **one-shot automatic flow**: the user
+Version `v5.15-learned-rate` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -97,6 +97,30 @@ Edge entirely. `/healthz` shows `tts_provider_order`,
 `last_tts_silenced_scenes` (scenes replaced by silence in the
 most recent synthesis -- nonzero after a job means narration
 went missing somewhere).
+Script length is planned from the voice's **measured** speaking rate.
+Earlier releases sized every script with a hard-coded 6.5 chars/second,
+which matches the Gemini voices but not the free Microsoft Edge Burmese
+neural voices that actually speak ~2.1-2.5 chars/second. Every script
+therefore came out ~3x too long — a 2-minute window that should target
+112 seconds of narration planned 702 characters and measured 341
+seconds — and the duration calibration then deleted two thirds of it,
+which was heard as broken, chopped speech ("အသံအမှန် 05:41 ရှည်နေလို့
+ပစ်မှတ် 01:52 ဖြစ်အောင် ချိန်နေပါသည်"). Scripts are now sized with a
+**learned rate**: the bot keeps a process-global chars/second per TTS
+provider (`edge`, `gemini`), seeded at the measured Edge rate 2.3 for the
+default `edge,gemini` order and updated (exponential moving average,
+clamped to 1.2-9.0 chars/second) from `_narration_measurements`'
+`effective_chars_per_second` after every measured window. The learned
+rate drives every `target_chars` derivation — the direct per-window
+script writer, its top-up prompt, and the n8n worker rewrite — and is
+exposed on `/healthz` as `script_length_rate`. Trimming is now
+**sentence-boundary only**: when measured narration is still too long,
+whole trailing sentences are removed (scenes whose only sentence cannot
+be split are dropped whole rather than chopped), so the TTS never reads
+half a clause. The 90%-of-source final-duration gates and the
+per-scene first-person gates are unchanged: the target is reached by
+writing the right amount of text, not by shredding it.
+
 It
 installs the persistent bottom buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
@@ -208,11 +232,15 @@ source duration.
 
 Character counts are only the first estimate — the pre-TTS char
 gate is a coarse anti-summary floor (85% of the estimate), not the
-duration guarantee. After TTS, the bot
+duration guarantee — but that estimate is no longer a guess: scripts are
+sized with the learned chars/second of the voice that will speak them
+(free Edge Burmese: ~2.3, measured), so a 2-minute window at 90% plans
+about 248 characters instead of 702. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
-changed scenes are synthesized again; if it is long, scenes are shortened
-proportionally without deleting the ending. Calibration targets are
+changed scenes are synthesized again; if it is long, whole trailing
+sentences are removed (sentence boundaries ။ ! ? … only, biggest excess
+matched first) without deleting the ending or cutting mid-sentence. Calibration targets are
 computed from the *effective* rate (all script chars over all produced
 speech seconds, including any quiet slices) so trims always converge --
 the spoken-only rate inflates when some clips measure as silent and
@@ -253,7 +281,7 @@ The measured 90%-duration and per-scene first-person gates remain unchanged.
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
 12. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
-13. 🗣️ Script အလျင် ချိန်ညှိ — initial TTS chars/sec estimate 5.5 / 6.5 / 7.5 (later corrected from measured TTS)
+13. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge Burmese ~2.3) from measured TTS and sizes every script with it; choosing 5.5 / 7.5 is an explicit manual override
 14. 👤 ပြောပြသူ ရှုထောင့် — protagonist first-person (ကျွန်တော်/ကျွန်မ) always; every scene is validated/repaired and the script retells the whole video in order, scene by scene, no summarizing
 15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 16. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
@@ -318,11 +346,15 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.14-audio-smooth"`,
+URLs must show `"version":"v5.15-learned-rate"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
+`"script_trim_policy":"sentence_boundaries_only"`, a `script_length_rate`
+object (`"active_provider":"edge"`, `"learned_chars_per_second"` near 2.3
+on a fresh process, `"clamp":[1.2,9.0]`,
+`"learning_source":"measured_tts_effective_chars_per_second"`),
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,
 `"source_segment_seconds":120`,
