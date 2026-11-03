@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.15-learned-rate` is a **one-shot automatic flow**: the user
+Version `v5.16-tts-retry` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -97,6 +97,34 @@ Edge entirely. `/healthz` shows `tts_provider_order`,
 `last_tts_silenced_scenes` (scenes replaced by silence in the
 most recent synthesis -- nonzero after a job means narration
 went missing somewhere).
+The free Edge voice is the only working TTS in production (the free
+Gemini TTS plan quota is exhausted), so its outages used to kill jobs.
+A Microsoft-side blip made 3 of 5 scenes fail within seconds and the part
+gave up: `Gemini TTS produced too many silent scenes: 3/5` — a confusing
+message, because the failing engine was Edge and the Gemini quota error
+was only stale. v5.16 makes that path resilient and honest:
+
+- every scene gets **4 spaced attempts** (0.6s → 1.5s → 3s) instead of
+  three instant retries;
+- a scene that still fails is **re-requested sentence by sentence** and
+  the pieces are rejoined, so a long failing request does not lose that
+  scene's content;
+- if the first scenes of a batch fail with **zero successes**, the batch
+  stops early (Edge is down, not one request) and the next provider — or
+  the retry pass — takes over in seconds instead of grinding through
+  every scene;
+- `synthesize_tts` then re-synthesizes **every leftover silent scene in a
+  fresh pass** (2s later) before anything is accepted, and only genuinely
+  unrecoverable scenes stay silent;
+- one Edge request can no longer hang for minutes: Edge uses its own short
+  timeout (`EDGE_TTS_TIMEOUT_SECONDS`, default 45s) instead of the 300s
+  Gemini TTS timeout;
+- the failure that reaches the user is now Burmese and names the real
+  cause (`အသံသွင်းမှု မအောင်မြင်ပါ — scene 3/5 ခုမှာ အသံ မထွက်ပါ …`) with the
+  Edge error in the suffix, and `/healthz` exposes
+  `last_tts_retry_recovered_scenes` plus `tts_resilience` so flakiness is
+  visible even when jobs succeed.
+
 Script length is planned from the voice's **measured** speaking rate.
 Earlier releases sized every script with a hard-coded 6.5 chars/second,
 which matches the Gemini voices but not the free Microsoft Edge Burmese
@@ -346,12 +374,14 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.15-learned-rate"`,
+URLs must show `"version":"v5.16-tts-retry"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
-`"script_trim_policy":"sentence_boundaries_only"`, a `script_length_rate`
+`"script_trim_policy":"sentence_boundaries_only"`,
+`"tts_resilience":"per_scene_retries_then_sentence_pieces_then_fresh_pass"`,
+`"last_tts_retry_recovered_scenes":0`, `"edge_tts_timeout_seconds":45`, a `script_length_rate`
 object (`"active_provider":"edge"`, `"learned_chars_per_second"` near 2.3
 on a fresh process, `"clamp":[1.2,9.0]`,
 `"learning_source":"measured_tts_effective_chars_per_second"`),

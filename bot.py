@@ -463,6 +463,10 @@ _LAST_TTS_PROVIDER = ""
 # visible from outside, and a nonzero value here after a user
 # reports "audio breaks" tells us scenes went missing).
 _LAST_TTS_SILENCED_SCENES = 0
+# Silent scenes that the fresh re-synthesis pass recovered in the most
+# recent synthesize_tts call (health diagnostic: a rising number means the
+# free Edge voice is flaky right now, even when jobs still succeed).
+_LAST_TTS_RETRY_RECOVERED = 0
 
 # Free Microsoft Edge neural TTS as an emergency fallback when every
 # Gemini TTS model is unavailable (in production: the free-tier API
@@ -495,6 +499,20 @@ TTS_PROVIDER_ORDER = _parse_tts_provider_order(
 
 def _last_tts_error_suffix() -> str:
     return f" (last TTS error: {_LAST_TTS_ERROR})" if _LAST_TTS_ERROR else ""
+
+
+def _silent_scenes_error(silent_count: int, total: int) -> str:
+    """User-facing (Burmese) error for a narration with missing scenes.
+
+    Edge/Gemini wording is kept out of the headline: the TTS provider
+    order can be either, and the technical cause follows in the suffix.
+    """
+    return (
+        f"အသံသွင်းမှု မအောင်မြင်ပါ — scene {int(silent_count)}/{int(total)} ခုမှာ "
+        "အသံ မထွက်ပါ (အသံဖိုင် မရလို့ အကြိမ်ကြိမ် ထပ်ကြိုးစားပြီးပါပြီ)၊ "
+        "ခဏနေပြီး ပြန်စမ်းပေးပါ"
+        + _last_tts_error_suffix()
+    )
 
 
 MANUAL_SESSION_TTL_HOURS = max(
@@ -3353,6 +3371,28 @@ def _validate_scene_clip(clip, text: str) -> None:
 EDGE_TTS_VOICE_MALE = "my-MM-ThihaNeural"
 EDGE_TTS_VOICE_FEMALE = "my-MM-NilarNeural"
 
+# Edge TTS reliability.  The free Microsoft voice is the only working TTS
+# in production (the free Gemini TTS plan quota is exhausted), and a
+# Microsoft-side blip used to turn into "3/5 silent scenes" and a failed
+# part within seconds.  Each scene now gets several spaced attempts, a
+# failed scene is re-requested sentence by sentence (a long request that
+# keeps failing usually works when broken up, and nothing is lost), a
+# batch that is failing wholesale stops early instead of grinding through
+# every scene, and synthesize_tts re-synthesizes any leftover silent scene
+# in a fresh pass before anything is accepted.
+EDGE_TTS_SCENE_ATTEMPTS = 4
+EDGE_TTS_RETRY_DELAYS = (0.6, 1.5, 3.0)
+EDGE_TTS_PIECE_ATTEMPTS = 2
+EDGE_TTS_PIECE_DELAYS = (0.8,)
+EDGE_TTS_BATCH_ABORT_AFTER_FAILURES = 2
+EDGE_TTS_PIECE_MAX_SENTENCES = 12
+TTS_SILENT_SCENE_RETRY_DELAY_SECONDS = 2.0
+# Edge answers a scene in a few seconds; the 300s Gemini TTS timeout
+# would let one hung half-open WebSocket eat five minutes of a job.
+EDGE_TTS_TIMEOUT_SECONDS = max(
+    10, _parse_int_env("EDGE_TTS_TIMEOUT_SECONDS", 45)
+)
+
 
 def _edge_tts_voice_for(settings) -> str:
     if _voice_first_person_pronoun(settings) == FIRST_PERSON_FEMALE:
@@ -3367,8 +3407,88 @@ async def _edge_tts_synthesize_to_file(text: str, voice: str, out_path: str) -> 
     communicate = edge_tts.Communicate(text, voice)
     await asyncio.wait_for(
         communicate.save(out_path),
-        timeout=float(GEMINI_TTS_TIMEOUT_SECONDS),
+        timeout=float(EDGE_TTS_TIMEOUT_SECONDS),
     )
+
+
+async def _edge_tts_clip_for_text(
+    text: str,
+    voice: str,
+    voice_filter,
+    work_dir: str,
+    tag: str,
+    attempts: int = EDGE_TTS_SCENE_ATTEMPTS,
+    delays=EDGE_TTS_RETRY_DELAYS,
+):
+    """Synthesize+validate one Edge request, retrying transient failures.
+
+    Returns ``(clip, last_error)``; ``clip`` is a validated, polished
+    float32 array, or ``None`` when every attempt failed.
+    """
+    raw_path = os.path.join(work_dir, f"{tag}.mp3")
+    pcm_path = os.path.join(work_dir, f"{tag}.pcm")
+    last_error = None
+    for attempt in range(max(1, int(attempts or 1))):
+        try:
+            if not str(text or "").strip():
+                raise RuntimeError("empty scene text")
+            await _edge_tts_synthesize_to_file(text, voice, raw_path)
+            if not os.path.exists(raw_path) or os.path.getsize(raw_path) < 400:
+                raise RuntimeError("edge-tts produced no audio file")
+            clip = await _audio_file_to_master(raw_path, pcm_path, voice_filter, [])
+            # A decodable file can still be silent or cut off mid-word;
+            # only complete speech may leave this loop.
+            _validate_scene_clip(clip, text)
+            return _polish_clip(clip), None
+        except Exception as e:  # noqa: BLE001 - any provider failure is retried
+            last_error = e
+            if attempt + 1 < max(1, int(attempts or 1)):
+                wait = delays[min(attempt, len(delays) - 1)] if delays else 0.6
+                await asyncio.sleep(wait)
+        finally:
+            for path in (raw_path, pcm_path):
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+    return None, last_error
+
+
+async def _edge_tts_clip_in_pieces(
+    text: str,
+    voice: str,
+    voice_filter,
+    work_dir: str,
+    tag: str,
+):
+    """Retry a failing scene sentence by sentence and rejoin the audio.
+
+    A single long Edge request that keeps failing usually succeeds when it
+    is broken into its sentences, and every piece is still real speech for
+    that scene -- no content is invented or dropped.
+    """
+    sentences = [part.strip() for part in _split_sentences(text) if part.strip()]
+    if len(sentences) < 2:
+        return None, RuntimeError("scene has a single sentence; cannot split")
+    pieces = []
+    last_error = None
+    for index, sentence in enumerate(sentences[:EDGE_TTS_PIECE_MAX_SENTENCES]):
+        clip, error = await _edge_tts_clip_for_text(
+            sentence,
+            voice,
+            voice_filter,
+            work_dir,
+            f"{tag}_p{index}",
+            attempts=EDGE_TTS_PIECE_ATTEMPTS,
+            delays=EDGE_TTS_PIECE_DELAYS,
+        )
+        if clip is None:
+            return None, error or RuntimeError("sentence piece failed")
+        pieces.append(clip)
+    if not pieces:
+        return None, last_error or RuntimeError("no sentence pieces")
+    return np.concatenate(pieces).astype(np.float32), None
 
 
 async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voice_filter, joined):
@@ -3379,59 +3499,77 @@ async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voic
     heard as doubled/cut-off speech in the final video (user
     report).  Separate requests make every clip exactly its own
     scene's audio, with clean sentence prosody per request.
-    A scene that still fails after a retry becomes a short silence
-    so one bad scene cannot sink the whole batch; only if *every*
-    scene fails does the batch return None (next provider's turn).
+
+    Reliability (v5.16): a scene is first retried with spaced attempts,
+    then re-requested sentence by sentence, and only then does it become a
+    short silence so one bad scene cannot sink the whole batch.  If the
+    first scenes fail completely the batch gives up early (Edge is down,
+    not one request) and returns ``None`` so the next provider -- and the
+    re-synthesis pass in synthesize_tts -- can take over quickly instead
+    of spending a minute on every scene.
     """
-    global _LAST_TTS_PROVIDER, _LAST_TTS_SILENCED_SCENES
+    global _LAST_TTS_ERROR, _LAST_TTS_PROVIDER, _LAST_TTS_SILENCED_SCENES
     voice = _edge_tts_voice_for(s)
     clips = []
     successes = 0
+    failures = 0
+    last_batch_error = None
     for scene_idx, scene in enumerate(batch):
         text = " ".join(str(scene.get("burmese") or "").split())
-        tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_edge_{scene_idx}.mp3")
-        tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}_{scene_idx}.pcm")
-        clip = None
-        last_error = None
-        for _attempt in range(3):
-            try:
-                if not text:
-                    raise RuntimeError("empty scene text")
-                await _edge_tts_synthesize_to_file(text, voice, tmp_raw)
-                if not os.path.exists(tmp_raw) or os.path.getsize(tmp_raw) < 400:
-                    raise RuntimeError("edge-tts produced no audio file")
-                clip = await _audio_file_to_master(
-                    tmp_raw, tmp_pcm, voice_filter, []
+        tag = f"tts_{batch_idx}_edge_{scene_idx}"
+        clip, last_error = await _edge_tts_clip_for_text(
+            text, voice, voice_filter, work_dir, tag
+        )
+        if clip is None and text:
+            piece_clip, piece_error = await _edge_tts_clip_in_pieces(
+                text, voice, voice_filter, work_dir, tag
+            )
+            if piece_clip is not None:
+                clip = piece_clip
+                logger.info(
+                    f"TTS batch {batch_idx + 1}/{total_batches} scene "
+                    f"{scene_idx + 1}: sentence-by-sentence retry succeeded"
                 )
-                # A decodable file can still be silent or cut off
-                # mid-word; only complete speech may leave this loop.
-                _validate_scene_clip(clip, text)
-                clip = _polish_clip(clip)
-                break
-            except Exception as e:
-                last_error = e
-                clip = None
-            finally:
-                for p in (tmp_raw, tmp_pcm):
-                    if os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except Exception:
-                            pass
+            else:
+                last_error = last_error or piece_error
         if clip is None:
+            failures += 1
+            last_batch_error = last_error
             _LAST_TTS_ERROR_BY_MODEL["edge-tts"] = str(last_error)[:800]
             logger.warning(
                 f"TTS batch {batch_idx + 1}/{total_batches} scene "
-                f"{scene_idx + 1} edge-tts failed ({voice}): "
+                f"{scene_idx + 1} edge-tts failed ({voice}) after retries: "
                 f"{str(last_error)[:250]}"
             )
-            _LAST_TTS_SILENCED_SCENES += 1
             clip = np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32)
+            if successes == 0 and failures >= EDGE_TTS_BATCH_ABORT_AFTER_FAILURES:
+                logger.warning(
+                    f"TTS batch {batch_idx + 1}/{total_batches}: edge is "
+                    f"failing wholesale ({failures} scenes, 0 successes); "
+                    "giving up on Edge for this batch"
+                )
+                _LAST_TTS_ERROR = (
+                    f"edge-tts: {failures} scene(s) failed with no success "
+                    f"({voice}): {str(last_batch_error)[:400]}"
+                )
+                return None
         else:
             successes += 1
         clips.append(clip)
     if successes == 0:
+        _LAST_TTS_ERROR = (
+            f"edge-tts: every scene failed ({voice}): "
+            f"{str(last_batch_error)[:400]}"
+        )
         return None
+    if failures:
+        # Name the real cause in the user-facing error / /healthz rather
+        # than leaving a stale Gemini quota error from an earlier job.
+        _LAST_TTS_ERROR = (
+            f"edge-tts: {failures}/{len(batch)} scene(s) silent ({voice}): "
+            f"{str(last_batch_error)[:400]}"
+        )
+        _LAST_TTS_SILENCED_SCENES += failures
     _LAST_TTS_PROVIDER = "edge"
     logger.info(
         f"TTS batch {batch_idx + 1}/{total_batches} OK "
@@ -3623,10 +3761,44 @@ async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> 
                 )
             else:
                 logger.error(f"TTS batch {b_idx + 1}/{len(batches)} failed — silence fallback")
-            _LAST_TTS_SILENCED_SCENES += len(batch)
             clips = [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in batch]
         all_clips.extend(clips)
 
+    # Any scene still silent gets one more fresh pass.  A missing scene is
+    # not just a shorter recap: it is silence in the middle of the video
+    # and content the viewer never hears.  A new connection/request a
+    # moment later usually succeeds where the first pass was refused.
+    global _LAST_TTS_RETRY_RECOVERED
+    _LAST_TTS_RETRY_RECOVERED = 0
+    silent_indexes = [
+        index for index, clip in enumerate(all_clips) if _clip_is_silent(clip)
+    ]
+    if silent_indexes:
+        logger.warning(
+            f"TTS: {len(silent_indexes)} scene(s) came back silent; "
+            "retrying them in a fresh pass"
+        )
+        await asyncio.sleep(TTS_SILENT_SCENE_RETRY_DELAY_SECONDS)
+        retry_scenes = [scenes[index] for index in silent_indexes]
+        retry_batches = max(1, len(batches))
+        retry_clips = await _tts_one_batch(
+            retry_scenes, retry_batches, retry_batches + 1, work_dir, settings
+        )
+        if retry_clips is not None:
+            for index, clip in zip(silent_indexes, retry_clips):
+                if not _clip_is_silent(clip):
+                    all_clips[index] = clip
+        _LAST_TTS_RETRY_RECOVERED = sum(
+            1 for index in silent_indexes if not _clip_is_silent(all_clips[index])
+        )
+        logger.info(
+            "TTS: %d/%d silent scene(s) recovered in the retry pass"
+            % (_LAST_TTS_RETRY_RECOVERED, len(silent_indexes))
+        )
+
+    _LAST_TTS_SILENCED_SCENES = sum(
+        1 for clip in all_clips if _clip_is_silent(clip)
+    )
     return all_clips
 
 
@@ -5645,14 +5817,14 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
         for calibration_round in range(DURATION_CALIBRATION_ROUNDS + 1):
             if clips is None or len(clips) < len(scenes):
-                raise RuntimeError("Gemini TTS returned too few clips")
+                raise RuntimeError("TTS မှ အသံဖိုင် အလုံအလောက် မရပါ (too few clips)" + _last_tts_error_suffix())
             clips = list(clips)[:len(scenes)]
             measurements = _narration_measurements(scenes, clips, st)
             audio_seconds = float(measurements.get("narration_seconds") or 0)
             silent_count = int(measurements.get("silent_count") or 0)
             if silent_count == len(clips) or silent_count > max(1, int(len(clips) * 0.25)):
                 raise RuntimeError(
-                    f"Gemini TTS produced too many silent scenes: {silent_count}/{len(clips)}" + _last_tts_error_suffix()
+                    _silent_scenes_error(silent_count, len(clips))
                 )
             duration_status = _duration_status(audio_seconds, chunk_dur, st)
             calibration_history.append({
@@ -8828,11 +9000,13 @@ async def _worker_stage_tts(state: dict, tracker=None):
             _worker_check_cancelled(state)
             measurements = _narration_measurements(scenes, clips, settings)
             round_silent = int(measurements.get("silent_count") or 0)
-            if not scenes or round_silent == len(scenes):
-                raise WorkerJobError("Gemini TTS produced only silent audio" + _last_tts_error_suffix())
+            if not scenes:
+                raise WorkerJobError("Narration script is empty" + _last_tts_error_suffix())
+            if round_silent == len(scenes):
+                raise WorkerJobError(_silent_scenes_error(round_silent, len(scenes)))
             if round_silent > max(1, int(len(scenes) * 0.25)):
                 raise WorkerJobError(
-                    f"Gemini TTS produced too many silent scenes: {round_silent}/{len(scenes)}" + _last_tts_error_suffix()
+                    _silent_scenes_error(round_silent, len(scenes))
                 )
             narration_now = float(measurements.get("narration_seconds") or 0)
             calibration_history.append({
@@ -9002,11 +9176,13 @@ async def _worker_stage_tts(state: dict, tracker=None):
             if index < len(scenes) and pause_bytes:
                 wav_file.writeframes(pause_bytes)
 
-    if not entries or silent_count == len(entries):
-        raise WorkerJobError("Gemini TTS produced only silent audio" + _last_tts_error_suffix())
+    if not entries:
+        raise WorkerJobError("Narration has no audio entries" + _last_tts_error_suffix())
+    if silent_count == len(entries):
+        raise WorkerJobError(_silent_scenes_error(silent_count, len(entries)))
     if silent_count > max(1, int(len(entries) * 0.25)):
         raise WorkerJobError(
-            f"Gemini TTS produced too many silent scenes: {silent_count}/{len(entries)}" + _last_tts_error_suffix()
+            _silent_scenes_error(silent_count, len(entries))
         )
 
     # Loudness-normalize the assembled narration once (v5.14);
@@ -13730,7 +13906,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.15-learned-rate"
+BUILD_VERSION = "v5.16-tts-retry"
 BUILD_FEATURES = 20
 
 
@@ -13776,6 +13952,9 @@ async def root():
         "tts_provider_order": list(TTS_PROVIDER_ORDER),
         "audio_pipeline": "per_scene_validated_trim_fade_master_loudnorm",
         "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
+        "last_tts_retry_recovered_scenes": _LAST_TTS_RETRY_RECOVERED,
+        "tts_resilience": "per_scene_retries_then_sentence_pieces_then_fresh_pass",
+        "edge_tts_timeout_seconds": EDGE_TTS_TIMEOUT_SECONDS,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Script length is planned from the voice's *measured* chars/second
@@ -13864,6 +14043,9 @@ async def health():
         "tts_provider_order": list(TTS_PROVIDER_ORDER),
         "audio_pipeline": "per_scene_validated_trim_fade_master_loudnorm",
         "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
+        "last_tts_retry_recovered_scenes": _LAST_TTS_RETRY_RECOVERED,
+        "tts_resilience": "per_scene_retries_then_sentence_pieces_then_fresh_pass",
+        "edge_tts_timeout_seconds": EDGE_TTS_TIMEOUT_SECONDS,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Script length is planned from the voice's *measured* chars/second
