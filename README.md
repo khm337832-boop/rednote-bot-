@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.25-pro-audit-hardening` is a **one-shot automatic flow**: the user
+Version `v5.26-story-clarity-replay2` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -198,11 +198,19 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
    chronological order (1:30 → 45 windows, 3:00 → 90; only the last may
    be shorter). The full original is then deleted to save disk.
 3. **Script everything first**: write every window's first-person
-   full-retelling script in order (character names,
-   protagonist/pronoun, prior-events summary, and last scene carried
-   forward after every window) *before any audio exists*, then check
-   the joined script once as a whole (sentences repeated across
-   parts are removed, keeping the first telling). Only then voice
+   full-retelling script in order *before any audio exists*. Each
+   window first builds a `story_map`, and a cumulative **story
+   bible** is carried forward — character names plus role/relation/
+   aliases, protagonist/pronoun, ordered cause→action→consequence
+   beats, current goal/conflict, setting, unresolved threads,
+   important facts, summary, and last scene. The joined script is
+   then checked as a whole (sentences repeated across parts are
+   removed, keeping the first telling). If local clarity signals
+   say a draft reads like disconnected captions (thin beats, weak
+   transitions/causal links, or duplicated scenes), a bounded
+   text-only **story-editor** pass may rewrite that window without
+   moving events across scene boundaries; it is accepted only if
+   scene count/order, first person, length, and clarity hold up. Only then voice
    and edit each window from its finished script: speech-shaped
    polish (breath points for runaway sentences), a pre-TTS cap so a
    script cannot predict past its window, measured TTS with error
@@ -295,17 +303,23 @@ refused if its actual duration is outside the window.
 
 Edit sync is treated as a first-class concern, not an afterthought:
 scripts are written in finer scenes (~8 seconds each) with the text
-amount proportional to each scene's on-screen span and the key story
-beats front-loaded, model timestamps are repaired so no scene can
-end up with zero footage, and at render time the scene boundaries
-are placed *proportionally to the measured narration durations*
-(each scene gets about as much footage as its speech needs, pulled
-toward the model's timestamps within a few seconds of drift and
-snapped to real detected shot cuts). When a scene's narration still
-outruns its footage the *footage is slowed down* (never the audio)
-instead of freezing on a single frame — a still picture under
-continuing speech reads as a broken video, while slow-moving
-footage of the right event reads as an edit. The segment renders
+amount proportional to each scene's on-screen span. Each scene is
+tied to its ordered story-map beat, starts from the previous
+scene's result, and gives the cause before (or with) the reaction
+instead of front-loading a later reveal onto earlier footage.
+Model timestamps are repaired so no scene can end up with zero
+footage, and at render time the scene boundaries are placed
+*proportionally to the measured narration durations* (each scene
+gets about as much footage as its speech needs, pulled toward the
+model's timestamps within a few seconds of drift and snapped to
+real detected shot cuts). When narration modestly outruns footage
+the *footage is slowed down* (never the audio) instead of freezing
+on a single frame. When the shortage is severe enough that one
+slow pass would itself look frozen (narration/footage ratio over
+1.5), that same scene is replayed from its own start for a second
+pass — **two total showings, never three** — so both passes can
+move at a near-natural speed. A frozen frame now covers only what
+two capped passes still cannot. The segment renders
 pass their length as an ffmpeg *input* option and the concatenated
 video track is length-checked against the narration before muxing:
 an output-side `-t` used to silently truncate every slowed (or
@@ -314,12 +328,18 @@ early while container duration probes (which report the audio)
 still passed — the root cause of two releases of "the video froze
 but the audio kept going" reports.
 
-Narration text is written to be *spoken*: everyday colloquial
-Burmese with storyteller connectors and short punchy sentences, no
-bookish endings, no Latin/foreign script or digits (foreign words
-are transliterated into Burmese sound and numbers are spelled out
-as Burmese words — enforced deterministically before synthesis),
-so the voice never stumbles over unreadable tokens.
+Narration text is written to be *spoken and followed by ear alone*:
+everyday colloquial Burmese with meaningful storyteller connectors
+and short punchy sentences, named subjects whenever the actor
+changes, explicit speaker/listener in dialogue, and a clear
+cause→decision/action→consequence chain with short bridges across
+scene and window boundaries — no bookish endings, no
+Latin/foreign script or digits (foreign words are transliterated
+into Burmese sound and numbers are spelled out as Burmese words —
+enforced deterministically before synthesis), so the voice never
+stumbles over unreadable tokens and a listener who never sees the
+picture can still retell who did/said what to whom, why, and what
+happened next.
 
 Every narration scene must visibly speak in the protagonist's first person
 with one consistent pronoun (`ကျွန်တော်` or `ကျွန်မ`) in the Burmese text
@@ -526,7 +546,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.25-pro-audit-hardening"`,
+URLs must show `"version":"v5.26-story-clarity-replay2"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -534,6 +554,9 @@ URLs must show `"version":"v5.25-pro-audit-hardening"`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"script_trim_policy":"sentence_then_word_tail_boundaries"`,
 `"duration_calibration":"script_first_dedupe_expand_short_shave_over_source"`,
+`"edit_sync":"proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation"`,
+`"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
+`"story_editor":"clarity_gated_bounded_text_only_pass"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
 `"active_jobs":{}`, `"last_job_results":{}`,
@@ -552,7 +575,7 @@ on a fresh process, `"clamp":[1.2,24.0]`,
 `"source_segment_seconds":120`,
 `"source_split_acceptance":"stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback"`,
 `"render_keepalive":"self_ping_public_healthz_while_jobs_active"`,
-`"segment_pipeline":"download_split_120s_recap_each_concat_send"`,
+`"segment_pipeline":"download_split_120s_script_all_dedupe_then_voice_edit_concat_send"`,
 `"telegram_buttons":"inline_persistent_menu_auto_one_shot_manual_opt_in"`,
 `"telegram_link_handling":"profile_rejected_public_post_web_fallback"`, a current
 `yt_dlp_version`, the service's real `public_host`, and the deployed
@@ -564,7 +587,10 @@ and the configured `direct_script_models` list, an `auto_retry` object
 `"partial_final_delivery":"rejected_as_failed"`), plus
 `"manual_session_recovery":"telegram_message_payload_v1_with_legacy_caption_fallback"`.
 A healthy endpoint proves deployment only — full acceptance still
-requires one real Telegram send that returns a finished final video.
+requires one real Telegram send judged story-comprehensible by ear,
+narration matched to the footage, no frozen stretches, any scene
+replay limited to two total, and a finished final no longer than
+the original.
 If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
 URL belongs to a different/older service or that service is not deploying
 this repository's `main`; fixing that Render service's repository, branch,

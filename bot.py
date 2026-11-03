@@ -1482,9 +1482,12 @@ def start_features_text(chat_id=None) -> str:
             f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် ပထမလူ Script ရေးပြီး recap လုပ်မယ်။ "
             "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
             "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။\n"
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Story bible</b> က ဇာတ်ကောင်တွေရဲ့ အမည်/ဆက်နွယ်ပုံ၊ "
+            "ဖြစ်ရပ်အစဉ်၊ လက်ရှိပြဿနာနဲ့ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
+            "ဇာတ်လမ်းဆက်စပ်မှု အားနည်းရင် Story editor နဲ့ ထပ်စစ်ပြီးမှ အသံသွင်းမယ်။\n"
             f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
             f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။ "
+            "အသံနဲ့ မြင်ကွင်းကိုက်ပြီး freeze လျော့ဖို့ လိုအပ်ရင်သာ scene တစ်ခုကို အများဆုံး <b>၂ ကြိမ်</b> ပြန်ပြမယ် (၃ ကြိမ် မပြပါ)။ "
             "Recap ပြီးမှသာ <b>နောက် ၂ မိနစ်အပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပို့</b>မယ်။\n"
             "6️⃣ အပိုင်းအားလုံး Recap ပြီးမှ <b>🔗 ပြန်ဆက်မယ်</b> ခလုတ်ကို နှိပ်ရင် "
             "Recap အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်ပြီး final video ပို့မယ်။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။\n\n"
@@ -1497,11 +1500,13 @@ def start_features_text(chat_id=None) -> str:
             "3️⃣ <b>အရင် Script အကုန်လုံးကို အစဉ်အတိုင်း ရေးမယ်</b> — အပိုင်းတစ်ခုချင်းစီအတွက် ပထမလူ Script ရေး၊ "
             "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
             "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Story bible</b> က ဇာတ်ကောင်တွေရဲ့ အမည်/ဆက်နွယ်ပုံ၊ "
+            "ဖြစ်ရပ်အစဉ်၊ လက်ရှိပြဿနာနဲ့ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
+            "ဇာတ်လမ်းဆက်စပ်မှု အားနည်းရင် Story editor နဲ့ ထပ်စစ်မယ်။ "
             "Script အကုန်ပြီးရင် <b>ထပ်နေတဲ့ ဝါကျတွေ တစ်ခေါက် စစ်ဖယ်</b>မယ်။\n"
             f"4️⃣ ပြီးမှ <b>အသံသွင်းပြီး Edit</b> မယ်။ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
             f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ် — <b>Final က မူရင်းဗီဒီယိုထက် ဘယ်တော့မှ မရှည်ပါ</b>။ အသံကို stretch/tempo မလုပ်ဘူး။ "
-            "Edit တိုင်း error နဲ့ ကြာချိန်ကို စစ်တယ်။\n"
+            "Edit တိုင်း error နဲ့ ကြာချိန်ကို စစ်တယ်။ အသံနဲ့ မြင်ကွင်းကိုက်ပြီး freeze လျော့ဖို့ လိုအပ်ရင်သာ scene တစ်ခုကို အများဆုံး <b>၂ ကြိမ်</b> ပြန်ပြမယ် (၃ ကြိမ် မပြပါ)။\n"
             "5️⃣ အပိုင်းအားလုံး ပြီးရင် အစဉ်အတိုင်း <b>အလိုအလျောက် ပြန်ဆက်ပြီး "
             "Final duration စစ်ဆေးကာ Final video ပို့ပေးမယ်</b>။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။ "
             "Download/Script/TTS/Render/Upload ယာယီအမှားဖြစ်ရင် auto-retry လုပ်မယ်။\n\n"
@@ -1549,6 +1554,7 @@ _HELP_FLOW_STEPS = (
         "ပထမလူ Script ရေးပြီး Recap လုပ် → အားလုံးပြန်ဆက်ပြီး "
         "<b>Final video ကို အလိုအလျောက် ပို့ပေးမယ်</b>\n"
         "3️⃣ အပိုင်းခလုတ်တွေ နှိပ်စရာ မလိုပါ။ ၁ နာရီခွဲ (၁:၃၀) လောက်ရှည်တဲ့ video လည်း ရပါတယ်။ "
+        "ဇာတ်လမ်းဆက်စပ်မှုကို Story bible/Story editor နဲ့ စစ်ပြီး freeze လျော့ဖို့ လိုလျှင် မြင်ကွင်းတစ်ခုကို အများဆုံး ၂ ကြိမ်ပဲ ပြန်ပြပါမယ်။ "
         "ယာယီအမှားဖြစ်ရင် auto-retry လုပ်မယ်\n\n"
     )
 )
@@ -4949,6 +4955,560 @@ def _direct_float_or_none(value):
         return None
 
 
+def _clean_story_text(value, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    return text[: max(0, int(limit or 0))].strip()
+
+
+def _clean_story_string_list(
+    value,
+    *,
+    limit: int = 12,
+    item_limit: int = 240,
+) -> list:
+    if isinstance(value, (str, int, float)):
+        raw_values = [value]
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = []
+    cleaned = []
+    seen = set()
+    for item in raw_values:
+        if isinstance(item, dict):
+            raw_text = (
+                item.get("name")
+                or item.get("beat")
+                or item.get("event")
+                or item.get("fact")
+                or item.get("text")
+                or item.get("summary")
+                or ""
+            )
+        else:
+            raw_text = item
+        text = _clean_story_text(raw_text, item_limit)
+        key = _normalize_burmese_text(text)
+        if text and key and key not in seen:
+            cleaned.append(text)
+            seen.add(key)
+    return cleaned[: max(0, int(limit or 0))]
+
+
+def _normalize_character_cards(value, character_names=None) -> list:
+    """Character identities/roles the next script call must remember.
+
+    A bare list of names is not enough for a listener to follow a
+    long story: who each person is, how they relate to the speaker,
+    and which aliases belong to the same person have to survive the
+    two-minute window boundary.  ``characters`` in a story context
+    stays a backwards-compatible list of names; these cards carry
+    the explainable detail beside it.
+    """
+    raw_values = value if isinstance(value, list) else []
+    cards = []
+    by_name = {}
+
+    def add_card(name, role="", relation="", aliases=None):
+        clean_name = _clean_story_text(name, 80)
+        if not clean_name:
+            return
+        key = _normalize_burmese_text(clean_name)
+        existing = by_name.get(key)
+        if existing is None:
+            existing = {
+                "name": clean_name,
+                "role": "",
+                "relation": "",
+                "aliases": [],
+            }
+            by_name[key] = existing
+            cards.append(existing)
+        if role and not existing.get("role"):
+            existing["role"] = _clean_story_text(role, 140)
+        if relation and not existing.get("relation"):
+            existing["relation"] = _clean_story_text(relation, 180)
+        for alias in _clean_story_string_list(
+            aliases or [], limit=6, item_limit=60
+        ):
+            if _normalize_burmese_text(alias) == key:
+                continue
+            if alias not in existing["aliases"]:
+                existing["aliases"].append(alias)
+
+    for item in raw_values:
+        if isinstance(item, dict):
+            add_card(
+                item.get("name") or item.get("character") or item.get("title"),
+                role=item.get("role") or item.get("identity") or "",
+                relation=(
+                    item.get("relation")
+                    or item.get("relationship")
+                    or item.get("relation_to_protagonist")
+                    or ""
+                ),
+                aliases=item.get("aliases") or item.get("nicknames") or [],
+            )
+        else:
+            add_card(item)
+    for name in _clean_story_string_list(
+        character_names or [], limit=16, item_limit=80
+    ):
+        add_card(name)
+    return cards[:16]
+
+
+def _normalize_story_beats(value, *, chunk_duration: float = 0.0) -> list:
+    raw_values = value if isinstance(value, list) else []
+    duration = max(0.0, float(chunk_duration or 0))
+    beats = []
+    seen = set()
+    for item in raw_values:
+        if isinstance(item, dict):
+            text = _clean_story_text(
+                item.get("beat")
+                or item.get("event")
+                or item.get("summary")
+                or item.get("text")
+                or item.get("description")
+                or "",
+                320,
+            )
+            start = _direct_float_or_none(
+                item.get("start", item.get("start_time", item.get("start_seconds")))
+            )
+            end = _direct_float_or_none(
+                item.get("end", item.get("end_time", item.get("end_seconds")))
+            )
+        else:
+            text = _clean_story_text(item, 320)
+            start = None
+            end = None
+        if not text:
+            continue
+        beat = {"beat": text}
+        if start is not None:
+            start = max(0.0, float(start))
+            if duration > 0:
+                start = min(duration, start)
+            beat["start"] = round(start, 3)
+        if end is not None:
+            end = max(0.0, float(end))
+            if duration > 0:
+                end = min(duration, end)
+            if beat.get("start") is None or end > float(beat["start"]):
+                beat["end"] = round(end, 3)
+        key = (
+            _normalize_burmese_text(text),
+            beat.get("start"),
+            beat.get("end"),
+        )
+        if key not in seen:
+            beats.append(beat)
+            seen.add(key)
+    beats.sort(
+        key=lambda b: (
+            float(b.get("start"))
+            if isinstance(b.get("start"), (int, float))
+            else float("inf"),
+            float(b.get("end"))
+            if isinstance(b.get("end"), (int, float))
+            else float("inf"),
+        )
+    )
+    return beats[:32]
+
+
+def _normalize_story_map(value, *, chunk_duration: float = 0.0) -> dict:
+    """Normalize the model's non-spoken story plan for one window."""
+    if not isinstance(value, dict):
+        return {}
+    cards = _normalize_character_cards(
+        value.get("character_cards") or value.get("characters") or [],
+    )
+    beats = _normalize_story_beats(
+        value.get("beats")
+        or value.get("story_beats")
+        or value.get("events")
+        or [],
+        chunk_duration=chunk_duration,
+    )
+    story_map = {}
+    if cards:
+        story_map["character_cards"] = cards
+    if beats:
+        story_map["beats"] = beats
+    for output_key, aliases in (
+        ("current_goal", ("current_goal", "goal", "objective")),
+        ("current_conflict", ("current_conflict", "conflict", "problem")),
+        ("setting", ("setting", "location", "place")),
+    ):
+        for alias in aliases:
+            text = _clean_story_text(value.get(alias), 240)
+            if text:
+                story_map[output_key] = text
+                break
+    open_threads = _clean_story_string_list(
+        value.get("open_threads")
+        or value.get("unresolved_questions")
+        or value.get("mysteries")
+        or [],
+        limit=10,
+        item_limit=240,
+    )
+    if open_threads:
+        story_map["open_threads"] = open_threads
+    important_facts = _clean_story_string_list(
+        value.get("important_facts") or value.get("facts_to_remember") or [],
+        limit=16,
+        item_limit=240,
+    )
+    if important_facts:
+        story_map["important_facts"] = important_facts
+    return story_map
+
+
+def _merge_story_maps(*maps, chunk_duration: float = 0.0) -> dict:
+    normalized = [
+        _normalize_story_map(item, chunk_duration=chunk_duration)
+        for item in maps
+        if isinstance(item, dict)
+    ]
+    if not normalized:
+        return {}
+    merged_cards = _normalize_character_cards(
+        [
+            card
+            for story_map in normalized
+            for card in (story_map.get("character_cards") or [])
+        ]
+    )
+    merged_beats = _normalize_story_beats(
+        [
+            beat
+            for story_map in normalized
+            for beat in (story_map.get("beats") or [])
+        ],
+        chunk_duration=chunk_duration,
+    )
+    merged = {}
+    if merged_cards:
+        merged["character_cards"] = merged_cards
+    if merged_beats:
+        merged["beats"] = merged_beats
+    for key in ("current_goal", "current_conflict", "setting"):
+        for story_map in reversed(normalized):
+            if story_map.get(key):
+                merged[key] = story_map[key]
+                break
+    for key, limit in (("open_threads", 12), ("important_facts", 20)):
+        values = _clean_story_string_list(
+            [
+                item
+                for story_map in normalized
+                for item in (story_map.get(key) or [])
+            ],
+            limit=limit,
+            item_limit=240,
+        )
+        if values:
+            merged[key] = values
+    return merged
+
+
+def _story_context_from_story_map(
+    story_map,
+    *,
+    last_scene: str = "",
+    protagonist: str = "",
+    pronoun: str = "",
+) -> dict:
+    normalized_map = _normalize_story_map(story_map)
+    clean_protagonist = _clean_story_text(
+        protagonist
+        or (story_map.get("protagonist") if isinstance(story_map, dict) else ""),
+        100,
+    )
+    clean_pronoun = str(
+        pronoun
+        or (story_map.get("pronoun") if isinstance(story_map, dict) else "")
+        or ""
+    ).strip()
+    if clean_pronoun not in FIRST_PERSON_PRONOUNS:
+        clean_pronoun = ""
+    if not normalized_map and not last_scene and not clean_protagonist and not clean_pronoun:
+        return {}
+    cards = normalized_map.get("character_cards") or []
+    beats = [
+        str(item.get("beat") or "")
+        for item in (normalized_map.get("beats") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "characters": [str(card.get("name") or "") for card in cards if card.get("name")],
+        "character_cards": cards,
+        "summary": "",
+        "story_beats": _clean_story_string_list(beats, limit=24, item_limit=320),
+        "current_goal": normalized_map.get("current_goal") or "",
+        "current_conflict": normalized_map.get("current_conflict") or "",
+        "setting": normalized_map.get("setting") or "",
+        "open_threads": normalized_map.get("open_threads") or [],
+        "important_facts": normalized_map.get("important_facts") or [],
+        "last_scene": _clean_story_text(last_scene, 600),
+        "protagonist": clean_protagonist,
+        "pronoun": clean_pronoun,
+    }
+
+
+def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) -> dict:
+    """Canonical, cumulative story memory shared by direct and worker jobs."""
+    raw = value if isinstance(value, dict) else {}
+    nested_map = _normalize_story_map(
+        raw.get("story_map") or raw.get("story_bible") or {}
+    )
+    map_context = _story_context_from_story_map(nested_map)
+    raw_characters = raw.get("characters") or []
+    character_names = []
+    raw_cards = list(raw.get("character_cards") or [])
+    if isinstance(raw_characters, list):
+        for item in raw_characters:
+            if isinstance(item, dict):
+                raw_cards.append(item)
+                name = _clean_story_text(item.get("name") or item.get("character"), 80)
+            else:
+                name = _clean_story_text(item, 80)
+            if name:
+                character_names.append(name)
+    character_names = _clean_story_string_list(
+        character_names + (map_context.get("characters") or []),
+        limit=16,
+        item_limit=80,
+    )
+    cards = _normalize_character_cards(
+        raw_cards + (map_context.get("character_cards") or []),
+        character_names=character_names,
+    )
+    beats = []
+    for key in ("story_beats", "beats", "previous_beats", "events"):
+        beats.extend(
+            _clean_story_string_list(raw.get(key) or [], limit=32, item_limit=320)
+        )
+    beats.extend(map_context.get("story_beats") or [])
+    beats = _clean_story_string_list(beats, limit=32, item_limit=320)
+    if derive_beats and not beats and scenes:
+        derived = []
+        for scene in scenes:
+            text = _clean_story_text(
+                scene.get("burmese") if isinstance(scene, dict) else "",
+                220,
+            )
+            if text:
+                derived.append(text)
+        beats = _clean_story_string_list(derived, limit=16, item_limit=220)
+
+    protagonist_raw = raw.get("protagonist")
+    if isinstance(protagonist_raw, dict):
+        protagonist = _clean_story_text(
+            protagonist_raw.get("name") or protagonist_raw.get("protagonist"),
+            100,
+        )
+    else:
+        protagonist = _clean_story_text(protagonist_raw, 100)
+    pronoun = str(raw.get("pronoun") or "").strip()
+    if pronoun not in FIRST_PERSON_PRONOUNS:
+        pronoun = ""
+
+    def first_text(*keys, fallback="", limit=260):
+        for key in keys:
+            text = _clean_story_text(raw.get(key), limit)
+            if text:
+                return text
+        return _clean_story_text(fallback, limit)
+
+    return {
+        "characters": character_names,
+        "character_cards": cards,
+        "summary": _clean_story_text(raw.get("summary"), 4000),
+        "story_beats": beats,
+        "current_goal": first_text(
+            "current_goal", "goal", fallback=map_context.get("current_goal")
+        ),
+        "current_conflict": first_text(
+            "current_conflict",
+            "conflict",
+            fallback=map_context.get("current_conflict"),
+        ),
+        "setting": first_text(
+            "setting", "location", fallback=map_context.get("setting")
+        ),
+        "open_threads": _clean_story_string_list(
+            list(raw.get("open_threads") or [])
+            + list(map_context.get("open_threads") or []),
+            limit=12,
+            item_limit=240,
+        ),
+        "important_facts": _clean_story_string_list(
+            list(raw.get("important_facts") or [])
+            + list(map_context.get("important_facts") or []),
+            limit=24,
+            item_limit=240,
+        ),
+        "last_scene": _clean_story_text(raw.get("last_scene"), 800),
+        "protagonist": protagonist,
+        "pronoun": pronoun,
+    }
+
+
+def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
+    """Merge per-window story memory without resetting earlier chapters.
+
+    The previous summary step replaced the whole context with a
+    two/three-line summary of only the latest two minutes.  On a
+    long video that made names, motives and unresolved threads
+    vanish at every boundary, so later narration could sound like
+    disconnected captions.  Identity fields keep the first
+    established value; current-state fields use the latest value;
+    beats/facts accumulate in chronological order with sane caps.
+    """
+    normalized = [
+        _normalize_story_context(item)
+        for item in contexts
+        if isinstance(item, dict)
+    ]
+    fallback_scenes = (
+        list(fallback_from_scenes)
+        if isinstance(fallback_from_scenes, (list, tuple))
+        else []
+    )
+    fallback_texts = [
+        _clean_story_text(
+            scene.get("burmese") if isinstance(scene, dict) else "",
+            800,
+        )
+        for scene in fallback_scenes
+    ]
+    fallback_texts = [text for text in fallback_texts if text]
+    if not normalized:
+        fallback_context = _normalize_story_context(
+            {},
+            scenes=fallback_scenes,
+            derive_beats=bool(fallback_texts),
+        )
+        if fallback_texts:
+            fallback_context["last_scene"] = fallback_texts[-1]
+        return fallback_context
+
+    character_names = _clean_story_string_list(
+        [name for item in normalized for name in (item.get("characters") or [])],
+        limit=16,
+        item_limit=80,
+    )
+    cards = _normalize_character_cards(
+        [card for item in normalized for card in (item.get("character_cards") or [])],
+        character_names=character_names,
+    )
+    summary_pieces = []
+    seen_summaries = set()
+    for item in normalized:
+        summary = str(item.get("summary") or "").strip()
+        key = _normalize_burmese_text(summary)
+        if summary and key and key not in seen_summaries:
+            summary_pieces.append(summary)
+            seen_summaries.add(key)
+    summary = " ".join(summary_pieces)
+    if len(summary) > 4000:
+        summary = summary[:1000].rstrip() + " … " + summary[-2900:].lstrip()
+
+    def first_value(key):
+        for item in normalized:
+            if item.get(key):
+                return item[key]
+        return ""
+
+    def latest_value(key):
+        for item in reversed(normalized):
+            if item.get(key):
+                return item[key]
+        return ""
+
+    merged = {
+        "characters": character_names,
+        "character_cards": cards,
+        "summary": summary,
+        "story_beats": _clean_story_string_list(
+            [beat for item in normalized for beat in (item.get("story_beats") or [])],
+            limit=64,
+            item_limit=320,
+        )[-24:],
+        "current_goal": latest_value("current_goal"),
+        "current_conflict": latest_value("current_conflict"),
+        "setting": latest_value("setting"),
+        "open_threads": _clean_story_string_list(
+            [x for item in normalized for x in (item.get("open_threads") or [])],
+            limit=12,
+            item_limit=240,
+        ),
+        "important_facts": _clean_story_string_list(
+            [x for item in normalized for x in (item.get("important_facts") or [])],
+            limit=48,
+            item_limit=240,
+        )[-32:],
+        "last_scene": latest_value("last_scene"),
+        "protagonist": first_value("protagonist"),
+        "pronoun": first_value("pronoun"),
+    }
+    if fallback_texts:
+        if not merged.get("story_beats"):
+            merged["story_beats"] = _clean_story_string_list(
+                fallback_texts,
+                limit=16,
+                item_limit=220,
+            )
+        if not merged.get("last_scene"):
+            merged["last_scene"] = fallback_texts[-1]
+    return _normalize_story_context(merged)
+
+
+def _story_context_prompt_lines(story_context: dict) -> str:
+    context = _normalize_story_context(story_context or {})
+    lines = []
+    if context["characters"]:
+        lines.append("- ဇာတ်ကောင်များ: " + ", ".join(context["characters"][:10]))
+    card_lines = []
+    for card in context["character_cards"][:8]:
+        bits = [str(card.get("name") or "")]
+        if card.get("role"):
+            bits.append(str(card["role"]))
+        if card.get("relation"):
+            bits.append(str(card["relation"]))
+        if card.get("aliases"):
+            bits.append("အခြားအမည်: " + ", ".join(card["aliases"][:3]))
+        card_lines.append(" — ".join(bit for bit in bits if bit))
+    if card_lines:
+        lines.append("- ဇာတ်ကောင်ကတ်များ: " + "; ".join(card_lines))
+    if context["story_beats"]:
+        beats = context["story_beats"][-10:]
+        lines.append(
+            "- အရင်ဖြစ်ရပ်အစဉ်: "
+            + " → ".join(f"{index + 1}. {beat}" for index, beat in enumerate(beats))
+        )
+    if context["current_goal"]:
+        lines.append("- လက်ရှိရည်မှန်းချက်: " + context["current_goal"])
+    if context["current_conflict"]:
+        lines.append("- လက်ရှိအဓိကပြဿနာ: " + context["current_conflict"])
+    if context["open_threads"]:
+        lines.append("- မဖြေရှင်းသေးသည့်အရာများ: " + "; ".join(context["open_threads"][:6]))
+    if context["important_facts"]:
+        lines.append("- မမေ့ရမည့်အချက်များ: " + "; ".join(context["important_facts"][-8:]))
+    if context["setting"]:
+        lines.append("- လက်ရှိနေရာ/အခြေအနေ: " + context["setting"])
+    if context["summary"]:
+        lines.append("- အဓိကဖြစ်ရပ်အကျဉ်း: " + context["summary"][-2500:])
+    if context["last_scene"]:
+        lines.append("- နောက်ဆုံးအခြေအနေ: " + context["last_scene"][-800:])
+    return "\n".join(lines)
+
+
 def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> dict:
     """Normalize Gemini scene aliases/timings into the renderer's contract."""
     if isinstance(data, str):
@@ -5068,51 +5628,107 @@ def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> di
     pronoun_value = str(
         _find_direct_payload_value(data, ("pronoun", "first_person_pronoun")) or ""
     ).strip()
+    story_map = _normalize_story_map(
+        _find_direct_payload_value(
+            data,
+            ("story_map", "story_bible", "story_plan"),
+        ),
+        chunk_duration=duration,
+    )
     return {
         "scenes": scenes,
         "cuts": cuts,
         "protagonist": protagonist,
         "pronoun": pronoun_value if pronoun_value in FIRST_PERSON_PRONOUNS else "",
+        "story_map": story_map,
     }
 
 
-async def extract_story_summary(scenes: list, client) -> dict:
-    if not scenes:
-        return {"summary": "", "characters": [], "last_scene": "", "protagonist": "", "pronoun": ""}
-    all_text = "\n".join(s["burmese"] for s in scenes)
+async def extract_story_summary(
+    scenes: list,
+    client,
+    story_map: dict = None,
+) -> dict:
+    """Build a continuity bible for the next window, not just a blurb.
+
+    A two/three-line summary loses exactly what a listener needs to
+    follow the next two minutes: who everyone is, why they acted,
+    what changed, and what is still unresolved.  The returned dict
+    is normalized so older callers can keep using ``characters`` as
+    names while newer prompts also receive character cards, the
+    ordered beat chain, the current goal/conflict and open threads.
+    """
+    scene_texts = [
+        str(scene.get("burmese") or "").strip()
+        for scene in (scenes or [])
+        if isinstance(scene, dict) and str(scene.get("burmese") or "").strip()
+    ]
+    if not scene_texts:
+        return _normalize_story_context({})
+    all_text = "\n".join(scene_texts)
     detected_pronoun = _detect_pronoun(all_text)
+    normalized_map = _normalize_story_map(story_map)
+    map_json = json.dumps(normalized_map, ensure_ascii=False) if normalized_map else "{}"
     prompt = f"""
-အောက်ပါ မြန်မာဇာတ်လမ်းအပိုင်းကို ဖတ်ပြီး နောက်အပိုင်းအတွက် အကျဉ်းချုပ် ထုတ်ပေးပါ။
+အောက်ပါ မြန်မာဇာတ်လမ်းအပိုင်းကို ဖတ်ပြီး နောက်အပိုင်းရေးရာတွင် မှတ်ထားရမည့် continuity bible ထုတ်ပေးပါ။
 မှတ်ချက် — ဇာတ်ကြောင်းကို အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ (ကျွန်တော်/ကျွန်မ) ဖြင့် ပြောနေခြင်းဖြစ်သည်။
 ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်ပင် ဖြစ်သည်။
+မသေချာသော ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်နှင့် အမည်ကို မတီထွင်ပါနှင့်။ အမည်များကို မြန်မာအသံထွက်ဖြင့်သာ ရေးပါ။
+ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ ပြောနေသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ အခြားနာမည်ရှိလျှင် ဘာလဲဆိုတာ ရှင်းပါ။
+Story beats များကို အစဉ်အတိုင်း၊ ဖြစ်ရပ်အကြောင်းရင်း → ဆုံးဖြတ်ချက်/လုပ်ဆောင်ချက် → အကျိုးဆက် ပုံစံရအောင် တိုတိုရေးပါ။
+ယခု script မှ အတည်ပြုထားပြီး story_map (ရှိလျှင်) — အမှားမပါအောင် အခြေခံပြီး ခိုင်မာသောအချက်များကိုသာ ဆက်ထိန်းပါ:
+{map_json}
 
+Script:
 {all_text}
 
 Return JSON:
-{{"characters": ["နာမည်1"], "protagonist": "အဓိကဇာတ်ကောင် (ပြောနေသူ ကိုယ်တိုင်)", "pronoun": "ပြောနေသူ သုံးထားသည့် နာမ်စား — ကျွန်တော် သို့မဟုတ် ကျွန်မ", "summary": "အဓိကအကြောင်းအရာ ၂-၃ ကြောင်း", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
+{{"characters": ["အမည်များ"], "character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ပြောနေသူ/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "aliases": []}}], "protagonist": "အဓိကဇာတ်ကောင် (ပြောနေသူ ကိုယ်တိုင်)", "pronoun": "ပြောနေသူ သုံးထားသည့် နာမ်စား — ကျွန်တော် သို့မဟုတ် ကျွန်မ", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
     """.strip()
     try:
         data = await _generate_direct_gemini_json(
             client,
             prompt,
             purpose="story summary",
-            max_output_tokens=4096,
+            max_output_tokens=8192,
         )
         if not isinstance(data, dict):
             raise ValueError("summary JSON is not an object")
+        summary_context = _normalize_story_context(data)
         # စာသားထဲမှ တိုက်ရိုက် ရှာတွေ့သည့် နာမ်စား ကို model အဖြေထက် ပို ယုံကြည်သည်။
-        model_pronoun = data.get("pronoun") if data.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ") else ""
-        data["pronoun"] = detected_pronoun or model_pronoun
-        return data
+        if detected_pronoun:
+            summary_context["pronoun"] = detected_pronoun
+        map_context = _story_context_from_story_map(
+            normalized_map,
+            last_scene=scene_texts[-1],
+        )
+        merged = _merge_story_contexts(map_context, summary_context)
+        if detected_pronoun:
+            merged["pronoun"] = detected_pronoun
+        return merged
     except Exception as e:
         logger.warning(f"Summary error: {e}")
-        return {
-            "characters": [],
-            "protagonist": "",
-            "pronoun": detected_pronoun,
-            "summary": all_text[-500:],
-            "last_scene": scenes[-1]["burmese"],
-        }
+        fallback = _normalize_story_context(
+            {
+                "characters": [],
+                "protagonist": "",
+                "pronoun": detected_pronoun,
+                "summary": all_text[-1200:],
+                "last_scene": scene_texts[-1],
+            },
+            scenes=scenes,
+            derive_beats=True,
+        )
+        merged = _merge_story_contexts(
+            _story_context_from_story_map(
+                normalized_map,
+                last_scene=scene_texts[-1],
+            ),
+            fallback,
+        )
+        if detected_pronoun:
+            merged["pronoun"] = detected_pronoun
+        return merged
 
 
 def _with_required_coverage(settings: dict = None) -> dict:
@@ -5966,17 +6582,19 @@ def _dedupe_scripts_in_order(scripts: list) -> dict:
 # the TTS sounds like someone reading a book aloud (user report).
 _SPOKEN_STYLE_GUIDE = """
 ## အပြောဟန် (အလွန် အရေးကြီးပါသည်)
-ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်သည် — «စကားပြောဟန်» (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ စာအုပ်ထဲက ရေးသားဟန်ကို လုံးဝ မသုံးပါနှင့်။ နေ့တိုင်း လူတွေ တကယ် သုံးနေကျ စကားလုံးတွေ၊ စကားဆက်တွေနဲ့ Professional narrator တစ်ယောက်က စိတ်လှုပ်ရှားဖွယ် ဇာတ်လမ်း ပြန်ပြောပြနေသလို ရေးပါ။
+ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်သည် — «စကားပြောဟန်» (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ စာအုပ်ထဲက ရေးသားဟန်ကို လုံးဝ မသုံးပါနှင့်။ နေ့တိုင်း လူတွေ တကယ် သုံးနေကျ စကားလုံးတွေ၊ စကားဆက်တွေနဲ့ Professional narrator တစ်ယောက်က စိတ်လှုပ်ရှားဖွယ် ဇာတ်လမ်း ပြန်ပြောပြနေသလို ရေးပါ။ **အလှသုံးစကားလုံးထက် နားလည်လွယ်မှုက အမြဲဦးစားပေးပါ** — နားထောင်သူက ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်ရင်တောင် ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲဆိုတာ လိုက်နိုင်ရမည်။
 - ❌ မသုံးရ (ရေးသားဟန်): "…ပါသည်။" "…သည်။" "…၍" "…သောကြောင့်" "…အလို့ငှါ" "…စေရန်" "…ခဲ့ပါသည်" "…ဖြစ်စေသည်" "…ပြုလုပ်" "…ရောက်ရှိလာ" "…ပြောကြား" "…မှတ်ချက်ပြု" "…ရရှိ" "…ဆောင်ရွက်" "…ယင်းနောက်" "…ထို့နောက်" "…စဉ်" "…ချင်း" (ရေးဟန်)
 - ✅ သုံးရန် (အပြောဟန်): "…တယ်။" "…ခဲ့တယ်။" "…လို့" "…မို့" "…တဲ့" "…ဆိုတော့" "အဲ့ဒါနဲ့" "ပြီးတော့" "အဲဒါကြောင့်" "…လုပ်" "…ရောက်လာ" "…ပြော" "…ရ" "…လုပ်လိုက်" "အဲ့ဒီနောက်" "အဲဒီနောက်" "…တုန်း" "…ချင်တိုင်း"
-- နေ့တိုင်း အသုံးများ စကားဆက် (storyteller connectors) တွေနဲ့ ချိတ်ဆက်ရေးပါ — အလှည့်ကျ သုံးပါ၊ တစ်မျိုးတည်းကို ထပ်ခါတလဲလဲ မသုံးပါနှင့်: "အဲ့ဒီမှာ…" "ဒါပေမဲ့…" "ဒါနဲ့…" "နောက်တော့…" "ဒီလိုနဲ့…" "ဒီအချိန်မှာ…" "တကယ့်ပြဿနာက ဘာလဲဆိုတော့…" "ဒီမှာ အရေးကြီးတဲ့အချက်က…" "အံ့ဩစရာကောင်းတာက…" "တကယ်တော့…" "နောက်ဆုံး…"
-- စည်း (rhythm): စာကြောင်း တိုတို ရိုက်နှက်ချက် ပြင်းပြင်းနဲ့ အလတ်စား ရှင်းပြကြောင်းကို ရောရေးပါ။ တစ်ခါတစ်လေ မေးခွန်းပုံစံနဲ့ ပရိသတ်ကို ဆွဲဆက်ပါ (ဥပမာ: "ဒီလို အခြေအနေမှာ ကျွန်တော် ဘာဆက်လုပ်မလို့လဲ။" "အဲ့ဒီလူက ဘယ်သူဖြစ်မလဲ။") — အများကြီး မများစေနှင့်၊ နေရာတိုင်းလည်း မလုပ်နှင့်။
+- နေ့တိုင်း အသုံးများ စကားဆက် (storyteller connectors) တွေနဲ့ ချိတ်ဆက်ရေးပါ — အလှည့်ကျ သုံးပါ၊ တစ်မျိုးတည်းကို ထပ်ခါတလဲလဲ မသုံးပါနှင့်: "အဲ့ဒီမှာ…" "ဒါပေမဲ့…" "ဒါနဲ့…" "နောက်တော့…" "ဒီလိုနဲ့…" "ဒီအချိန်မှာ…" "တကယ့်ပြဿနာက ဘာလဲဆိုတော့…" "ဒီမှာ အရေးကြီးတဲ့အချက်က…" "အံ့ဩစရာကောင်းတာက…" "တကယ်တော့…" "နောက်ဆုံး…" စကားဆက်တိုင်းဟာ အချိန်အစဉ်၊ အကြောင်းရင်း၊ ဆန့်ကျင်ဘက် သို့မဟုတ် ရလဒ်ကို တကယ် ပြရမည်။ အဓိပ္ပာယ်မရှိဘဲ အလှဆင်ရုံ မထည့်ပါနှင့်။
+- စည်း (rhythm): စာကြောင်း တိုတို ရိုက်နှက်ချက် ပြင်းပြင်းနဲ့ အလတ်စား ရှင်းပြကြောင်းကို ရောရေးပါ။ မေးခွန်းပုံစံကို သုံးလျှင် နောက်ဝါကျတွင် အဖြေ/အချက်ကို ချက်ချင်းပြောပါ။ မေးခွန်းက ဘယ်သူဘာလုပ်တယ်ဆိုတဲ့ အချက်ကို မဖုံးကွယ်စေနှင့်၊ နေရာတိုင်းလည်း မလုပ်နှင့်။
 - လှုပ်ရှားမှု ပြ ကြိယာတွေ ပြတ်ပြတ်သားသား သုံးပါ: "ရုတ်တရက်" "တက်တက်စင်" "ချက်ချင်း" "တစ်ချက်တည်း" "အားရပါးရ" "ညင်ညင်သာသာ" "တုန်လှုပ်သွား" "စိတ်လှုပ်ရှား" "ရယ်ရတာ အသား" လို ခံစားချက်ပါ စကားလုံးတွေ နေရာကျရာ ထည့်ပါ။ ဒါပေမဲ့ ဖန်တီးတာ မလုပ်ရဘူး — video မှာ တကယ် ပြထားတဲ့ အရာကိုပဲ ရေးပါ။
 - ဥပမာ ❌: "ကျွန်တော် အိမ်သို့ ပြန်လာခဲ့ပါသည်။ အမေ့ကို မြင်လိုက်ရသောအခါ အံ့သြခဲ့သည်။"
 - ဥပမာ ✅: "ကျွန်တော် အိမ်ပြန်ရောက်လာခဲ့တယ်။ အမေ့ကို မြင်လိုက်ရတော့ ကျွန်တော် အံ့သြသွားတယ်။"
 - ဥပမာ ✅ (storyteller ဟန်): "အဲ့ဒီမှာ တကယ့်ပြဿနာ စတယ်။ ကျွန်တော်က ဒီသူကို အထင်သေးခဲ့မိတယ်။ ဒါပေမဲ့ သူက ကျွန်တော်ထင်သလို မဟုတ်ဘူး။ နောက်ပြီး သူ ဘာလုပ်သွားလဲဆိုတော့…"
 - စာကြောင်းတွေကို တိုတိုထားပါ — တစ်ကြောင်းကို စာလုံး ၂၅ လုံးထက် မရှည်ပါစေနှင့်။ ရှည်တဲ့ စာကြောင်းကို နှစ်ကြောင်း ခွဲရေးပါ။ အသံနားထောင်ရတာ ရှင်းလင်း သဘာဝကျဖို့ အရေးကြီးသည်။
 - သူငယ်ချင်းတစ်ယောက်ကို ဇာတ်လမ်းပြန်ပြောပြနေသလို ရေးပါ။ ဒါပေမဲ့ slang အလွန်အကျွံ (ဗျာ၊ ရှင်၊ ဟဲဟဲ စသည်) မသုံးပါနှင့်။
+- အမည်ကို ချွေတာမသုံးပါနှင့်။ လူအများကြီးပါလာရင် သို့မဟုတ် လုပ်ဆောင်သူ ပြောင်းသွားရင် «သူ/သူမ/အဲ့ဒီလူ» ပဲ ဆက်မပြောဘဲ အမည် သို့မဟုတ် ရာထူး/ဆက်နွယ်ပုံကို ပြန်ပြောပါ။ စာကြောင်းတိုင်းမှာ လုပ်ဆောင်သူ၊ လုပ်ဆောင်ချက်၊ ရလဒ် ရှင်းရမည်။
+- Scene တစ်ခုနဲ့တစ်ခု သီးခြား caption လို မလုပ်ပါနှင့်။ နောက် scene အစပိုင်းဟာ အရင် scene အဆုံးရလဒ်ကနေ ဆက်စပ်နေရမည်။ အချိန် သို့မဟုတ် နေရာ ပြောင်းလျှင် တစ်ချက်ထဲ ခုန်မသွားဘဲ တိုတဲ့ bridge ထည့်ပါ။
 - ⛔ အင်္ဂလိပ်အက္ခရာ (A-Z)၊ တရုတ်/နိုင်ငံခြား စာလုံး၊ ဂဏန်း (123 / ၁၂၃) ကို narration စာသားမှာ လုံးဝ မထည့်ရဘူး — အသံက အဲ့ဒါတွေကို မဖတ်နိုင်ဘူး၊ အသံထွက် ပျက်တယ်။ နိုင်ငံခြားစကားလုံးတွေကို မြန်မာအသံထွက်အတိုင်း ရေးပါ (ဥပမာ: Level → လယ်ဗယ်၊ Game → ဂိမ်း၊ Boss → ဗောစ်၊ Skill → စကေး)။ နိုင်ငံခြားစကားပြောတွေကိုတော့ အဓိပ္ပါယ်အတိုင်း မြန်မာလို ဘာသာပြန်ရေးပါ။ ဂဏန်းတွေကိုလည်း မြန်မာစာလုံးနဲ့ ရေးပါ (ဥပမာ: 50 → ငါးဆယ်၊ 1000 → တစ်ထောင်၊ 90% → ကိုးဆယ်ရာခိုင်နှုန်း)။
 - အရေးကြီးတဲ့ စကားပြောခန်းတွေမှာ ဇာတ်ကောင်တွေ ပြောတဲ့စကားကို တိုက်ရိုက်ပုံစံနဲ့ ထည့်ပြောပါ (ဥပမာ: အဖေက \"ဒီနေ့ ငါးအကြီးကြီး ရခဲ့တယ်\" လို့ ပြောတယ်)။ နားထောင်သူက ဇာတ်လမ်းထဲမှာ ကိုယ်တိုင် ပါနေသလို ခံစားရဖို့ ဖြစ်ပါတယ်။ ဒါပေမဲ့ စာသားတစ်ခုလုံးက ကျွန်တော်/ကျွန်မ ပြန်ပြောပြနေတဲ့ ပထမလူပုံစံကနေ မလွဲစေပါနှင့်။
 """.strip()
@@ -6005,6 +6623,7 @@ def _direct_first_person_repair_prompt(
     return f"""
 FIRST-PERSON REPAIR ONLY — အောက်ပါ scenes များသည် ပထမလူပုံစံ မဖြစ်သေးပါ။
 အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောနေသလို ပြန်ရေးပါ။
+ဇာတ်လမ်းအဆက်အစပ်ကိုပါ ထိန်းပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းအောင် လုပ်ပါ။ အချက်အသစ် မတီထွင်ပါနှင့်၊ ဖြစ်ရပ်ကို scene အချင်းချင်း မရွှေ့ပါနှင့်။
 ပြောနေသူ၏ နာမ်စားမှာ «{pronoun}» တစ်မျိုးတည်းသာ ဖြစ်ရမည်။ «{other}» ကို ပြောနေသူအဖြစ် လုံးဝမသုံးပါနှင့်။
 Scene တိုင်းတွင် «{pronoun}» ကို ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် အနည်းဆုံးတစ်ကြိမ် ထည့်ပါ။
 ကိုယ်တိုင်မရှိသော မြင်ကွင်းဆိုလျှင် «အဲဒီတုန်းက {pronoun} မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှ {pronoun} သိလိုက်ရတာက…» ဟုစပါ။
@@ -6017,6 +6636,171 @@ Scenes:
 
 JSON ကိုသာ ပြန်ပေးပါ:
 {{"pronoun": "{pronoun}", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "ပြန်ရေးပြီး ပထမလူစာသား"}}]}}
+""".strip()
+
+
+_STORY_TRANSITION_MARKERS = (
+    "အဲ့ဒီမှာ",
+    "အဲဒီမှာ",
+    "ဒါပေမဲ့",
+    "ဒါပေမယ့်",
+    "ဒါနဲ့",
+    "နောက်တော့",
+    "ဒီလိုနဲ့",
+    "ဒီအချိန်မှာ",
+    "အဲဒီနောက်",
+    "အဲ့ဒီနောက်",
+    "ပြီးတော့",
+    "နောက်ဆုံး",
+    "တစ်ချိန်တည်းမှာ",
+    "မကြာခင်",
+    "ဆိုတော့",
+)
+_STORY_CAUSAL_MARKERS = (
+    "ကြောင့်",
+    "ဒါကြောင့်",
+    "အဲဒါကြောင့်",
+    "ချင်လို့",
+    "အတွက်",
+    "ဖို့",
+    "ဆုံးဖြတ်",
+    "ရလဒ်",
+    "အကျိုးဆက်",
+    "မို့",
+    "လို့",
+)
+_STORY_AMBIGUOUS_REFERENCES = (
+    "သူက",
+    "သူမက",
+    "သူ့ကို",
+    "သူမကို",
+    "အဲ့ဒီလူ",
+    "ဒီလူ",
+    "သူ့ဘက်",
+)
+
+
+def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
+    """Cheap local signals for whether narration reads as a story.
+
+    This cannot judge literary quality; it only detects failure
+    shapes users actually hear as "I cannot follow the story":
+    repeated scene text, no ordered beat plan, almost no scene
+    transitions/cause links, or a crowd of unnamed ``သူ`` references.
+    The story-editor pass runs only when at least two such signals
+    fire (or text is duplicated), so a clear draft pays no extra
+    model call.
+    """
+    texts = [
+        str(scene.get("burmese") or "").strip()
+        for scene in (scenes or [])
+        if isinstance(scene, dict) and str(scene.get("burmese") or "").strip()
+    ]
+    normalized_map = _normalize_story_map(story_map)
+    normalized_texts = [_normalize_burmese_text(text) for text in texts]
+    duplicate_count = len(normalized_texts) - len(set(normalized_texts))
+    transition_scenes = sum(
+        1
+        for text in texts
+        if any(marker in text for marker in _STORY_TRANSITION_MARKERS)
+    )
+    transition_ratio = transition_scenes / len(texts) if texts else 0.0
+    causal_occurrences = sum(
+        text.count(marker)
+        for text in texts
+        for marker in _STORY_CAUSAL_MARKERS
+    )
+    ambiguous_references = sum(
+        text.count(marker)
+        for text in texts
+        for marker in _STORY_AMBIGUOUS_REFERENCES
+    )
+    beat_count = len(normalized_map.get("beats") or [])
+    card_count = len(normalized_map.get("character_cards") or [])
+    issues = []
+    score = 100
+    if duplicate_count:
+        issues.append("duplicate_scenes")
+        score -= 25
+    if len(texts) >= 4 and beat_count < max(2, math.ceil(len(texts) / 3)):
+        issues.append("missing_or_thin_story_map")
+        score -= 20
+    if len(texts) >= 4 and transition_ratio < 0.35:
+        issues.append("weak_scene_transitions")
+        score -= 20
+    if len(texts) >= 4 and causal_occurrences < max(2, math.ceil(len(texts) / 4)):
+        issues.append("weak_cause_effect_links")
+        score -= 20
+    if (
+        len(texts) >= 4
+        and ambiguous_references >= max(6, len(texts) * 2)
+        and card_count < 2
+    ):
+        issues.append("ambiguous_references")
+        score -= 15
+    return {
+        "scene_count": len(texts),
+        "score": max(0, int(score)),
+        "issues": issues,
+        "needs_editor": bool(
+            duplicate_count or len(issues) >= 2
+        ),
+        "duplicate_scenes": int(duplicate_count),
+        "story_beats": int(beat_count),
+        "character_cards": int(card_count),
+        "transition_scene_ratio": round(float(transition_ratio), 3),
+        "causal_markers": int(causal_occurrences),
+        "ambiguous_references": int(ambiguous_references),
+    }
+
+
+def _direct_story_editor_prompt(
+    scenes: list,
+    story_context: dict,
+    story_map: dict,
+    pronoun: str,
+    protagonist: str = "",
+) -> str:
+    payload = []
+    for index, scene in enumerate(scenes or []):
+        if not isinstance(scene, dict):
+            continue
+        payload.append({
+            "scene_index": int(index),
+            "start": scene.get("start"),
+            "end": scene.get("end"),
+            "current_burmese_chars": len(str(scene.get("burmese") or "").strip()),
+            "burmese": str(scene.get("burmese") or ""),
+        })
+    context_lines = _story_context_prompt_lines(story_context or {})
+    map_json = json.dumps(_normalize_story_map(story_map), ensure_ascii=False)
+    return f"""
+STORY EDITOR PASS — သင်က professional story editor ပါ။
+အောက်ပါ scenes အားလုံးကို မျက်စိမှိတ်နားထောင်နေသူပင် ဇာတ်လမ်းကို အတိအကျ လိုက်နိုင်အောင် ပြန်ပြင်ရေးပါ။
+
+အရေးအကြီးဆုံး စည်းကမ်းများ:
+- Scene အရေအတွက်၊ အစဉ်၊ start/end အားလုံး အတိအကျထားပါ။ Scene တစ်ခုချင်းစီရဲ့ အချက်အလက်နဲ့ key beats အားလုံးကို ထိန်းပါ။
+- ဗီဒီယိုမှာ/မူရင်းစာသားမှာ မပါတဲ့ အချက်၊ အမည်၊ ဆက်နွယ်မှု၊ ရည်ရွယ်ချက် အသစ် လုံးဝ မတီထွင်ပါနဲ့။ ဖြစ်ရပ်ကို အခြား scene သို့ မရွှေ့ပါနဲ့ — footage နဲ့ ကိုက်ညီမှု ပျက်သွားမယ်။
+- Scene တစ်ခုစီကို သီးခြား caption လို မရေးဘဲ ဇာတ်လမ်းတစ်ခုလုံး ဆက်တိုက်စီးဆင်းအောင် ရေးပါ။ နောက် scene အစဟာ အရင် scene ရဲ့ ရလဒ်ကနေ သဘာဝကျကျ ဆက်ရမယ်။
+- ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ၊ ဘယ်သူက ဘာလုပ်လဲ၊ ဘာကြောင့်လုပ်လဲ၊ ဘာဆက်ဖြစ်လဲဆိုတာ ရှင်းပါ။
+- လူနှစ်ယောက်ထက်ပိုပါလာရင် သို့မဟုတ် subject ပြောင်းသွားရင် «သူ/သူမ» ပဲ မထားဘဲ အမည် သို့မဟုတ် အခန်းကဏ္ဍကို ပြန်ပြောပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာသူဆိုလျှင် အမည်+ဆက်နွယ်ပုံကို တိုတိုပြန်အမှတ်ရစေပါ။
+- အကြောင်းရင်းကို တုံ့ပြန်မှု/ရလဒ်ထက် အရင် သို့မဟုတ် အတူဖော်ပြပါ။ Dialogue မှာ speaker နဲ့ listener ကို ရှင်းပါ။
+- အချိန်/နေရာ ပြောင်းတိုင်း တိုတ့ bridge တစ်ခုထည့်ပါ။ စကားဆက်တွေကို အလှဆင်ဖို့မဟုတ်ဘဲ အချိန်၊ အကြောင်းရင်း၊ ဆန့်ကျင်ဘက်၊ ရလဒ်ကို ပြဖို့သာ သုံးပါ။
+- ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{pronoun}» တစ်မျိုးတည်းသာ သုံးပါ။ Scene တိုင်းရဲ့ အစပိုင်းမှာ «{pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမယ်။
+- Scene တစ်ခုစီရဲ့ စာသားအရှည်ကို current_burmese_chars ရဲ့ ၉၀%–၁၁၀% အတွင်း ထားပါ။
+- စကားပြောဟန် (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး မသုံးရ — မြန်မာအသံထွက်နဲ့ မြန်မာဂဏန်းစာလုံးသာ သုံးပါ။
+
+အဓိကဇာတ်ကောင်: {protagonist or "မသိရသေး"}
+ယခင်ဇာတ်လမ်းအခြေအနေ:
+{context_lines or "- မရှိသေးပါ"}
+ယခုအပိုင်း story_map:
+{map_json}
+
+Scenes:
+{json.dumps(payload, ensure_ascii=False)}
+
+JSON ကိုသာ ပြန်ပေးပါ:
+{{"pronoun": "{pronoun}", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး ပထမလူစာသား"}}], "story_map": {{"character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": []}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}}}
 """.strip()
 
 
@@ -6091,6 +6875,7 @@ async def build_chunk_recap(
     output_path: str = "",
 ):
     st = _with_required_coverage(settings)
+    story_context = _normalize_story_context(story_context or {})
     has_prepared_script = bool(
         isinstance(prepared_script, dict) and prepared_script.get("scenes")
     )
@@ -6162,25 +6947,24 @@ async def build_chunk_recap(
             "«ဇာတ်လမ်းအကျဉ်း» ပုံစံ မိတ်ဆက်မထည့်ဘဲ ဇာတ်လမ်းထဲသို့ တိုက်ရိုက် ဝင်ပါ။"
         )
     else:
-        chars_str = ", ".join(story_context.get("characters", [])[:10])
+        context_lines = _story_context_prompt_lines(story_context)
         protag_line = f"- အဓိကဇာတ်ကောင် = ပြောနေသူ ကိုယ်တိုင် (မပြောင်းရ): {protagonist}\n" if protagonist else ""
         speaker_line = (
             f"- ပြောနေသူ ကိုယ့်ကိုယ်ကို သုံးသည့် နာမ်စား (မပြောင်းရ): «{pronoun}»\n"
             if pronoun else ""
         )
         context_section = f"""
-🔵 ယခင်ဖြစ်ပျက်ခဲ့သည့် ဇာတ်လမ်းအကျဉ်း (အချက်အလက်သိရုံသာ — ပြန် မရေးရ) —
-{protag_line}{speaker_line}- ဇာတ်ကောင်များ: {chars_str}
-- အဓိကဖြစ်ရပ်များ: {story_context.get('summary', '')}
-- နောက်ဆုံးအခြေအနေ: {story_context.get('last_scene', '')}
+🔵 ယခင်ဇာတ်လမ်း continuity bible (အချက်အလက်သိရုံသာ — ပြန် မရေးရ) —
+{protag_line}{speaker_line}{context_lines}
 
 🔵 ယခင်အပိုင်းကို အကျဉ်းချုပ် ပြန် မပြောပါနှင့် — အထက်ပါ နောက်ဆုံးအခြေအနေကနေ
 အဓိကဇာတ်ကောင် တစ်ယောက်တည်းကပင် ဆက်ပြောနေသလို တန်းဆက်ရေးပါ။
+ပထမ scene ရဲ့ ပထမ clause မှာ နောက်ဆုံးအခြေအနေကနေ အခု မြင်ကွင်းဆီ သဘာဝကျကျ ဆက်တဲ့ တိုတဲ့ bridge တစ်ခု ပါရမည်။
 ပြောနေသူ၊ နာမ်စား («ကျွန်တော်/ကျွန်မ») နှင့် အဓိကဇာတ်ကောင် လုံးဝ မပြောင်းပါနှင့်။
 """
 
     prompt = f"""
-သင်သည် ဗီဒီယိုထဲရှိ ဇာတ်လမ်းကို အဓိကဇာတ်ကောင် ကိုယ်တိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် ကိုယ်တိုင်ကြုံခဲ့ရသမျှကို အပြည့်အဝ ပြန်ပြောပြနေသလိုမျိုး မြန်မာဘာသာဖြင့် ရေးပေးရမည့် ဇာတ်ကြောင်းရေးသူ ဖြစ်သည်။
+သင်သည် ဗီဒီယိုထဲရှိ ဇာတ်လမ်းကို အဓိကဇာတ်ကောင် ကိုယ်တိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် ကိုယ်တိုင်ကြုံခဲ့ရသမျှကို အပြည့်အဝ ပြန်ပြောပြနေသလိုမျိုး မြန်မာဘာသာဖြင့် ရေးပေးရမည့် professional story editor နှင့် ဇာတ်ကြောင်းရေးသူ ဖြစ်သည်။ အဓိကရည်မှန်းချက်မှာ ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူကတောင် ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာကို အစဉ်လိုက် အပြည့်အဝ နားလည်နိုင်ရေးဖြစ်သည်။
 
 ဤဗီဒီယိုသည် မူရင်းဗီဒီယို၏ {start_fmt} မှ {end_fmt} အထိ ဖြစ်သည်။ ဤအပိုင်းကိုသာ ကြည့်ပြီး အောက်ပါ ညွှန်ကြားချက်များအတိုင်း ဇာတ်ကြောင်းရေးပါ။
 
@@ -6198,13 +6982,18 @@ async def build_chunk_recap(
 
 ## ဗီဒီယိုကို အပြည့်အဝ ပြန်ပြောပုံ (အကျဉ်းချုပ် မဟုတ်ပါ)
 - အတိုချုပ် (summary) မရေးပါနှင့်။ နားထောင်နေသူက မူရင်းဗီဒီယိုကို ပြန်ပင် ကြည့်နေရသလို ထင်ရအောင် အစက အဆုံးအထိ အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပြပါ။
-- **မရေးခင် ဒီအပိုင်းရဲ့ အဓိကအချက် (key beats) တွေကို အရင် စိတ်ထဲမှာ စာရင်းချုပ်ပါ** — အရေးကြီးဆုံး စကားပြောချက်တွေရဲ့ အဓိပ္ပာယ်၊ ဆုံးဖြတ်ချက်တွေ၊ လျှို့ဝှက်ချက် ထုတ်ဖော်မှုတွေ၊ အလှည့်အပြောင်းတွေနဲ့ သူတို့ရဲ့ အကျိုးဆက်တွေပါ။ ပြီးမှ beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
-- Scene တိုင်းမှာ **အရေးအကြီးဆုံး အချက်ကို ပထမဝါကျမှာ** ထားပါ (နောက်ပိုင်း အသေးစိတ်တွေက နောက်မှ လိုက်ပါ)။
+- **Narration မရေးခင် ဒီအပိုင်းရဲ့ story map ကို အတိအကျ တည်ဆောက်ပါ** — ဇာတ်ကောင်တစ်ဦးချင်းစီ၏ အမည်၊ ဘယ်သူလဲ၊ ပြောနေသူ/အခြားသူနှင့် ဆက်နွယ်ပုံ၊ အခြားအမည်များ၊ ပြီးတော့ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် ဘယ်သူက ဘာလုပ်တယ်/ဘာပြောတယ်၊ ဘာကြောင့်၊ ဘာဆက်ဖြစ်တယ် ဆိုတာတွေပါ။ အဲ့ဒီ map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း တိုတိုပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
+- အချက်အလက်ကို ဆုံးဖြတ်ရာမှာ ပြောစကား/စာတန်း/ဖန်သားပြင်ပေါ်ရှိ အမည်-စာသားတွေကို ပထမ ယုံကြည်ပါ၊ ပြီးမှ မြင်ရတဲ့ လုပ်ဆောင်ချက်နဲ့ အတည်ပြုပါ။ မသေချာလျှင် မြင်ရတဲ့လုပ်ဆောင်ချက်ကိုသာ ပြောပြီး ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်၊ လျှို့ဝှက်အကြောင်းရင်းကို မှန်းမရေးပါနှင့်။
+- Scene အစမှာ အရင် scene ရဲ့ ရလဒ်ကနေ ဆက်စပ်တဲ့ anchor/bridge ကို ထားပြီး အဲ့ဒီ scene ရဲ့ key beat ကို အချိန်အစဉ်အတိုင်း စောစောဖော်ပြပါ။ အကြောင်းရင်း မသိရသေးဘဲ ရလဒ်ချည်း အရင်ပြော၍ နားထောင်သူကို လည်မနေစေပါနှင့်။
 - ခန်းတိုင်းတွင် ဘယ်သူတွေ ရှိနေလဲ၊ ဘယ်မှာလဲ၊ ဘာလုပ်နေလဲ၊ ဘာတွေ ပြောလဲ (အဓိပ္ပာယ်)၊ တစ်ဖက်က ဘယ်လို တုံ့ပြန်လဲ၊ ဘာကြောင့်လဲနှင့် ဘာဆက်ဖြစ်သည်ကို ရှင်းလင်းစွာ ဖော်ပြပါ။
 - ဖြစ်ရပ် များစွာကို ဝါကျတစ်ကြောင်းတည်းနှင့် ချုံ့ မပစ်ပါနှင့်။ အလယ်ပိုင်းကို ကျော်၍ အဆုံးသို့ တန်းမရောက်ပါနှင့် — နောက်ဆုံးခန်းသည် ဤအပိုင်း၏ နောက်ဆုံး မြင်ကွင်းအထိ ရောက်အောင် ရေးပါ။
 - အဓိက ဖြစ်ရပ်များအပြင် ဇာတ်လမ်းကို နားလည်ရန် လိုအပ်သည့် အသေးစိတ်များ — ဇာတ်ကောင်တို့၏ ဆက်နွယ်မှု၊ အငြင်းပွားမှု၊ လျှို့ဝှက်ချက်၊ အလှည့်အပြောင်းနှင့် နောင်ပိုင်း သက်ရောက်မည့် ပစ္စည်း၊ စာ၊ ဖုန်းခေါ်ဆိုမှု စသည်တို့ကို တစ်ခု မကျန် ထည့်ပါ။
 - စကားပြောချက်များကို စာလုံးချင်း ကူးစရာ မလိုသော်လည်း ဘယ်သူက ဘယ်သူ့ကို ဘာပြောခဲ့သည်ဟူသော အဓိပ္ပာယ်ကို အတိအကျ ထိန်းသိမ်းပြီး ပထမလူအပြောထဲ သဘာဝကျကျ ပေါင်းစည်း ရေးပါ။ ဥပမာ — «သူက ကျွန်တော့်ကို ... လို့ ပြောလာတော့ ကျွန်တော်လည်း ... လို့ ပြန်ပြောလိုက်တယ်»။
 - ဖြစ်ရပ်တစ်ခုမှ နောက်တစ်ခုသို့ «အဲဒီအချိန်မှာတော့ ...»၊ «ဒါပေမယ့် ...»၊ «အဲဒီနောက်မှာတော့ ...» စသည့် စကားဆက်များကို လိုအပ်သလို အမျိုးမျိုး သုံးပါ။ တစ်မျိုးတည်းကို ထပ်ခါထပ်ခါ မသုံးပါနှင့်။
+- Scene ခွဲခြားမှုဆိုတာ edit အမှတ်အသားသာဖြစ်ပြီး ဇာတ်လမ်းအသစ် ပြန်စခြင်း မဟုတ်ပါ။ Scene အားလုံးပေါင်းဖတ်လျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ နောက် scene ရဲ့ ပထမ clause ဟာ အရင် scene ရလဒ်ကနေ ဆက်ပြီး အချိန်/နေရာ ပြောင်းလျှင် တိုတဲ့ bridge ပါရမည်။
+- လူတစ်ဦးကို ပထမဆုံးမိတ်ဆက်တိုင်း နာမည်ရှိလျှင် နာမည်နဲ့အတူ ဘယ်သူလဲ/ပြောနေသူနဲ့ ဘယ်လိုဆက်နွယ်လဲ တိုတိုပြောပါ။ အချိန်ကြာကြာ ပျောက်နေပြီးမှ ပြန်ပေါ်လာလျှင် နာမည်+ဆက်နွယ်ပုံကို ပြန်အမှတ်ရစေပါ။ လုပ်ဆောင်သူ ပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အစား အမည် သို့မဟုတ် အခန်းကဏ္ဍကို သုံးပါ။
+- စကားပြောခန်းမှာ speaker နဲ့ listener ကို အမြဲရှင်းပါ။ Dialogue တစ်ခုရဲ့ အဓိပ္ပာယ်၊ ဘာလို့ပြောတယ်၊ တစ်ဖက်က ဘယ်လိုတုံ့ပြန်တယ်ဆိုတာပါ ပါရမည်။ ဘယ်သူမှန်း မရှင်းတဲ့ direct quote ချည်း မထည့်ပါနှင့်။
+- အပိုင်းရဲ့ ပထမ scene မှာ ဘယ်သူ/ဘယ်နေရာ/အခုဘာအခြေအနေလဲဆိုတာ ပထမ တစ်ကြောင်း-နှစ်ကြောင်းအတွင်း နားလည်နိုင်ရမည်။ ရှေ့အပိုင်းရှိလျှင် အကျဉ်းလုံး ပြန်မပြောဘဲ နောက်ဆုံးရလဒ်ကနေ တိုတဲ့ bridge နဲ့ ဆက်ပါ။
 - ဖယ်ပစ်နိုင်သည်မှာ ဇာတ်လမ်းနှင့် မသက်ဆိုင်သည့် ကြာညောင်းသော တိတ်ဆိတ်မှု၊ ထပ်နေသော မြင်ကွင်း/စကားနှင့် မလိုအပ်သော နားချိန်များသာ ဖြစ်သည်။ အဓိကကျသည့် မည်သည့်အရာမှ မကျန်စေရ။
 - ဤအပိုင်းအဆုံးတွင် ဇာတ်လမ်းဆက်နေပါက နောက်တွင် ဘာဖြစ်မည်ကို ခန့်မှန်း မရေးဘဲ ဤအပိုင်း၌ မြင်ရသည့် နေရာတွင်ပင် ရပ်ပါ။
 
@@ -6215,13 +7004,14 @@ async def build_chunk_recap(
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
 - ခန်း {scene_count} ခန်းခန့် ရေးပါ။ ခန်းတစ်ခန်းလျှင် ပျမ်းမျှ {request_chars_per_scene} လုံးခန့်ဖြင့် စုစုပေါင်း {request_chars} လုံးခန့် ပြည့်ရမည်။
 - **စာသားပမာဏကို scene ကြာချိန်နဲ့ အချိုးကျအောင် ရေးပါ** — ဒီစာသားကို တစ်စက္ကန့်လျှင် စာလုံး {int(round(chars_rate))} လုံးနှုန်းနဲ့ ပြောမှာ ဖြစ်တယ်။ Scene တစ်ခုရဲ့ စာလုံးအရေအတွက်ဟာ သူ့ရဲ့ (end − start) စက္ကန့် × {int(round(chars_rate))} နဲ့ နီးပါး ကိုက်ညီရပါမယ်။ ဥပမာ 8 စက္ကန့်စာ scene ဆိုရင် စာလုံး {int(round(chars_rate)) * 8} လုံးဝန်းကျင်ပဲ ရေးပါ။ တိုတဲ့ scene ကို ရှည်ရှည်ရေး၊ ရှည်တဲ့ scene ကို တစ်ကြောင်းတည်းနဲ့ ချန်ထားတာမျိုး လုံးဝ မလုပ်ရ — အဲဒါက အသံနဲ့ ရုပ်ရှင် မကိုက်ဖြစ်စေတယ်။
+- **Scene တစ်ခုသည် story_map beat တစ်ခု (သို့မဟုတ် beat တစ်ခု၏ ဆက်တိုက်အစိတ်အပိုင်းတစ်ခု) နှင့်သာ ကိုက်ညီရမည်။** နောက်မှ ပေါ်လာမည့် reveal/စကားပြောချက်ကို ရှေ့ scene ထဲ ကြိုမပြောရ၊ ရှေ့က ဖြစ်ရပ်ကိုလည်း နောက် footage ရောက်မှ ပြန်မပြောရ။ Beat တစ်ခုရဲ့ စာသား မဆန့်လျှင် အဲ့ဒီ beat အတွင်းရှိ အလှ/အသေးစိတ်ကိုသာ ချုံ့ပါ — စာသားကို ကပ်လျက် မြင်ကွင်းထဲ ရွှေ့မထည့်ပါနှင့်။
 - အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။ **"start" ဆိုတာ အဲဒီ scene ရဲ့ ဖြစ်ရပ်/မြင်ကွင်း စတင်တဲ့ စက္ကန့် အတိအကျ** ဖြစ်ရပါမယ် — နေရာ ပြောင်းတိုင်း၊ စကားပြောသူ ပြောင်းတိုင်း၊ ဖြစ်ရပ်အသစ် စတိုင်း scene အသစ်တစ်ခု စပါ။ Scene တွေကို အချိန်အစဉ်အတိုင်း ဆက်တိုက် (ရှေ့ scene ရဲ့ end = နောက် scene ရဲ့ start) ထားပါ၊ အချိန် ထပ်မနေစေရ။
 - ပထမခန်း၏ "start" သည် အပိုင်းအစ (0.0 ပတ်ဝန်းကျင်) မှ စပြီး နောက်ဆုံးခန်း၏ "end" သည် အပိုင်းဆုံး ({chunk_dur:.0f} စက္ကန့် ပတ်လည်) အထိ ရောက်ရမည်။ အလယ်တွင် ဇာတ်လမ်းနှင့် ဆိုင်သည့် အချိန်ကွက် တစ်ခုမှ မလွတ်ရပါ။
 - အရေးမကြီးသောအပိုင်းကို ဖြတ်သင့်ပါက ၎င်း၏ မူရင်းစတင်ချိန်နှင့် ဆုံးချိန်ကို "cuts" စာရင်းတွင် ထည့်ပြီး ဖြတ်ရသည့်အကြောင်းကို တိုတိုရေးပါ။
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
-JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — တစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ (၇) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
+JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — `story_map.beats` နှင့် တစ်ခုချင်း ကိုက်ပြီး ဘာတစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ နောက်ဖြစ်ရပ်ကို ရှေ့ footage မှာ ကြိုပြောတာ သို့မဟုတ် ရှေ့ဖြစ်ရပ်ကို နောက်မှ ပြန်ပြောတာ မရှိဘူးလား။ (၇) **Audio-only test** — ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူတစ်ယောက်က scene တိုင်းမှာ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ပြောပြန်နိုင်ရဲ့လား။ မရသေးရင် အမည်ရှင်းလင်းချက်၊ အကြောင်းရင်းနဲ့ bridge တွေ ပြန်ဖြည့်ပါ။ (၈) «သူ/သူမ/အဲ့ဒီလူ» ဆိုတဲ့ မရှင်းတဲ့ အညွှန်းတွေ၊ အကြောင်းရင်းမပါတဲ့ ရုတ်တရက် တုံ့ပြန်မှုတွေ၊ အချိန်/နေရာ ရုတ်တရက် ခုန်သွားတာတွေ မရှိဘူးလား။ (၉) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
 
 ## အဖြေထုတ်ပုံ
 အောက်ပါပုံစံအတိုင်း JSON ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် ရှင်းလင်းချက် သို့မဟုတ် အခြားစာသား မရေးပါနှင့်။
@@ -6229,6 +7019,18 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {{
   "protagonist": "အဓိကဇာတ်ကောင်နာမည် (မသိရင် ကွက်လပ်ထား)",
   "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ (စာသားတွင် သုံးထားသည့်အတိုင်း)",
+  "story_map": {{
+    "character_cards": [
+      {{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ပြောနေသူ/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "aliases": []}}
+    ],
+    "beats": [
+      {{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}
+    ],
+    "current_goal": "လက်ရှိရည်မှန်းချက်",
+    "current_conflict": "လက်ရှိအဓိကပြဿနာ",
+    "open_threads": ["မဖြေရှင်းသေးသည့်အရာများ"],
+    "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"]
+  }},
   "scenes": [
     {{
       "start": 0.0,
@@ -6249,6 +7051,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     video_file = None
     scenes = []
     cuts = []
+    story_map = {}
+    story_editor_metrics = {}
     new_protagonist = protagonist
     new_pronoun = pronoun
     last_script_error = ""
@@ -6273,6 +7077,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         )
         scenes = prepared_payload.get("scenes") or []
         cuts = prepared_payload.get("cuts") or []
+        story_map = _merge_story_maps(
+            prepared_payload.get("story_map"),
+            (prepared_script or {}).get("story_map"),
+            chunk_duration=chunk_dur,
+        )
         new_protagonist = str(
             prepared_payload.get("protagonist")
             or prepared_script.get("protagonist")
@@ -6314,6 +7123,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
             scenes = payload.get("scenes") or []
             cuts = payload.get("cuts") or []
+            story_map = _merge_story_maps(
+                story_map,
+                payload.get("story_map"),
+                chunk_duration=chunk_dur,
+            )
             if not protagonist:
                 new_protagonist = payload.get("protagonist") or protagonist
             if payload.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
@@ -6355,12 +7169,14 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့် (ခန်းပျမ်းမျှ {request_chars_per_scene} လုံး) ရေးပါ။
 - အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် ရွေးထားသော နာမ်စား ပါရမည်။
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
+- အရင် story map တည်ဆောက်ပြီး beat အစဉ်အတိုင်း ရေးပါ။ Scene အားလုံးပေါင်းရင် ဆက်တိုက်ဇာတ်လမ်းတစ်ခုဖြစ်ရမည်။ လူပြောင်းတိုင်း အမည်/အခန်းကဏ္ဍကို ရှင်းပါ၊ dialogue မှာ speaker/listener ရှင်းပါ၊ နောက်ဖြစ်ရပ်ကို ရှေ့ scene မှာ ကြိုမပြောရ။
 - စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဥပမာ ❌ "ကျွန်တော် ပြန်လာခဲ့ပါသည်။" ✅ "ကျွန်တော် ပြန်ချလာခဲ့တယ်။" အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
-- JSON key များမှာ "protagonist", "pronoun", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
+- JSON key များမှာ "protagonist", "pronoun", "story_map", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
 
 {{
   "protagonist": "အဓိကဇာတ်ကောင်နာမည် သို့မဟုတ် ကွက်လပ်",
   "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ",
+  "story_map": {{"character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": []}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
   "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ပထမလူမြန်မာစာသား"}}],
   "cuts": []
 }}
@@ -6379,6 +7195,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 )
                 scenes = payload.get("scenes") or []
                 cuts = payload.get("cuts") or []
+                story_map = _merge_story_maps(
+                    story_map,
+                    payload.get("story_map"),
+                    chunk_duration=chunk_dur,
+                )
                 if not protagonist:
                     new_protagonist = payload.get("protagonist") or protagonist
                 if payload.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
@@ -6445,6 +7266,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - လေသံ: {tone_line}
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့်။
 - အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။
+- ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူ နားလည်နိုင်အောင် တစ်ဆက်တည်း ဇာတ်လမ်းလိုရေးပါ။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ ရှင်းပါ။ လူပြောင်းတိုင်း အမည်/အခန်းကဏ္ဍကို ပြန်ပြောပါ၊ dialogue မှာ speaker/listener ရှင်းပါ၊ အကြောင်းရင်းမပါဘဲ ရုတ်တရက် မခုန်ပါနှင့်။
 - စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ၊ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 - JSON မလိုပါ။ မြန်မာစာသားချည်း တိုက်ရိုက် ရေးပါ။ ခေါင်းစဉ်၊ ရှင်းလင်းချက်၊ အင်္ဂလိပ်စာ မထည့်ပါနှင့်။
 """.strip()
@@ -6550,12 +7372,13 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 🎯 အသစ်စာသားကို {missing} လုံးမှ {int(missing * 1.2)} လုံးအတွင်းသာ ထပ်ဖြည့်ပါ (အဲဒီထက် မပိုရ)။ ပေါင်းလျှင် စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ဝန်းကျင် ဖြစ်ရပါမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဦးစားပေး ဖြည့်ပါ။
+အသစ် scene တစ်ခုချင်းစီသည် သူ၏ အရင်/နောက် scene များနှင့် ဇာတ်လမ်းအရ ဆက်စပ်ရမည်။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။ သီးခြား caption လို မရေးရ၊ ဖြစ်ရပ်ကို သူ၏ မူရင်း start/end အတွင်းမှာသာ ထားပါ။
 
 ယခင် script:
 {json.dumps(scenes, ensure_ascii=False)}
 
 အောက်ပါပုံစံအတိုင်း JSON object ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် မည်သည့်စာသားမှ မရေးပါနှင့်။
-{{"pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ", "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
+{{"pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
         """.strip()
         try:
             extra = await _generate_direct_gemini_json(
@@ -6566,6 +7389,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
             extra_payload = _normalize_direct_script_payload(
                 extra, chunk_duration=chunk_dur
+            )
+            story_map = _merge_story_maps(
+                story_map,
+                extra_payload.get("story_map"),
+                chunk_duration=chunk_dur,
             )
             existing_signatures = {
                 (
@@ -6632,6 +7460,111 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         preferred=new_pronoun or pronoun,
         settings=st,
     )
+
+    # Story-editor pass: a draft can satisfy length and first-person
+    # rules while still sounding like disconnected captions.  Only
+    # run the extra text-only edit when local clarity signals say
+    # the story is hard to follow; a candidate is accepted only if
+    # every scene is returned, first-person/length stay in bounds,
+    # and the clarity score does not get worse.
+    story_editor_metrics = _story_clarity_metrics(scenes, story_map)
+    story_editor_metrics["editor_applied"] = False
+    if not has_prepared_script and story_editor_metrics.get("needs_editor"):
+        await tracker.update(
+            "🧩 Story editor ဖြင့် ဇာတ်လမ်း အဆက်အစပ် စစ်ဆေးပြီး ပြင်နေပါသည်...",
+            force=True,
+        )
+        editor_prompt = _direct_story_editor_prompt(
+            scenes,
+            story_context,
+            story_map,
+            new_pronoun,
+            new_protagonist,
+        )
+        try:
+            editor_data = await _generate_direct_gemini_json(
+                client,
+                [editor_prompt],
+                purpose="story editor",
+                tracker=tracker,
+                max_output_tokens=16384,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            last_script_error = _safe_error_text(e, 900)
+            story_editor_metrics["editor_error"] = type(e).__name__
+            logger.warning(f"Direct story editor failed: {last_script_error}")
+        else:
+            replacements = _parse_direct_scene_replacements(
+                editor_data,
+                list(range(len(scenes))),
+            )
+            editor_payload = _normalize_direct_script_payload(
+                editor_data,
+                chunk_duration=chunk_dur,
+            )
+            candidate_map = _merge_story_maps(
+                story_map,
+                editor_payload.get("story_map"),
+                chunk_duration=chunk_dur,
+            )
+            candidate_scenes = []
+            valid_candidate = len(replacements) == len(scenes)
+            if valid_candidate:
+                for scene_index, scene in enumerate(scenes):
+                    new_text = str(replacements.get(scene_index) or "").strip()
+                    old_text = str(scene.get("burmese") or "").strip()
+                    old_len = len(old_text)
+                    new_len = len(new_text)
+                    introduced_foreign = bool(
+                        re.search(
+                            r"[A-Za-z\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]",
+                            new_text,
+                        )
+                        and not re.search(
+                            r"[A-Za-z\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]",
+                            old_text,
+                        )
+                    )
+                    if (
+                        not _scene_is_first_person(new_text, new_pronoun)
+                        or introduced_foreign
+                        or (old_len and not (old_len * 0.75 <= new_len <= old_len * 1.25))
+                    ):
+                        valid_candidate = False
+                        break
+                    candidate_scenes.append({**scene, "burmese": new_text})
+            if valid_candidate:
+                candidate_metrics = _story_clarity_metrics(
+                    candidate_scenes,
+                    candidate_map,
+                )
+                if (
+                    int(candidate_metrics.get("score") or 0)
+                    >= int(story_editor_metrics.get("score") or 0)
+                    and len(candidate_metrics.get("issues") or [])
+                    <= len(story_editor_metrics.get("issues") or [])
+                ):
+                    before_score = story_editor_metrics.get("score")
+                    scenes = candidate_scenes
+                    story_map = candidate_map
+                    story_editor_metrics = {
+                        **candidate_metrics,
+                        "editor_applied": True,
+                        "before_score": before_score,
+                    }
+                    logger.info(
+                        "Chunk %s story editor applied: clarity %s -> %s, issues=%s",
+                        chunk_index,
+                        before_score,
+                        candidate_metrics.get("score"),
+                        candidate_metrics.get("issues"),
+                    )
+                else:
+                    story_editor_metrics["editor_rejected"] = "no_clarity_improvement"
+            else:
+                story_editor_metrics["editor_rejected"] = "invalid_or_incomplete_scenes"
 
     # Prompt-only first-person instructions are not sufficient.  Validate
     # every scene's actual Burmese text and ask Gemini to rewrite only the
@@ -6738,15 +7671,30 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     if script_only:
         await _delete_gemini_file(client, video_file)
         if extract_summary:
-            script_summary = await extract_story_summary(scenes, client)
+            script_summary = await extract_story_summary(
+                scenes,
+                client,
+                story_map=story_map,
+            )
         else:
-            script_summary = {
-                "characters": list((story_context or {}).get("characters") or []),
-                "summary": str((story_context or {}).get("summary") or ""),
-                "last_scene": str((scenes[-1].get("burmese") or "")) if scenes else "",
-                "protagonist": new_protagonist,
-                "pronoun": new_pronoun,
-            }
+            script_summary = _merge_story_contexts(
+                story_context,
+                _story_context_from_story_map(
+                    story_map,
+                    protagonist=new_protagonist,
+                    pronoun=new_pronoun,
+                ),
+                fallback_from_scenes=scenes,
+            )
+        script_summary = _merge_story_contexts(
+            story_context,
+            script_summary,
+            _story_context_from_story_map(
+                story_map,
+                protagonist=new_protagonist,
+                pronoun=new_pronoun,
+            ),
+        )
         if new_protagonist and not script_summary.get("protagonist"):
             script_summary["protagonist"] = new_protagonist
         if new_pronoun and not script_summary.get("pronoun"):
@@ -6761,6 +7709,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             "cuts": json.loads(json.dumps(cuts, ensure_ascii=False)),
             "protagonist": new_protagonist,
             "pronoun": new_pronoun,
+            "story_map": json.loads(json.dumps(story_map, ensure_ascii=False)),
             "story_context_before": json.loads(
                 json.dumps(story_context or {}, ensure_ascii=False)
             ),
@@ -6773,6 +7722,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 "estimated_coverage_percent": round(float(coverage_pct), 2),
                 "target_final_seconds": round(float(target_seconds), 3),
                 "first_person": first_person_metrics,
+                "story_editor": json.loads(
+                    json.dumps(story_editor_metrics, ensure_ascii=False)
+                ),
             },
         }
         return script_payload, script_summary
@@ -6870,13 +7822,14 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{new_pronoun}» တစ်မျိုးတည်းကိုသာ သုံးရမည်။
 Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမည်။
 ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။
+အသစ် scene တစ်ခုချင်းစီသည် သူ၏ အရင်/နောက် scene များနှင့် ဇာတ်လမ်းအရ ဆက်စပ်ရမည်။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။ သီးခြား caption လို မရေးရ၊ ဖြစ်ရပ်ကို သူ၏ မူရင်း start/end အတွင်းမှာသာ ထားပါ။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
 
 ရှိပြီးသား script:
 {json.dumps(scenes, ensure_ascii=False)}
 
 JSON ကိုသာပြန်ပေးပါ:
-{{"pronoun": "{new_pronoun}", "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော ပထမလူစာသား"}}], "cuts": []}}
+{{"pronoun": "{new_pronoun}", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော ပထမလူစာသား"}}], "cuts": []}}
 """.strip()
                 try:
                     if video_file is None:
@@ -6898,6 +7851,11 @@ JSON ကိုသာပြန်ပေးပါ:
                     break
                 extra_payload = _normalize_direct_script_payload(
                     extra, chunk_duration=chunk_dur
+                )
+                story_map = _merge_story_maps(
+                    story_map,
+                    extra_payload.get("story_map"),
+                    chunk_duration=chunk_dur,
                 )
                 raw_extra_scenes = extra_payload.get("scenes") or []
                 cuts.extend(extra_payload.get("cuts") or [])
@@ -7110,6 +8068,13 @@ JSON ကိုသာပြန်ပေးပါ:
             "stretched_scenes": sum(
                 1 for i in plan if float(i.get("stretch_factor") or 1.0) > 1.01
             ),
+            "repeated_scenes": sum(
+                1 for i in plan if int(i.get("repeat_count") or 1) > 1
+            ),
+            "max_repeat_count": max(
+                (int(i.get("repeat_count") or 1) for i in plan),
+                default=1,
+            ),
             "starts": [
                 round(float(i.get("source_start") or 0), 2) for i in plan
             ],
@@ -7151,40 +8116,55 @@ JSON ကိုသာပြန်ပေးပါ:
     await tracker.update("🎬 ဗီဒီယို ပြင်ဆင်နေပါသည်...", force=True)
 
     for index, item in enumerate(plan):
-        segment_path = os.path.join(
-            os.path.dirname(chunk_path), f"seg_{index:03d}.mp4"
-        )
-        ffmpeg_filter = _worker_video_filter(
-            out_w,
-            out_h,
-            st,
-            float(item.get("freeze_seconds") or 0),
-            stretch_factor=float(item.get("stretch_factor") or 1.0),
-        )
-        result = await asyncio.to_thread(run_cmd, [
-            FFMPEG_BIN, "-y",
-            # -t must stay an *input* option: as an output option it
-            # measured post-filter timestamps and silently truncated
-            # every setpts-stretched (and tpad-frozen) segment back
-            # to input_seconds, so the video track came out shorter
-            # than the narration and played as a frozen last frame
-            # under continuing speech (the persistent freeze bug,
-            # proven with ffmpeg: setpts=2 + output -t 5 -> 5.0s out
-            # instead of 10.0s; input-side -t gives the full 10.0s).
-            "-ss", f"{float(item.get('source_start') or 0):.3f}",
-            "-t", f"{max(0.04, float(item.get('input_seconds') or 0.04)):.3f}",
-            "-i", chunk_path,
-            "-an",
-            "-vf", ffmpeg_filter,
-            "-c:v", "libx264",
-            "-preset", "ultrafast" if st.get("fast_mode") else "superfast",
-            "-crf", str(int(st.get("quality") or 23)),
-            segment_path,
-        ], 300)
+        # A scene whose narration far outruns its footage renders
+        # the same scene twice (never more): each pass restarts at
+        # the scene's own start so the picture keeps moving under
+        # the continuing narration instead of freezing.
+        render_passes = _alignment_render_passes(item)
+        for render_pass in render_passes:
+            pass_suffix = (
+                f"_p{int(render_pass.get('pass_index') or 1)}"
+                if len(render_passes) > 1
+                else ""
+            )
+            segment_path = os.path.join(
+                os.path.dirname(chunk_path),
+                f"seg_{index:03d}{pass_suffix}.mp4",
+            )
+            ffmpeg_filter = _worker_video_filter(
+                out_w,
+                out_h,
+                st,
+                float(render_pass.get("freeze_seconds") or 0),
+                stretch_factor=float(render_pass.get("stretch_factor") or 1.0),
+            )
+            result = await asyncio.to_thread(run_cmd, [
+                FFMPEG_BIN, "-y",
+                # -t must stay an *input* option: as an output option it
+                # measured post-filter timestamps and silently truncated
+                # every setpts-stretched (and tpad-frozen) segment back
+                # to input_seconds, so the video track came out shorter
+                # than the narration and played as a frozen last frame
+                # under continuing speech (the persistent freeze bug,
+                # proven with ffmpeg: setpts=2 + output -t 5 -> 5.0s out
+                # instead of 10.0s; input-side -t gives the full 10.0s).
+                "-ss", f"{float(render_pass.get('source_start') or 0):.3f}",
+                "-t", f"{max(0.04, float(render_pass.get('input_seconds') or 0.04)):.3f}",
+                "-i", chunk_path,
+                "-an",
+                "-vf", ffmpeg_filter,
+                "-c:v", "libx264",
+                "-preset", "ultrafast" if st.get("fast_mode") else "superfast",
+                "-crf", str(int(st.get("quality") or 23)),
+                segment_path,
+            ], 300)
 
-        if result.returncode != 0 or not os.path.exists(segment_path):
-            raise RuntimeError(f"segment {index + 1} failed")
-        seg_files.append(segment_path)
+            if result.returncode != 0 or not os.path.exists(segment_path):
+                raise RuntimeError(
+                    f"segment {index + 1} pass "
+                    f"{int(render_pass.get('pass_index') or 1)} failed"
+                )
+            seg_files.append(segment_path)
 
     concat_txt = os.path.join(os.path.dirname(chunk_path), "concat.txt")
     with open(concat_txt, "w", encoding="utf-8") as f:
@@ -7258,24 +8238,36 @@ JSON ကိုသာပြန်ပေးပါ:
                 pass
 
     if extract_summary:
-        new_summary = await extract_story_summary(scenes, client)
+        new_summary = await extract_story_summary(
+            scenes,
+            client,
+            story_map=story_map,
+        )
     else:
         prepared_summary = (
             (prepared_script or {}).get("story_context_after")
             if isinstance(prepared_script, dict)
             else {}
         )
-        new_summary = (
-            dict(prepared_summary)
-            if isinstance(prepared_summary, dict)
-            else {
-                "characters": list((story_context or {}).get("characters") or []),
-                "summary": str((story_context or {}).get("summary") or ""),
-                "last_scene": str((scenes[-1].get("burmese") or "")) if scenes else "",
-                "protagonist": new_protagonist,
-                "pronoun": new_pronoun,
-            }
+        new_summary = _merge_story_contexts(
+            story_context,
+            prepared_summary if isinstance(prepared_summary, dict) else {},
+            _story_context_from_story_map(
+                story_map,
+                protagonist=new_protagonist,
+                pronoun=new_pronoun,
+            ),
+            fallback_from_scenes=scenes,
         )
+    new_summary = _merge_story_contexts(
+        story_context,
+        new_summary,
+        _story_context_from_story_map(
+            story_map,
+            protagonist=new_protagonist,
+            pronoun=new_pronoun,
+        ),
+    )
     if new_protagonist and not new_summary.get("protagonist"):
         new_summary["protagonist"] = new_protagonist
     if new_pronoun and not new_summary.get("pronoun"):
@@ -7290,6 +8282,9 @@ JSON ကိုသာပြန်ပေးပါ:
                 "cuts": json.loads(json.dumps(cuts, ensure_ascii=False)),
                 "protagonist": new_protagonist,
                 "pronoun": new_pronoun,
+                "story_map": json.loads(
+                    json.dumps(story_map, ensure_ascii=False)
+                ),
                 "story_context_after": new_summary,
             }
         )
@@ -7300,6 +8295,9 @@ JSON ကိုသာပြန်ပေးပါ:
                 "measured_narration_seconds": round(float(audio_seconds), 3),
                 "rendered_duration_seconds": round(float(final_chunk_duration), 3),
                 "duration_calibration_history": calibration_history,
+                "story_editor": json.loads(
+                    json.dumps(story_editor_metrics, ensure_ascii=False)
+                ),
             }
         )
         prepared_script["metrics"] = metrics
@@ -9309,6 +10307,18 @@ def _parse_rewrite_response(data, allowed_group_ids) -> tuple[dict, str, str]:
     return scenes, protagonist, pronoun
 
 
+def _rewrite_response_story_map(data) -> dict:
+    """Extract the optional story map from a worker rewrite answer."""
+    if not isinstance(data, dict):
+        return {}
+    return _normalize_story_map(
+        data.get("story_map")
+        or data.get("story_bible")
+        or data.get("story_plan")
+        or {}
+    )
+
+
 def _rewrite_prompt(
     groups: list,
     target_by_group: dict,
@@ -9320,7 +10330,7 @@ def _rewrite_prompt(
     adjust_mode: str = "",
 ) -> str:
     st = _with_required_coverage(settings)
-    context = story_context or {}
+    context = _normalize_story_context(story_context or {})
     pronoun = str(context.get("pronoun") or "").strip()
     protagonist = str(context.get("protagonist") or "").strip()
     voice_pronoun = _voice_first_person_pronoun(st)
@@ -9399,7 +10409,14 @@ def _rewrite_prompt(
         "protagonist": protagonist,
         "pronoun": pronoun,
         "characters": context.get("characters") or [],
+        "character_cards": context.get("character_cards") or [],
         "previous_summary": str(context.get("summary") or "")[-2500:],
+        "story_beats_so_far": (context.get("story_beats") or [])[-16:],
+        "current_setting": str(context.get("setting") or ""),
+        "current_goal": str(context.get("current_goal") or ""),
+        "current_conflict": str(context.get("current_conflict") or ""),
+        "open_threads": context.get("open_threads") or [],
+        "important_facts": context.get("important_facts") or [],
         "last_scene": str(context.get("last_scene") or "")[-1000:],
     }, ensure_ascii=False)
     groups_json = json.dumps(payload_groups, ensure_ascii=False)
@@ -9424,6 +10441,10 @@ def _rewrite_prompt(
 - အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «အဲဒီတုန်းက ကျွန်တော်/ကျွန်မ မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှသိလိုက်ရတာက…» ပုံစံဖြင့် retrospective ရေးပါ။
 - Transcript တွင် မပါသော အဖြစ်အပျက်၊ အမည်၊ အကြောင်းရင်းများကို မတီထွင်ပါနှင့်။
 - Dialogue ၏ အဓိပ္ပာယ်နှင့် ပြောသူ/ကြားသူကို ထိန်းသိမ်းပါ။ တိုက်ရိုက်စာလုံးချင်း ကူးနိုင်သလောက် တိကျကျ Burmese အဖြစ် ပြန်ရေးပါ။
+- Scene အားလုံးပေါင်းလျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ Group တစ်ခုချင်းကို သီးခြား caption လို မရေးရ။ အရင် group ရဲ့ ရလဒ်ကနေ အကြောင်းဆက် bridge ဖြင့် ဆက်ရေးပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။
+- အကြောင်းအရာကို group တစ်ခုကနေ နောက်တစ်ခုသို့ မရွှေ့ရ။ နောက်မှ ပေါ်မည့် reveal/စကားကို ရှေ့ group မှာ ကြိုမပြောရ၊ ရှေ့ဖြစ်ရပ်ကိုလည်း နောက်မှ ပြန်မပြောရ — အသံနဲ့ footage ကိုက်ညီမှုပျက်စေတယ်။
+- လူပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အဖြာဖြာသုံးမနေဘဲ အမည် သို့မဟုတ် အခန်းကဏ္ဍ/ဆက်နွယ်ပုံကို သုံးပါ။ လူကို ပထမဆုံးမိတ်ဆက်တိုင်း ဘယ်သူလဲ တိုတိုရှင်းပါ။
+- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေနဲ့ beat တွေကို မူရင်း start/end အတိုင်း တိုတိုပြန်ထည့်ပါ။
 - Visual-only အချက်ကို transcript မှ မသိနိုင်လျှင် မှန်းမရေးပါနှင့်။
 - Scene text ထဲတွင် timestamp, heading, bullet, quotation label သို့မဟုတ် ရှင်းလင်းချက် မထည့်ပါနှင့်။ TTS ဖတ်မည့် စာသားသာရေးပါ။
 
@@ -9437,6 +10458,7 @@ JSON ကိုသာ အောက်ပါပုံစံဖြင့် ပြ�
 {{
   "protagonist": "အဓိကဇာတ်ကောင်အမည် သို့မဟုတ် ကွက်လပ်",
   "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ",
+  "story_map": {{"character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": []}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
   "scenes": [
     {{"group_id": 1, "burmese": "TTS ဖတ်မည့် Burmese ပထမလူစာသား"}}
   ]
@@ -9466,6 +10488,8 @@ async def _repair_worker_first_person_scenes(
         preferred=str((story_context or {}).get("pronoun") or ""),
         settings=settings,
     )
+    if isinstance(story_context, dict):
+        story_context.update(_normalize_story_context(story_context))
     story_context["pronoun"] = selected
     group_by_id = {}
     for group in groups or []:
@@ -9515,6 +10539,22 @@ async def _repair_worker_first_person_scenes(
             parsed, response_protagonist, _ = _parse_rewrite_response(
                 data, allowed
             )
+            response_map = _rewrite_response_story_map(data)
+            if response_map:
+                story_context.update(
+                    _merge_story_contexts(
+                        story_context,
+                        _story_context_from_story_map(
+                            response_map,
+                            protagonist=(
+                                story_context.get("protagonist")
+                                or response_protagonist
+                            ),
+                            pronoun=selected,
+                        ),
+                    )
+                )
+                story_context["pronoun"] = selected
             if response_protagonist and not story_context.get("protagonist"):
                 story_context["protagonist"] = response_protagonist
             for gid, new_text in parsed.items():
@@ -9614,10 +10654,8 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
 
     await _worker_progress(state, WORKER_STAGE_LABELS["rewrite"], tracker)
     client = _make_gemini_client()
-    story_context = {
-        "characters": [], "summary": "", "last_scene": "",
-        "protagonist": "", "pronoun": "",
-    }
+    story_context = _normalize_story_context({})
+    story_map = {}
     scenes_by_group: dict[int, str] = {}
     batches = _batch_transcript_groups(groups, max_groups=10, max_chars=6000)
 
@@ -9633,6 +10671,19 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         for gid, text in parsed.items():
             if text.strip():
                 scenes_by_group[int(gid)] = text.strip()
+        story_map = _merge_story_maps(
+            story_map,
+            _rewrite_response_story_map(data),
+            chunk_duration=source_duration or transcript_last_end,
+        )
+        story_context = _merge_story_contexts(
+            story_context,
+            _story_context_from_story_map(
+                story_map,
+                protagonist=response_protagonist,
+                pronoun=response_pronoun,
+            ),
+        )
 
         detected_pronoun = _detect_pronoun(" ".join(parsed.values()))
         if response_protagonist and not story_context.get("protagonist"):
@@ -9641,30 +10692,40 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             story_context["pronoun"] = detected_pronoun or response_pronoun
 
         batch_scenes = [
-            {"burmese": scenes_by_group[int(g["group_id"])]}
+            {
+                "start": float(g.get("start") or 0),
+                "end": float(g.get("end") or g.get("start") or 0),
+                "burmese": scenes_by_group[int(g["group_id"])],
+            }
             for g in batch
             if scenes_by_group.get(int(g["group_id"]))
         ]
         if batch_scenes:
             try:
-                summary = await extract_story_summary(batch_scenes, client)
+                summary = await extract_story_summary(
+                    batch_scenes,
+                    client,
+                    story_map=story_map,
+                )
             except Exception as e:
                 logger.warning(f"Worker story summary update failed: {e}")
                 summary = {}
-            if isinstance(summary, dict) and summary:
-                merged = dict(story_context)
-                merged.update(summary)
-                if story_context.get("protagonist"):
-                    merged["protagonist"] = story_context["protagonist"]
-                if story_context.get("pronoun"):
-                    merged["pronoun"] = story_context["pronoun"]
-                story_context = {
-                    "characters": merged.get("characters") or [],
-                    "summary": str(merged.get("summary") or ""),
-                    "last_scene": str(merged.get("last_scene") or ""),
-                    "protagonist": str(merged.get("protagonist") or ""),
-                    "pronoun": str(merged.get("pronoun") or ""),
-                }
+            preserved_protagonist = str(story_context.get("protagonist") or "")
+            preserved_pronoun = str(story_context.get("pronoun") or "")
+            story_context = _merge_story_contexts(
+                story_context,
+                summary if isinstance(summary, dict) else {},
+                _story_context_from_story_map(
+                    story_map,
+                    protagonist=preserved_protagonist,
+                    pronoun=preserved_pronoun,
+                ),
+                fallback_from_scenes=batch_scenes,
+            )
+            if preserved_protagonist:
+                story_context["protagonist"] = preserved_protagonist
+            if preserved_pronoun:
+                story_context["pronoun"] = preserved_pronoun
             if not story_context.get("last_scene") and batch_scenes:
                 story_context["last_scene"] = batch_scenes[-1]["burmese"]
 
@@ -9693,6 +10754,19 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             for gid, text in parsed.items():
                 if text.strip():
                     scenes_by_group[int(gid)] = text.strip()
+            story_map = _merge_story_maps(
+                story_map,
+                _rewrite_response_story_map(data),
+                chunk_duration=source_duration or transcript_last_end,
+            )
+            story_context = _merge_story_contexts(
+                story_context,
+                _story_context_from_story_map(
+                    story_map,
+                    protagonist=response_protagonist,
+                    pronoun=response_pronoun,
+                ),
+            )
             if response_protagonist and not story_context.get("protagonist"):
                 story_context["protagonist"] = response_protagonist
             if not story_context.get("pronoun"):
@@ -9772,6 +10846,20 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             )
             data = await _worker_gemini_json(prompt, client)
             parsed, _, _ = _parse_rewrite_response(data, allowed)
+            story_map = _merge_story_maps(
+                story_map,
+                _rewrite_response_story_map(data),
+                chunk_duration=source_duration or transcript_last_end,
+            )
+            story_context = _merge_story_contexts(
+                story_context,
+                _story_context_from_story_map(
+                    story_map,
+                    protagonist=str(story_context.get("protagonist") or ""),
+                    pronoun=selected_pronoun,
+                ),
+            )
+            story_context["pronoun"] = selected_pronoun
             for gid, new_text in parsed.items():
                 old_text = str(scenes_by_group.get(int(gid)) or "")
                 if (
@@ -9879,6 +10967,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
 
     script = {
         "story_context": story_context,
+        "story_map": story_map,
         "coverage": coverage_metrics,
         "target_by_group": {str(k): int(v) for k, v in target_by_group.items()},
         "groups": groups,
@@ -10055,7 +11144,14 @@ async def _worker_adjust_scenes_for_duration(
             scenes_by_group[gid] = str(scene.get("burmese") or "").strip()
             scene_by_group[gid] = scene
 
-    story_context = dict((script or {}).get("story_context") or state.get("story_context") or {})
+    story_context = _normalize_story_context(
+        dict((script or {}).get("story_context") or state.get("story_context") or {})
+    )
+    story_map = _normalize_story_map((script or {}).get("story_map") or {})
+    story_context = _merge_story_contexts(
+        story_context,
+        _story_context_from_story_map(story_map),
+    )
     selected = _choose_first_person_pronoun(
         [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
         preferred=str(story_context.get("pronoun") or ""),
@@ -10096,6 +11192,27 @@ async def _worker_adjust_scenes_for_duration(
         )
         data = await _worker_gemini_json(prompt, client)
         parsed, response_protagonist, _ = _parse_rewrite_response(data, allowed)
+        story_map = _merge_story_maps(
+            story_map,
+            _rewrite_response_story_map(data),
+            chunk_duration=max(
+                (
+                    float(group.get("end") or 0)
+                    for group in groups
+                    if isinstance(group, dict)
+                ),
+                default=0.0,
+            ),
+        )
+        story_context = _merge_story_contexts(
+            story_context,
+            _story_context_from_story_map(
+                story_map,
+                protagonist=response_protagonist,
+                pronoun=selected,
+            ),
+        )
+        story_context["pronoun"] = selected
         if response_protagonist and not story_context.get("protagonist"):
             story_context["protagonist"] = response_protagonist
         for gid, new_text in parsed.items():
@@ -10130,6 +11247,7 @@ async def _worker_adjust_scenes_for_duration(
             new_scene["burmese"] = scenes_by_group[gid]
         updated.append(new_scene)
     script["story_context"] = story_context
+    script["story_map"] = story_map
     return updated, sorted(set(changed)), selected
 
 
@@ -10617,6 +11735,13 @@ async def _worker_stage_tts(state: dict, tracker=None):
 # looks broken (user report).  A freeze remains only as the last
 # resort for shortages beyond even this stretch.
 ALIGNMENT_MAX_STRETCH = 1.75
+# Above this narration/footage ratio, stretching one pass gets so
+# slow it reads as frozen; replay the same scene from its start
+# once more instead (user rule: the same footage may be shown at
+# most twice, and only when needed to keep picture and narration
+# matched).
+ALIGNMENT_REPEAT_RATIO_THRESHOLD = 1.5
+ALIGNMENT_MAX_REPEATS = 2
 # Scene starts snap to a real detected shot cut when one is this
 # close, so visual cuts land where the narration changes scene.
 ALIGNMENT_CUT_SNAP_SECONDS = 2.0
@@ -10696,7 +11821,14 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
       next scene's start) is slowed down by up to
       ``ALIGNMENT_MAX_STRETCH`` -- moving footage of the right
       event -- instead of freezing on a single frame.
-    - A frozen final frame covers only any shortage beyond that.
+    - When even a moderate one-pass stretch would look frozen
+      (ratio beyond ``ALIGNMENT_REPEAT_RATIO_THRESHOLD``), the
+      same scene is replayed from its start for a second pass --
+      never a third (user rule).  Each pass stays within the
+      stretch cap, so replayed footage moves at a believable
+      speed instead of crawling.
+    - A frozen final frame covers only any shortage beyond two
+      capped passes.
     """
     if len(scenes) != len(audio_durations):
         raise WorkerJobError("scene/audio count mismatch while building render plan")
@@ -10796,26 +11928,92 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
         desired_seconds = audio_duration + pause_after
         available_seconds = max(0.0, limit - start)
         original_scene_seconds = max(0.0, end - start)
+        render_passes = []
         if available_seconds <= 0:
             input_seconds = min(0.04, source_duration)
             if start + input_seconds > source_duration:
                 start = max(0.0, source_duration - input_seconds)
             stretch_factor = 1.0
             freeze_seconds = max(0.0, desired_seconds - input_seconds)
+            render_passes = [{
+                "pass_index": 1,
+                "source_start": round(start, 6),
+                "input_seconds": round(input_seconds, 6),
+                "stretch_factor": 1.0,
+                "freeze_seconds": round(freeze_seconds, 6),
+                "target_output_seconds": round(desired_seconds, 6),
+                "desired_output_seconds": round(desired_seconds, 6),
+            }]
         elif desired_seconds <= available_seconds:
             input_seconds = desired_seconds
             stretch_factor = 1.0
             freeze_seconds = 0.0
+            render_passes = [{
+                "pass_index": 1,
+                "source_start": round(start, 6),
+                "input_seconds": round(input_seconds, 6),
+                "stretch_factor": 1.0,
+                "freeze_seconds": 0.0,
+                "target_output_seconds": round(desired_seconds, 6),
+                "desired_output_seconds": round(desired_seconds, 6),
+            }]
         else:
-            # Slow this scene's footage down to cover the narration
-            # (capped); freeze only what even the cap cannot cover.
-            stretch_factor = min(
-                desired_seconds / available_seconds, ALIGNMENT_MAX_STRETCH
-            )
+            # The narration outruns this scene's footage.  A modest
+            # shortage is covered by slowing the one pass down; a
+            # severe one replays the scene from its start for a
+            # second pass (never a third) so each pass can move at
+            # a near-natural speed instead of crawling like a freeze.
+            # ``input_seconds`` stays the *unique* source span used
+            # (``available_seconds``), however many passes replay it.
             input_seconds = available_seconds
-            freeze_seconds = max(
-                0.0, desired_seconds - input_seconds * stretch_factor
+            ratio = desired_seconds / available_seconds
+            pass_count = (
+                ALIGNMENT_MAX_REPEATS
+                if ratio > ALIGNMENT_REPEAT_RATIO_THRESHOLD
+                else 1
             )
+            per_pass_target = desired_seconds / pass_count
+            moving_outputs = []
+            for _pass_offset in range(pass_count):
+                if per_pass_target <= available_seconds:
+                    # This pass only needs the first part of the
+                    # scene, replayed from its start at natural
+                    # speed -- no slowdown at all.
+                    pass_input = per_pass_target
+                    pass_stretch = 1.0
+                else:
+                    pass_input = available_seconds
+                    pass_stretch = min(
+                        per_pass_target / available_seconds,
+                        ALIGNMENT_MAX_STRETCH,
+                    )
+                moving_outputs.append((pass_input, pass_stretch))
+            total_moving = sum(
+                pass_input * pass_stretch
+                for pass_input, pass_stretch in moving_outputs
+            )
+            freeze_seconds = max(0.0, desired_seconds - total_moving)
+            stretch_factor = max(
+                (pass_stretch for _pass_input, pass_stretch in moving_outputs),
+                default=1.0,
+            )
+            for pass_offset, (pass_input, pass_stretch) in enumerate(
+                moving_outputs
+            ):
+                is_last_pass = pass_offset == len(moving_outputs) - 1
+                pass_freeze = freeze_seconds if is_last_pass else 0.0
+                render_passes.append({
+                    "pass_index": pass_offset + 1,
+                    "source_start": round(start, 6),
+                    "input_seconds": round(pass_input, 6),
+                    "stretch_factor": round(float(pass_stretch), 6),
+                    "freeze_seconds": round(pass_freeze, 6),
+                    "target_output_seconds": round(per_pass_target, 6),
+                    "desired_output_seconds": round(
+                        pass_input * pass_stretch + pass_freeze,
+                        6,
+                    ),
+                })
         borrowed_seconds = max(0.0, input_seconds - original_scene_seconds)
 
         plan.append({
@@ -10832,11 +12030,81 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
             "borrowed_seconds": round(borrowed_seconds, 6),
             "stretch_factor": round(float(stretch_factor), 6),
             "freeze_seconds": round(freeze_seconds, 6),
+            "repeat_count": len(render_passes),
+            "render_passes": render_passes,
             "output_start": round(output_cursor, 6),
             "output_end": round(output_cursor + desired_seconds, 6),
         })
         output_cursor += desired_seconds
     return plan
+
+
+def _alignment_render_passes(item: dict) -> list:
+    """Render passes for one alignment-plan item (legacy-safe).
+
+    New plans carry an explicit ``render_passes`` list (1 or 2
+    entries, never more).  Older/hand-built plans without it get
+    a single pass synthesized from the item's top-level fields,
+    so both renderers behave exactly as before for them.
+    """
+    item = item if isinstance(item, dict) else {}
+
+    def _number(value, default):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    passes = []
+    raw_passes = item.get("render_passes")
+    if isinstance(raw_passes, list):
+        for raw_pass in raw_passes[:ALIGNMENT_MAX_REPEATS]:
+            if not isinstance(raw_pass, dict):
+                continue
+            passes.append({
+                "pass_index": len(passes) + 1,
+                "source_start": max(
+                    0.0,
+                    _number(
+                        raw_pass.get("source_start"),
+                        item.get("source_start") or 0,
+                    ),
+                ),
+                "input_seconds": max(
+                    0.04,
+                    _number(
+                        raw_pass.get("input_seconds"),
+                        item.get("input_seconds") or 0.04,
+                    ),
+                ),
+                "stretch_factor": max(
+                    1.0,
+                    _number(
+                        raw_pass.get("stretch_factor"),
+                        item.get("stretch_factor") or 1.0,
+                    ),
+                ),
+                "freeze_seconds": max(
+                    0.0,
+                    _number(raw_pass.get("freeze_seconds"), 0),
+                ),
+                "desired_output_seconds": max(
+                    0.0,
+                    _number(raw_pass.get("desired_output_seconds"), 0),
+                ),
+            })
+    if passes:
+        return passes
+    return [{
+        "pass_index": 1,
+        "source_start": max(0.0, _number(item.get("source_start"), 0)),
+        "input_seconds": max(0.04, _number(item.get("input_seconds"), 0.04)),
+        "stretch_factor": max(1.0, _number(item.get("stretch_factor"), 1.0)),
+        "freeze_seconds": max(0.0, _number(item.get("freeze_seconds"), 0)),
+        "desired_output_seconds": max(
+            0.0, _number(item.get("desired_output_seconds"), 0)
+        ),
+    }]
 
 
 def _worker_video_filter(out_w: int, out_h: int, settings: dict, freeze_seconds: float = 0.0, stretch_factor: float = 1.0) -> str:
@@ -10966,34 +12234,51 @@ async def _worker_stage_render(state: dict, tracker=None):
     async with video_render_semaphore:
         for index, item in enumerate(plan, start=1):
             _worker_check_cancelled(state)
-            segment_path = os.path.join(segments_dir, f"segment_{index:04d}.mp4")
-            ffmpeg_filter = _worker_video_filter(
-                out_w,
-                out_h,
-                settings,
-                float(item.get("freeze_seconds") or 0),
-                stretch_factor=float(item.get("stretch_factor") or 1.0),
-            )
-            result = await asyncio.to_thread(run_cmd, [
-                FFMPEG_BIN, "-y",
-                # -t must stay an *input* option (see the direct
-                # renderer): as an output option it truncated every
-                # setpts-stretched/tpad-frozen segment back to
-                # input_seconds and the video track ended early.
-                "-ss", f"{float(item.get('source_start') or 0):.3f}",
-                "-t", f"{max(0.04, float(item.get('input_seconds') or 0.04)):.3f}",
-                "-i", source_path,
-                "-an",
-                "-vf", ffmpeg_filter,
-                "-c:v", "libx264",
-                "-preset", "ultrafast" if settings.get("fast_mode") else "superfast",
-                "-crf", str(int(settings.get("quality") or 23)),
-                segment_path,
-            ], 900)
-            if result.returncode != 0 or not os.path.exists(segment_path) or os.path.getsize(segment_path) <= 0:
-                detail = result.stderr.decode(errors="ignore")[-600:]
-                raise WorkerJobError(f"render segment {index} failed: {detail}")
-            segment_files.append(segment_path)
+            # Same two-pass replay rule as the direct renderer: a
+            # scene may be shown at most twice, each pass starting
+            # from the scene's own start, so long narration keeps
+            # moving picture instead of a frozen frame.
+            render_passes = _alignment_render_passes(item)
+            for render_pass in render_passes:
+                _worker_check_cancelled(state)
+                pass_suffix = (
+                    f"_p{int(render_pass.get('pass_index') or 1)}"
+                    if len(render_passes) > 1
+                    else ""
+                )
+                segment_path = os.path.join(
+                    segments_dir, f"segment_{index:04d}{pass_suffix}.mp4"
+                )
+                ffmpeg_filter = _worker_video_filter(
+                    out_w,
+                    out_h,
+                    settings,
+                    float(render_pass.get("freeze_seconds") or 0),
+                    stretch_factor=float(render_pass.get("stretch_factor") or 1.0),
+                )
+                result = await asyncio.to_thread(run_cmd, [
+                    FFMPEG_BIN, "-y",
+                    # -t must stay an *input* option (see the direct
+                    # renderer): as an output option it truncated every
+                    # setpts-stretched/tpad-frozen segment back to
+                    # input_seconds and the video track ended early.
+                    "-ss", f"{float(render_pass.get('source_start') or 0):.3f}",
+                    "-t", f"{max(0.04, float(render_pass.get('input_seconds') or 0.04)):.3f}",
+                    "-i", source_path,
+                    "-an",
+                    "-vf", ffmpeg_filter,
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast" if settings.get("fast_mode") else "superfast",
+                    "-crf", str(int(settings.get("quality") or 23)),
+                    segment_path,
+                ], 900)
+                if result.returncode != 0 or not os.path.exists(segment_path) or os.path.getsize(segment_path) <= 0:
+                    detail = result.stderr.decode(errors="ignore")[-600:]
+                    raise WorkerJobError(
+                        f"render segment {index} pass "
+                        f"{int(render_pass.get('pass_index') or 1)} failed: {detail}"
+                    )
+                segment_files.append(segment_path)
             if index == 1 or index == len(plan) or index % 10 == 0:
                 pct = int(index / len(plan) * 100) if plan else 100
                 await _worker_progress(
@@ -11094,6 +12379,14 @@ async def _worker_stage_render(state: dict, tracker=None):
         "segment_count": len(plan),
         "borrowed_seconds": round(sum(float(i.get("borrowed_seconds") or 0) for i in plan), 3),
         "freeze_seconds": round(sum(float(i.get("freeze_seconds") or 0) for i in plan), 3),
+        "repeated_scenes": sum(
+            1 for i in plan if int(i.get("repeat_count") or 1) > 1
+        ),
+        "max_repeat_count": max(
+            (int(i.get("repeat_count") or 1) for i in plan),
+            default=1,
+        ),
+        "rendered_segment_count": len(segment_files),
         "removed_source_seconds": round(
             max(0.0, source_duration - sum(float(i.get("input_seconds") or 0) for i in plan)), 3
         ),
@@ -13689,23 +14982,32 @@ async def _run_manual_part_recap(
             )
             if isinstance(next_context, dict) and next_context:
                 previous_context = fresh.get("story_context") or {}
-                fresh["story_context"] = {
-                    "characters": list(next_context.get("characters") or []),
-                    "summary": str(next_context.get("summary") or ""),
-                    "last_scene": str(next_context.get("last_scene") or ""),
-                    "protagonist": str(
+                merged_context = _merge_story_contexts(
+                    previous_context,
+                    next_context,
+                    _story_context_from_story_map(
+                        (updated_script or {}).get("story_map"),
+                        protagonist=str(
+                            (updated_script or {}).get("protagonist") or ""
+                        ),
+                        pronoun=str((updated_script or {}).get("pronoun") or ""),
+                    ),
+                )
+                if not merged_context.get("protagonist"):
+                    merged_context["protagonist"] = str(
                         next_context.get("protagonist")
                         or (updated_script or {}).get("protagonist")
                         or previous_context.get("protagonist")
                         or ""
-                    ),
-                    "pronoun": str(
+                    )
+                if not merged_context.get("pronoun"):
+                    merged_context["pronoun"] = str(
                         next_context.get("pronoun")
                         or (updated_script or {}).get("pronoun")
                         or previous_context.get("pronoun")
                         or ""
-                    ),
-                }
+                    )
+                fresh["story_context"] = merged_context
             counts = _manual_counts(fresh)
             next_part_after_done = _manual_first_unfinished_part(fresh)
             fresh["current_part_index"] = (
@@ -14999,7 +16301,15 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 total_parts=total_parts,
             )
             part_scripts.append(script)
-            story_context = script.get("story_context_after") or story_context
+            story_context = _merge_story_contexts(
+                story_context,
+                script.get("story_context_after") or {},
+                _story_context_from_story_map(
+                    script.get("story_map"),
+                    protagonist=str(script.get("protagonist") or ""),
+                    pronoun=str(script.get("pronoun") or ""),
+                ),
+            )
             logger.info(
                 f"Story context: protagonist='{story_context.get('protagonist', '')}', "
                 f"pronoun='{story_context.get('pronoun', '')}', "
@@ -15578,7 +16888,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.25-pro-audit-hardening"
+BUILD_VERSION = "v5.26-story-clarity-replay2"
 BUILD_FEATURES = 20
 
 
@@ -15658,7 +16968,9 @@ async def root():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
-        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
+        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation",
+        "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
+        "story_editor": "clarity_gated_bounded_text_only_pass",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
@@ -15776,7 +17088,9 @@ async def health():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
-        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
+        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation",
+        "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
+        "story_editor": "clarity_gated_bounded_text_only_pass",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -16288,10 +17602,10 @@ def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
         "ဒီတစ်ခါ ပြင်ထားတာတွေ —\n"
-        "• <b>Error အစုံ စစ်ဆေးပြီးပါပြီ</b> — code တစ်ခုလုံးကို Professional audit လုပ်ပြီး test အစုံ အောင်မြင်ပါတယ်\n"
-        "• <b>လုံခြုံရေး မြှင့်ထားပါတယ်</b> — Bot ရဲ့ webhook ကို လျှို့ဝှက်ကုဒ်နဲ့ ကာကွယ်ထားပြီး ကိုယ်ရေးအချက်အလက် (Chat ID) ကို အပြင်မှာ မပြတော့ပါဘူး\n"
-        "• အသံပမာဏ စစ်ဆေးချက် စံနှုန်းတွေ အားလုံး တူညီအောင် ပြုပြင်ထားလို့ job တွေ <b>အပိတ်အဆို့မရှိ</b> ပြီးမြောက်ပါမယ်\n"
-        "• မသုံးတော့တဲ့ code အဟောင်းတွေ ရှင်းထုတ်ပြီး စနစ်တစ်ခုလုံး ပိုတည်ငြိမ်အောင် လုပ်ထားပါတယ်\n"
+        "• <b>ဇာတ်လမ်းကို အသံကနေ ပိုနားလည်လွယ်အောင်</b> — ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ ဆိုတာ အစဉ်လိုက်ရှင်းရှင်းရေးပါမယ်\n"
+        "• <b>Story bible အသစ်</b> — ဇာတ်ကောင်တွေရဲ့ အမည်/ဆက်နွယ်ပုံ၊ ဖြစ်ရပ်အစဉ်၊ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို အပိုင်းတိုင်း ဆက်မှတ်ထားပြီး ဇာတ်လမ်း မပြတ်တော့အောင် လုပ်ထားပါတယ်\n"
+        "• ဇာတ်လမ်း ဆက်စပ်မှု အားနည်းရင် <b>Story editor</b> နဲ့ ထပ်စစ်ပြီးမှ အသံသွင်းပါတယ်\n"
+        "• <b>အသံနဲ့ မြင်ကွင်း ပိုကိုက်ပြီး freeze လျော့အောင်</b> — လိုအပ်ရင်သာ အဲဒီ scene ကိုပဲ အများဆုံး <b>၂ ကြိမ်</b> ပြန်ပြပြီး ပုံဆက်လှုပ်နေအောင် လုပ်ထားပါတယ် (၃ ကြိမ် မပြပါ)\n"
         "• Final က မူရင်းထက် <b>မရှည်ပါ</b> · Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
         "🎬 ဗီဒီယို ဒါမှမဟုတ် link ပို့ပြီး စမ်းကြည့်ပါ။"
     )
