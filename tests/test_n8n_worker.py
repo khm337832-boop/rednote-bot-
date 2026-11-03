@@ -2260,6 +2260,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(health.json()["edge_tts_fallback_enabled"])
             self.assertEqual(
+                health.json()["tts_provider_order"],
+                list(bot.TTS_PROVIDER_ORDER),
+            )
+            self.assertEqual(health.json()["tts_provider_order"][0], "edge")
+            self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
                 bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
             )
@@ -5128,6 +5133,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 bot, "PREFERRED_TTS_MODELS", ["bad-tts", "good-tts"]
             )
         )
+        # This test exercises the Gemini path; pin provider order.
+        self.start_patch(
+            patch.object(bot, "TTS_PROVIDER_ORDER", ("gemini", "edge"))
+        )
         self.start_patch(
             patch.object(bot, "_make_gemini_client", lambda: fake_client)
         )
@@ -5276,6 +5285,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "PREFERRED_TTS_MODELS", ["wav-tts"])
         )
         self.start_patch(
+            patch.object(bot, "TTS_PROVIDER_ORDER", ("gemini", "edge"))
+        )
+        self.start_patch(
             patch.object(bot, "_make_gemini_client", lambda: fake_client)
         )
         self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
@@ -5320,6 +5332,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.start_patch(
             patch.object(bot, "PREFERRED_TTS_MODELS", ["quota-tts-e1"])
         )
+        # Premise: Gemini is tried first and fails, Edge rescues.
+        self.start_patch(
+            patch.object(bot, "TTS_PROVIDER_ORDER", ("gemini", "edge"))
+        )
         self.start_patch(
             patch.object(bot, "_make_gemini_client", lambda: fake_client)
         )
@@ -5344,6 +5360,49 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # Default voice is Charon (male pronoun) -> male Burmese voice.
         self.assertEqual(edge_calls[0][1], "my-MM-ThihaNeural")
         self.assertIn("quota-tts-e1", bot._quota_exhausted_active())
+
+    async def test_tts_default_order_is_free_edge_first(self):
+        # User rule: completely free, no queueing.  With the default
+        # provider order the Edge voice must win immediately and
+        # Gemini (quota queue) must not even be called.
+        self.assertEqual(bot.TTS_PROVIDER_ORDER[0], "edge")
+        batch = [{"burmese": "က"}, {"burmese": "ခ"}]
+        gemini_calls = []
+
+        def gen(model, contents, config):
+            gemini_calls.append(model)
+            raise RuntimeError("should not be called")
+
+        async def fake_edge_save(text, voice, out_path):
+            with open(out_path, "wb") as f:
+                f.write(b"\xff\xfb" + b"\x00" * 4000)
+
+        def fake_run_cmd(cmd, timeout):
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x10\x00" * bot.SAMPLE_RATE * 2)
+            return SimpleNamespace(returncode=0)
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", lambda: fake_client)
+        )
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=fake_edge_save)
+        )
+        self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(setattr, bot, "_LAST_TTS_PROVIDER", "")
+
+        clips = await bot._tts_one_batch(
+            batch, 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(clips), 2)
+        self.assertEqual(bot._LAST_TTS_PROVIDER, "edge")
+        self.assertEqual(gemini_calls, [])
 
     def test_edge_tts_voice_mapping_matches_pronoun(self):
         self.assertEqual(
