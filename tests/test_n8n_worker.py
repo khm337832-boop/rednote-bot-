@@ -2222,18 +2222,42 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(plan[2]["stretch_factor"], 1.5, places=6)
         self.assertEqual(plan[2]["freeze_seconds"], 0.0)
         self.assertEqual(plan[2]["desired_output_seconds"], 12.0)
+        self.assertEqual(plan[2]["repeat_count"], 1)
+        self.assertEqual(len(plan[2]["render_passes"]), 1)
 
-        # Beyond the stretch cap, only the remainder freezes.
+        # Beyond one stretched pass, the same five seconds may be
+        # replayed once (two total, never three); only the shortage
+        # beyond two capped passes freezes.
         extreme = bot._build_alignment_plan(
             [{"start": 45, "end": 46}], [30.0], 50, pause_seconds=0.0
         )
         self.assertEqual(extreme[0]["input_seconds"], 5.0)
+        self.assertEqual(extreme[0]["repeat_count"], 2)
+        self.assertEqual(len(extreme[0]["render_passes"]), 2)
+        self.assertTrue(
+            all(
+                render_pass["source_start"] == extreme[0]["source_start"]
+                for render_pass in extreme[0]["render_passes"]
+            )
+        )
         self.assertAlmostEqual(
             extreme[0]["stretch_factor"], bot.ALIGNMENT_MAX_STRETCH, places=6
         )
         self.assertAlmostEqual(
             extreme[0]["freeze_seconds"],
-            30.0 - 5.0 * bot.ALIGNMENT_MAX_STRETCH,
+            30.0 - 2 * 5.0 * bot.ALIGNMENT_MAX_STRETCH,
+            places=6,
+        )
+        self.assertEqual(extreme[0]["render_passes"][0]["freeze_seconds"], 0.0)
+        self.assertAlmostEqual(
+            extreme[0]["render_passes"][1]["freeze_seconds"], 12.5, places=6
+        )
+        self.assertAlmostEqual(
+            sum(
+                render_pass["desired_output_seconds"]
+                for render_pass in extreme[0]["render_passes"]
+            ),
+            30.0,
             places=6,
         )
 
@@ -2295,15 +2319,331 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             plan[0]["stretch_factor"], 16.4 / 12.8, places=4
         )
         self.assertEqual(plan[0]["freeze_seconds"], 0.0)
-        # Scene 2 still has only 8s of footage for 16.4s: stretch to
-        # the cap, freeze only the 2.4s remainder (not 8.4s).
-        self.assertAlmostEqual(
-            plan[1]["stretch_factor"], bot.ALIGNMENT_MAX_STRETCH, places=6
+        # Scene 2 still has only 8s of footage for 16.4s. Showing it
+        # twice at near-natural speed is better than one 1.75x
+        # slow-motion crawl plus a 2.4s freeze.
+        self.assertEqual(plan[1]["repeat_count"], 2)
+        self.assertAlmostEqual(plan[1]["stretch_factor"], 1.025, places=6)
+        self.assertEqual(plan[1]["freeze_seconds"], 0.0)
+        self.assertTrue(
+            all(
+                render_pass["source_start"] == plan[1]["source_start"]
+                and render_pass["freeze_seconds"] == 0.0
+                for render_pass in plan[1]["render_passes"]
+            )
         )
-        self.assertAlmostEqual(plan[1]["freeze_seconds"], 2.4, places=6)
         self.assertEqual(plan[2]["stretch_factor"], 1.0)
         total_freeze = sum(item["freeze_seconds"] for item in plan)
-        self.assertLessEqual(total_freeze, 2.5)
+        self.assertEqual(total_freeze, 0.0)
+
+    def test_story_context_merge_keeps_cards_beats_and_threads(self):
+        first = {
+            "characters": ["Hero"],
+            "character_cards": [
+                {
+                    "name": "Hero",
+                    "role": "speaker",
+                    "relation": "the narrator",
+                    "aliases": ["H"],
+                }
+            ],
+            "summary": "first chapter",
+            "story_beats": ["Hero found the letter"],
+            "current_goal": "find Mina",
+            "current_conflict": "the door is locked",
+            "open_threads": ["who wrote the letter"],
+            "important_facts": ["the key is blue"],
+            "protagonist": "Hero",
+            "pronoun": MALE_PRONOUN,
+        }
+        second = {
+            "summary": "second chapter",
+            "last_scene": "Hero opened the door",
+            "story_map": {
+                "character_cards": [
+                    {
+                        "name": "Mina",
+                        "role": "Hero's sister",
+                        "relation": "the narrator's younger sister",
+                    }
+                ],
+                "beats": [
+                    {"start": 10, "end": 20, "beat": "Mina gave Hero the key"}
+                ],
+                "current_goal": "enter the room",
+                "open_threads": ["what is inside the room"],
+                "important_facts": ["Mina kept the spare key"],
+            },
+        }
+
+        merged = bot._merge_story_contexts(first, second)
+
+        self.assertEqual(merged["protagonist"], "Hero")
+        self.assertEqual(merged["pronoun"], MALE_PRONOUN)
+        self.assertEqual(merged["summary"], "first chapter second chapter")
+        self.assertIn("Hero", merged["characters"])
+        self.assertIn("Mina", merged["characters"])
+        self.assertEqual(
+            [card["name"] for card in merged["character_cards"]],
+            ["Hero", "Mina"],
+        )
+        self.assertEqual(
+            merged["story_beats"],
+            ["Hero found the letter", "Mina gave Hero the key"],
+        )
+        self.assertEqual(merged["current_goal"], "enter the room")
+        self.assertIn("who wrote the letter", merged["open_threads"])
+        self.assertIn("the key is blue", merged["important_facts"])
+        self.assertEqual(merged["last_scene"], "Hero opened the door")
+
+        prompt_lines = bot._story_context_prompt_lines(merged)
+        self.assertIn("Hero's sister", prompt_lines)
+        self.assertIn("Mina gave Hero the key", prompt_lines)
+
+        fallback = bot._merge_story_contexts(
+            {},
+            fallback_from_scenes=[{"burmese": f"{MALE_PRONOUN} သွားတယ်။"}],
+        )
+        self.assertEqual(
+            fallback["last_scene"], f"{MALE_PRONOUN} သွားတယ်။"
+        )
+        self.assertTrue(fallback["story_beats"])
+
+    def test_story_clarity_metrics_gate_the_editor_pass(self):
+        disconnected = [
+            {
+                "start": index * 10,
+                "end": index * 10 + 10,
+                "burmese": f"{MALE_PRONOUN} အခန်းထဲ ထိုင်နေတယ် {index}။",
+            }
+            for index in range(5)
+        ]
+        weak = bot._story_clarity_metrics(disconnected, {})
+        self.assertTrue(weak["needs_editor"])
+        self.assertIn("missing_or_thin_story_map", weak["issues"])
+        self.assertIn("weak_scene_transitions", weak["issues"])
+
+        story_map = {
+            "character_cards": [
+                {"name": "Hero", "role": "speaker"},
+                {"name": "Mina", "role": "sister"},
+            ],
+            "beats": [
+                {"start": 0, "end": 15, "beat": "Hero found the letter"},
+                {"start": 15, "end": 30, "beat": "Mina explained the key"},
+                {"start": 30, "end": 50, "beat": "Hero opened the door"},
+            ],
+        }
+        clear = [
+            {
+                "start": index * 10,
+                "end": index * 10 + 10,
+                "burmese": (
+                    f"အဲဒီနောက် {MALE_PRONOUN} Mina ပြောတာကို နားထောင်ပြီး "
+                    f"သော့လိုလို့ ဆုံးဖြတ်လိုက်တယ် {index}။"
+                ),
+            }
+            for index in range(5)
+        ]
+        strong = bot._story_clarity_metrics(clear, story_map)
+        self.assertFalse(strong["needs_editor"])
+        self.assertGreater(strong["score"], weak["score"])
+
+        duplicate = [dict(clear[0]), dict(clear[0])]
+        self.assertTrue(bot._story_clarity_metrics(duplicate, story_map)["needs_editor"])
+
+    def test_story_map_survives_payload_normalization_and_worker_prompt(self):
+        payload = bot._normalize_direct_script_payload(
+            {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "story_bible": {
+                    "characters": [
+                        {
+                            "name": "Mina",
+                            "role": "Hero's sister",
+                            "relation": "younger sister",
+                        }
+                    ],
+                    "events": [
+                        {"start": 0, "end": 8, "event": "Mina warned Hero"}
+                    ],
+                },
+                "scenes": [
+                    {
+                        "start": 0,
+                        "end": 8,
+                        "burmese": f"{MALE_PRONOUN} Mina ကို တွေ့တယ်။",
+                    }
+                ],
+            },
+            chunk_duration=10,
+        )
+        self.assertEqual(
+            payload["story_map"]["character_cards"][0]["name"], "Mina"
+        )
+        self.assertEqual(
+            payload["story_map"]["beats"][0]["beat"], "Mina warned Hero"
+        )
+
+        worker_map = bot._rewrite_response_story_map(
+            {"story_map": payload["story_map"]}
+        )
+        self.assertEqual(worker_map["character_cards"][0]["role"], "Hero's sister")
+
+        prompt = bot._rewrite_prompt(
+            [
+                {
+                    "group_id": 1,
+                    "start": 0,
+                    "end": 8,
+                    "source_text": "Mina warns Hero.",
+                }
+            ],
+            {1: 100},
+            {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "character_cards": payload["story_map"]["character_cards"],
+                "story_beats": ["Mina warned Hero"],
+                "current_goal": "leave safely",
+                "open_threads": ["why Mina is afraid"],
+            },
+            bot.DEFAULT_SETTINGS,
+        )
+        self.assertIn("Hero's sister", prompt)
+        self.assertIn("Mina warned Hero", prompt)
+        self.assertIn("leave safely", prompt)
+        self.assertIn('"story_map"', prompt)
+
+        legacy_passes = bot._alignment_render_passes(
+            {
+                "source_start": 3,
+                "input_seconds": 2,
+                "stretch_factor": 1.25,
+                "freeze_seconds": 0.5,
+                "desired_output_seconds": 3,
+            }
+        )
+        self.assertEqual(len(legacy_passes), 1)
+        self.assertEqual(legacy_passes[0]["source_start"], 3.0)
+        overlong = bot._alignment_render_passes(
+            {
+                "source_start": 0,
+                "input_seconds": 1,
+                "render_passes": [
+                    {"source_start": 0, "input_seconds": 1},
+                    {"source_start": 0, "input_seconds": 1},
+                    {"source_start": 0, "input_seconds": 1},
+                ],
+            }
+        )
+        self.assertEqual(len(overlong), bot.ALIGNMENT_MAX_REPEATS)
+
+    async def test_direct_story_editor_repairs_disconnected_script(self):
+        purposes = []
+        number_words = ["တစ်", "နှစ်", "သုံး", "လေး", "ငါး"]
+
+        async def fake_generate(_client, _contents, **kwargs):
+            purpose = str(kwargs.get("purpose") or "")
+            purposes.append(purpose)
+            if purpose == "story editor":
+                return {
+                    "pronoun": MALE_PRONOUN,
+                    "story_map": {
+                        "character_cards": [
+                            {"name": "Hero", "role": "speaker"},
+                            {"name": "Mina", "role": "sister"},
+                        ],
+                        "beats": [
+                            {"start": 0, "end": 20, "beat": "Hero met Mina"},
+                            {"start": 20, "end": 50, "beat": "Mina warned Hero"},
+                            {"start": 50, "end": 93, "beat": "Hero decided to leave"},
+                        ],
+                    },
+                    "scenes": [
+                        {
+                            "scene_index": index,
+                            "start": index * 10,
+                            "end": index * 10 + 10,
+                            "burmese": (
+                                f"အဲဒီနောက် {MALE_PRONOUN} မီနာ ကိုတွေ့ဖို့ "
+                                f"ဆုံးဖြတ်လိုက်တယ် {number_words[index]}။"
+                            ),
+                        }
+                        for index in range(5)
+                    ],
+                }
+            return {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "scenes": [
+                    {
+                        "start": index * 10,
+                        "end": index * 10 + 10,
+                        "burmese": first_person_text(50),
+                    }
+                    for index in range(5)
+                ],
+                "cuts": [],
+            }
+
+        summary = bot._normalize_story_context(
+            {
+                "characters": ["Hero", "Mina"],
+                "summary": "Hero met Mina and decided to leave.",
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+            }
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", return_value=object())
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "_upload_video_to_gemini",
+                new=AsyncMock(return_value=object()),
+            )
+        )
+        self.start_patch(
+            patch.object(bot, "_delete_gemini_file", new=AsyncMock())
+        )
+        self.start_patch(
+            patch.object(bot, "_generate_direct_gemini_json", new=fake_generate)
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(return_value=summary),
+            )
+        )
+        self.start_patch(patch.object(bot, "SCRIPT_TOPUP_ATTEMPTS", 0))
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        script, _summary = await bot.build_chunk_recap(
+            str(self.tmp_path / "chunk.mp4"),
+            93,
+            0,
+            93,
+            {},
+            1,
+            tracker,
+            settings={"coverage": 90, "rate": 3.0},
+            script_only=True,
+            extract_summary=True,
+            keep_source_chunk=True,
+        )
+
+        self.assertIn("story editor", purposes)
+        self.assertTrue(script["metrics"]["story_editor"]["editor_applied"])
+        self.assertTrue(
+            all("မီနာ" in scene["burmese"] for scene in script["scenes"])
+        )
+        self.assertEqual(
+            script["story_map"]["character_cards"][1]["name"], "Mina"
+        )
 
     def test_burmese_number_words_spelled_out_for_speech(self):
         cases = {
@@ -3479,7 +3819,15 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["edit_sync"],
-                "proportional_boundaries_cut_snapped_input_side_t_no_truncation",
+                "proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation",
+            )
+            self.assertEqual(
+                health.json()["story_continuity"],
+                "cumulative_story_bible_character_cards_ordered_beats",
+            )
+            self.assertEqual(
+                health.json()["story_editor"],
+                "clarity_gated_bounded_text_only_pass",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_auth"], "secret_token_header"
@@ -4009,7 +4357,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             all(call["settings"]["chunk"] == 120 for call in build_calls)
         )
         self.assertEqual(script_calls[1]["context"]["summary"], "after part 1")
-        self.assertEqual(script_calls[2]["context"]["summary"], "after part 2")
+        # Continuity accumulates: chapter summaries are merged, not
+        # replaced at each two-minute boundary.
+        self.assertEqual(
+            script_calls[2]["context"]["summary"],
+            "after part 1 after part 2",
+        )
         self.assertEqual(script_calls[2]["context"]["protagonist"], "Hero")
         self.assertEqual(script_calls[2]["context"]["characters"], ["Hero", "Mina"])
         self.assertEqual(len(concat_calls), 1)
@@ -5002,7 +5355,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         state = bot._load_manual_session(session_id)
         self.assertEqual(state["status"], "ready_to_join")
         self.assertIsNone(state["current_part_index"])
-        self.assertEqual(state["story_context"]["summary"], "after 2")
+        # Manual continuity is cumulative too: part 1 is not forgotten.
+        self.assertEqual(state["story_context"]["summary"], "after 1 after 2")
 
         # The recovery Next button must not extract/send anything after
         # every part is done; it points the user to the explicit join.
@@ -5394,6 +5748,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         alignment = (bot._LAST_DURATION_CALIBRATION or {}).get("alignment") or {}
         self.assertLessEqual(alignment.get("max_stretch", 99), 1.75)
         self.assertLess(alignment.get("freeze_seconds_total", 99), 3.0)
+        self.assertGreaterEqual(alignment.get("repeated_scenes", 0), 1)
+        self.assertLessEqual(alignment.get("max_repeat_count", 99), 2)
 
     def test_stale_manual_render_is_reset_after_restart(self):
         state = bot._create_manual_session(
