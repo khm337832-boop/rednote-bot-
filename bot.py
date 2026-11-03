@@ -456,6 +456,19 @@ def _live_gemini_models(models) -> list:
 _LAST_TTS_ERROR = ""
 _LAST_TTS_ERROR_BY_MODEL: dict = {}
 
+# Which engine produced the most recent TTS batch ("gemini" / "edge").
+_LAST_TTS_PROVIDER = ""
+
+# Free Microsoft Edge neural TTS as an emergency fallback when every
+# Gemini TTS model is unavailable (in production: the free-tier API
+# key's TTS plan quota was exhausted, failing whole jobs at 100%
+# silent scenes).  Gemini (original Charon) always stays primary;
+# Edge is only used after all Gemini models fail.  Disable with
+# EDGE_TTS_FALLBACK_ENABLED=0.
+EDGE_TTS_FALLBACK_ENABLED = os.environ.get(
+    "EDGE_TTS_FALLBACK_ENABLED", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
 
 def _last_tts_error_suffix() -> str:
     return f" (last TTS error: {_LAST_TTS_ERROR})" if _LAST_TTS_ERROR else ""
@@ -3066,8 +3079,92 @@ def _tts_speech_config(voice_name: str, shape: str = "voice"):
     )
 
 
+async def _audio_file_to_clips(tmp_raw, tmp_pcm, batch, voice_filter, input_args):
+    """Decode a synthesized audio file into per-scene float clips.
+
+    ``input_args`` are extra ffmpeg *input* flags (empty when the
+    file has a sniffable container like WAV/MP3, raw s16le flags for
+    headerless PCM).  Raises RuntimeError on any decode problem.
+    """
+    # to_thread: a blocking ffmpeg call here would stall the event
+    # loop (progress edits, keep-alive, parallel batches).
+    result = await asyncio.to_thread(run_cmd, [
+        FFMPEG_BIN, "-y",
+        *input_args,
+        "-i", tmp_raw,
+        "-af", voice_filter,
+        "-f", "s16le", "-acodec", "pcm_s16le",
+        "-ac", "1", "-ar", str(SAMPLE_RATE),
+        tmp_pcm,
+    ], 180)
+    if result.returncode != 0 or not os.path.exists(tmp_pcm):
+        raise RuntimeError("ffmpeg convert failed")
+    if os.path.getsize(tmp_pcm) < 400:
+        raise RuntimeError("pcm too small")
+    master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    return split_pcm_by_weights(master, batch)
+
+
+# Burmese (my-MM) Microsoft Edge neural voices for the emergency
+# fallback.  Gender follows the selected Gemini voice's pronoun so
+# the first-person narration stays consistent.
+EDGE_TTS_VOICE_MALE = "my-MM-ThihaNeural"
+EDGE_TTS_VOICE_FEMALE = "my-MM-NilarNeural"
+
+
+def _edge_tts_voice_for(settings) -> str:
+    if _voice_first_person_pronoun(settings) == FIRST_PERSON_FEMALE:
+        return EDGE_TTS_VOICE_FEMALE
+    return EDGE_TTS_VOICE_MALE
+
+
+async def _edge_tts_synthesize_to_file(text: str, voice: str, out_path: str) -> None:
+    """Write Edge TTS audio (MP3) for ``text`` to ``out_path``."""
+    import edge_tts  # lazy import: fallback-only dependency
+
+    communicate = edge_tts.Communicate(text, voice)
+    await asyncio.wait_for(
+        communicate.save(out_path),
+        timeout=float(GEMINI_TTS_TIMEOUT_SECONDS),
+    )
+
+
+async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voice_filter, joined):
+    """Emergency free fallback: same clips contract as the Gemini path."""
+    global _LAST_TTS_PROVIDER
+    voice = _edge_tts_voice_for(s)
+    tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_edge.mp3")
+    tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}.pcm")
+    try:
+        await _edge_tts_synthesize_to_file(joined, voice, tmp_raw)
+        if not os.path.exists(tmp_raw) or os.path.getsize(tmp_raw) < 1000:
+            raise RuntimeError("edge-tts produced no audio file")
+        clips = await _audio_file_to_clips(
+            tmp_raw, tmp_pcm, batch, voice_filter, []
+        )
+        _LAST_TTS_PROVIDER = "edge"
+        logger.info(
+            f"TTS batch {batch_idx + 1}/{total_batches} OK (edge-tts {voice})"
+        )
+        return clips
+    except Exception as e:
+        _LAST_TTS_ERROR_BY_MODEL["edge-tts"] = str(e)[:800]
+        logger.warning(
+            f"TTS batch {batch_idx + 1}/{total_batches} edge-tts "
+            f"fallback failed ({voice}): {str(e)[:250]}"
+        )
+        return None
+    finally:
+        for p in (tmp_raw, tmp_pcm):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
 async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str, settings: dict = None):
-    global _LAST_TTS_ERROR
+    global _LAST_TTS_ERROR, _LAST_TTS_PROVIDER
     s = {**DEFAULT_SETTINGS, **(settings or {})}
     voice_name = s.get("voice") or "Charon"
     voice_filter = build_voice_filter(s)
@@ -3137,26 +3234,10 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                     if data[:4] == b"RIFF"
                     else ["-f", "s16le", "-ar", "24000", "-ac", "1"]
                 )
-                # to_thread: a blocking ffmpeg call here would stall
-                # the event loop (progress edits, keep-alive, and the
-                # other parallel TTS batch) for its whole duration.
-                result = await asyncio.to_thread(run_cmd, [
-                    FFMPEG_BIN, "-y",
-                    *input_args,
-                    "-i", tmp_raw,
-                    "-af", voice_filter,
-                    "-f", "s16le", "-acodec", "pcm_s16le",
-                    "-ac", "1", "-ar", str(SAMPLE_RATE),
-                    tmp_pcm,
-                ], 180)
-
-                if result.returncode != 0 or not os.path.exists(tmp_pcm):
-                    raise RuntimeError("ffmpeg convert failed")
-                if os.path.getsize(tmp_pcm) < 400:
-                    raise RuntimeError("pcm too small")
-
-                master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                clips = split_pcm_by_weights(master, batch)
+                clips = await _audio_file_to_clips(
+                    tmp_raw, tmp_pcm, batch, voice_filter, input_args
+                )
+                _LAST_TTS_PROVIDER = "gemini"
                 logger.info(f"TTS batch {batch_idx + 1}/{total_batches} OK ({model})")
                 return clips
 
@@ -3194,6 +3275,21 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                             os.remove(p)
                         except Exception:
                             pass
+
+    # Every Gemini TTS model failed (in production: free-tier plan
+    # quota exhausted).  A finished video in the fallback Burmese
+    # voice beats a failed job -- original Charon stays primary
+    # and automatically returns whenever Gemini works again.
+    if EDGE_TTS_FALLBACK_ENABLED:
+        logger.warning(
+            f"TTS batch {batch_idx + 1}/{total_batches}: all Gemini "
+            "TTS models failed -- trying Edge TTS fallback"
+        )
+        edge_clips = await _tts_one_batch_edge(
+            batch, batch_idx, total_batches, work_dir, s, voice_filter, joined
+        )
+        if edge_clips is not None:
+            return edge_clips
 
     return None
 
@@ -5045,6 +5141,12 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     calibration_history = []
     try:
         clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
+        if _LAST_TTS_PROVIDER == "edge":
+            await tracker.update(
+                "🎙️ Gemini အသံ quota ပြည့်နေလို့ အရန်အသံ (Edge မြန်မာအသံ) "
+                "ဖြင့် ဆက်လုပ်နေပါသည်...",
+                force=True,
+            )
         for calibration_round in range(DURATION_CALIBRATION_ROUNDS + 1):
             if clips is None or len(clips) < len(scenes):
                 raise RuntimeError("Gemini TTS returned too few clips")
@@ -13083,7 +13185,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.8-tts-quota-memory"
+BUILD_VERSION = "v5.9-edge-tts-fallback"
 BUILD_FEATURES = 20
 
 
@@ -13124,6 +13226,8 @@ async def root():
         "last_tts_error": _LAST_TTS_ERROR,
         "last_tts_error_by_model": dict(_LAST_TTS_ERROR_BY_MODEL),
         "quota_exhausted_models": _quota_exhausted_active(),
+        "last_tts_provider": _LAST_TTS_PROVIDER,
+        "edge_tts_fallback_enabled": EDGE_TTS_FALLBACK_ENABLED,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -13202,6 +13306,8 @@ async def health():
         "last_tts_error": _LAST_TTS_ERROR,
         "last_tts_error_by_model": dict(_LAST_TTS_ERROR_BY_MODEL),
         "quota_exhausted_models": _quota_exhausted_active(),
+        "last_tts_provider": _LAST_TTS_PROVIDER,
+        "edge_tts_fallback_enabled": EDGE_TTS_FALLBACK_ENABLED,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
