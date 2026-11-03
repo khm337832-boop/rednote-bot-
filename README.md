@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.10-free-first-tts` is a **one-shot automatic flow**: the user
+Version `v5.11-calibration-converge` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -190,11 +190,15 @@ example, each 120-second window targets 108 seconds at 90%), then
 enforced again on the automatically joined final against the full
 source duration.
 
-Character counts are only the first estimate. After Gemini TTS, the bot
+Character counts are only the first estimate. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
 changed scenes are synthesized again; if it is long, scenes are shortened
-proportionally without deleting the ending. This repeats for up to four
+proportionally without deleting the ending. Calibration targets are
+computed from the *effective* rate (all script chars over all produced
+speech seconds, including any quiet slices) so trims always converge --
+the spoken-only rate inflates when some clips measure as silent and
+once stalled calibration entirely. This repeats for up to four
 calibration rounds. The rendered MP4 is then probed again, and delivery is
 refused if its actual duration is outside the window.
 
@@ -296,7 +300,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.10-free-first-tts"`,
+URLs must show `"version":"v5.11-calibration-converge"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,

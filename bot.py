@@ -4402,6 +4402,17 @@ def _narration_measurements(scenes: list, clips: list, settings: dict = None) ->
     measured_rate = (spoken_chars / spoken_seconds) if spoken_seconds > 0 else 0.0
     if measured_rate <= 0:
         measured_rate = _settings_script_rate(settings) * _settings_speed(settings)
+    # Effective rate over *all* produced audio (including any quiet
+    # or silent slices and pauses inside the synthesized audio).
+    # Calibration must use this one: the spoken-only rate above
+    # inflates whenever some clips measure as silent, which once
+    # made the "too long" trim compute a desired char count HIGHER
+    # than the current script -- calibration stalled and refused a
+    # perfectly fixable 120s narration (target 113s).
+    total_script_chars = script_total_chars(scene_list)
+    effective_rate = (
+        (total_script_chars / speech_seconds) if speech_seconds > 0 else 0.0
+    )
     return {
         "speech_seconds": round(float(speech_seconds), 6),
         "pause_seconds": round(float(pause_seconds), 6),
@@ -4409,8 +4420,41 @@ def _narration_measurements(scenes: list, clips: list, settings: dict = None) ->
         "narration_seconds": round(float(speech_seconds + pause_total), 6),
         "silent_count": int(silent_count),
         "measured_chars_per_second": round(float(measured_rate), 6),
+        "effective_chars_per_second": round(
+            float(effective_rate or measured_rate), 6
+        ),
         "spoken_chars_measured": int(spoken_chars),
     }
+
+
+def _calibration_desired_total_chars(
+    measurements: dict,
+    current_chars: int,
+    target_final_seconds: float,
+    *,
+    expand: bool,
+) -> int:
+    """Char total that should land narration on the duration target.
+
+    Derived from the *effective* rate (all script chars over all
+    produced speech seconds), so a "long" narration always yields a
+    desired total below the current one and trimming converges.
+    """
+    m = measurements or {}
+    current = int(current_chars or 0)
+    pause_total = float(m.get("pause_total_seconds") or 0)
+    desired_speech = max(0.1, float(target_final_seconds or 0) - pause_total)
+    speech_seconds = float(m.get("speech_seconds") or 0)
+    rate = 0.0
+    if speech_seconds > 0 and current > 0:
+        rate = current / speech_seconds
+    if rate <= 0:
+        rate = float(m.get("measured_chars_per_second") or 0)
+    if rate <= 0:
+        return current
+    if expand:
+        return int(math.ceil(desired_speech * rate * 1.01))
+    return int(math.floor(desired_speech * rate * 0.99))
 
 
 def script_target_chars(chunk_dur: float, settings: dict = None) -> int:
@@ -5207,20 +5251,13 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             if calibration_round >= DURATION_CALIBRATION_ROUNDS:
                 break
 
-            measured_rate = float(
-                measurements.get("measured_chars_per_second")
-                or (chars_rate * _settings_speed(st))
-            )
-            desired_speech_seconds = max(
-                0.1,
-                target_final_seconds - float(measurements.get("pause_total_seconds") or 0),
-            )
             current_chars = script_total_chars(scenes)
 
             if duration_status == "short":
-                desired_total_chars = int(math.ceil(
-                    desired_speech_seconds * measured_rate * 1.01
-                ))
+                desired_total_chars = _calibration_desired_total_chars(
+                    measurements, current_chars, target_final_seconds,
+                    expand=True,
+                )
                 missing_chars = max(1, desired_total_chars - current_chars)
                 await tracker.update(
                     f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ပဲရှိသေးလို့ "
@@ -5280,9 +5317,10 @@ JSON ကိုသာပြန်ပေးပါ:
                 if script_total_chars(scenes) <= current_chars:
                     break
             elif duration_status == "long":
-                desired_total_chars = int(math.floor(
-                    desired_speech_seconds * measured_rate * 0.99
-                ))
+                desired_total_chars = _calibration_desired_total_chars(
+                    measurements, current_chars, target_final_seconds,
+                    expand=False,
+                )
                 await tracker.update(
                     f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ရှည်နေလို့ "
                     f"ပစ်မှတ် {fmt_time(target_final_seconds)} ဖြစ်အောင် ချိန်နေပါသည်...",
@@ -8372,14 +8410,16 @@ async def _worker_stage_tts(state: dict, tracker=None):
 
             total_pauses = float(measurements.get("pause_total_seconds") or 0)
             desired_speech_seconds = max(0.1, target_final_seconds - total_pauses)
-            measured_cps = measurements.get("measured_chars_per_second")
-            if not measured_cps or float(measured_cps) <= 0:
-                measured_cps = _settings_script_rate(settings) * _settings_speed(settings)
             current_chars = int(
                 measurements.get("spoken_chars_measured")
                 or script_total_chars(scenes)
             )
-            desired_total_chars = int(round(desired_speech_seconds * float(measured_cps)))
+            desired_total_chars = _calibration_desired_total_chars(
+                measurements,
+                script_total_chars(scenes),
+                target_final_seconds,
+                expand=(narration_now < final_low),
+            )
             if narration_now < final_low:
                 ratio_target = int(round(
                     current_chars
@@ -13217,7 +13257,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.10-free-first-tts"
+BUILD_VERSION = "v5.11-calibration-converge"
 BUILD_FEATURES = 20
 
 
