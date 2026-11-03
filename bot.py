@@ -578,7 +578,13 @@ MINIMUM_SCRIPT_COVERAGE_PERCENT = 90  # every job/link must target at least 90%
 SCRIPT_CHARS_PER_SEC = 6.5      # initial estimate only; TTS is re-measured
 SCRIPT_MAX_RATIO = 1.05         # initial script cap before measured calibration
 SCRIPT_TOPUP_ATTEMPTS = 6       # character-estimate top-ups before TTS
-SCRIPT_MIN_CHAR_RATIO = 0.98    # initial script must reach 98% of estimate
+SCRIPT_MIN_CHAR_RATIO = 0.85    # coarse anti-summary floor only: the
+#                               # measured-TTS calibration (expand/trim
+#                               # with strict refusal) enforces the real
+#                               # final duration.  0.98 once refused a
+#                               # complete 715/720-char script (5 chars
+#                               # short of an *estimate*) even though
+#                               # calibration would have handled it.
 SCRIPT_MIN_GROUP_CHAR_RATIO = 0.75  # one-liners do not count as covered
 SCRIPT_MIN_NARRATION_RATIO = 0.90  # legacy metric name; final gates use window below
 TRANSCRIPT_MIN_SPAN_RATIO = 0.75  # transcript must span most of the source
@@ -13324,7 +13330,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.12-spoken-style"
+BUILD_VERSION = "v5.13-script-gate-fix"
 BUILD_FEATURES = 20
 
 

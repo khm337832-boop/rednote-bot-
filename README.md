@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.12-spoken-style` is a **one-shot automatic flow**: the user
+Version `v5.13-script-gate-fix` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -196,7 +196,9 @@ example, each 120-second window targets 108 seconds at 90%), then
 enforced again on the automatically joined final against the full
 source duration.
 
-Character counts are only the first estimate. After TTS, the bot
+Character counts are only the first estimate — the pre-TTS char
+gate is a coarse anti-summary floor (85% of the estimate), not the
+duration guarantee. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
 changed scenes are synthesized again; if it is long, scenes are shortened
@@ -306,7 +308,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.12-spoken-style"`,
+URLs must show `"version":"v5.13-script-gate-fix"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
