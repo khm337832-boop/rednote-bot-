@@ -5339,7 +5339,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         def fake_run_cmd(cmd, timeout):
             with open(cmd[-1], "wb") as f:
-                f.write(b"\x10\x00" * bot.SAMPLE_RATE * 2)
+                f.write(b"\x00\x40" * bot.SAMPLE_RATE * 2)
             return SimpleNamespace(returncode=0)
 
         fake_client = SimpleNamespace(
@@ -5418,6 +5418,84 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bot._clip_is_silent(clips[1]))
         self.assertIn("edge-tts", bot._LAST_TTS_ERROR_BY_MODEL)
 
+    def test_polish_clip_trims_dead_air_and_fades_edges(self):
+        # Per-scene MP3s carry service/encoder silence at both ends;
+        # joined raw, the narration went stop-start every few
+        # seconds.  Polish must keep the speech (plus small pads),
+        # drop the dead air, and make joins click-free.
+        sr = bot.SAMPLE_RATE
+        burst = (
+            0.5 * bot.np.sin(2 * bot.np.pi * 180 * bot.np.arange(sr) / sr)
+        ).astype(bot.np.float32)
+        clip = bot.np.concatenate([
+            bot.np.zeros(int(0.4 * sr), dtype=bot.np.float32),
+            burst,
+            bot.np.zeros(int(0.5 * sr), dtype=bot.np.float32),
+        ])
+        polished = bot._polish_clip(clip)
+        self.assertGreater(polished.size, int(1.05 * sr))
+        self.assertLess(polished.size, int(1.20 * sr))
+        self.assertAlmostEqual(
+            float(bot.np.max(bot.np.abs(polished))), 0.5, delta=0.02
+        )
+        self.assertAlmostEqual(float(polished[0]), 0.0, delta=0.01)
+        self.assertAlmostEqual(float(polished[-1]), 0.0, delta=0.01)
+        # Explicit silence fallbacks pass through untouched so the
+        # duration/silence gates still see them.
+        silence = bot.np.zeros(int(2.5 * sr), dtype=bot.np.float32)
+        self.assertEqual(bot._polish_clip(silence).size, silence.size)
+
+    def test_voice_filter_loudnorm_lives_on_master_only(self):
+        # Per-clip loudnorm normalized every few-second scene on its
+        # own -> loudness jumped between scenes.  It must run once,
+        # on the assembled master narration.
+        self.assertNotIn("loudnorm", bot.build_voice_filter({}))
+        self.assertNotIn("loudnorm", bot.build_voice_filter({"deep": True}))
+        self.assertIn("asetrate", bot.build_voice_filter({"deep": True}))
+        self.assertIn("atempo=1.500", bot.build_voice_filter({"speed": 1.5}))
+        self.assertNotIn("volume", bot.build_voice_filter({"volume": 50}))
+        self.assertIn("loudnorm", bot.build_master_voice_filter({}))
+        self.assertIn(
+            "volume=0.50", bot.build_master_voice_filter({"volume": 50})
+        )
+
+    async def test_tts_edge_retries_truncated_scene_clip(self):
+        # A decodable-but-truncated Edge result (stream ended
+        # mid-word) used to pass the old >=400-byte check and was
+        # heard as cut-off speech.  It must be rejected and retried.
+        batch = [{"burmese": "က" * 80}]  # ~12s at the planning rate
+        decode_calls = []
+
+        async def fake_edge_save(text, voice, out_path):
+            with open(out_path, "wb") as f:
+                f.write(b"\xff\xfb" + b"\x00" * 4000)
+
+        def fake_run_cmd(cmd, timeout):
+            decode_calls.append(cmd)
+            seconds = 0.5 if len(decode_calls) == 1 else 10
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x00\x40" * int(bot.SAMPLE_RATE * seconds))
+            return SimpleNamespace(returncode=0)
+
+        self.start_patch(
+            patch.object(bot, "TTS_PROVIDER_ORDER", ("edge",))
+        )
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=fake_edge_save)
+        )
+        self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(setattr, bot, "_LAST_TTS_PROVIDER", "")
+
+        clips = await bot._tts_one_batch(
+            batch, 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(decode_calls), 2)  # truncated -> retried
+        self.assertFalse(bot._clip_is_silent(clips[0]))
+        self.assertGreater(clips[0].size, bot.SAMPLE_RATE * 5)
+
     async def test_tts_default_order_is_free_edge_first(self):
         # User rule: completely free, no queueing.  With the default
         # provider order the Edge voice must win immediately and
@@ -5436,7 +5514,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         def fake_run_cmd(cmd, timeout):
             with open(cmd[-1], "wb") as f:
-                f.write(b"\x10\x00" * bot.SAMPLE_RATE * 2)
+                f.write(b"\x00\x40" * bot.SAMPLE_RATE * 2)
             return SimpleNamespace(returncode=0)
 
         fake_client = SimpleNamespace(

@@ -458,6 +458,11 @@ _LAST_TTS_ERROR_BY_MODEL: dict = {}
 
 # Which engine produced the most recent TTS batch ("gemini" / "edge").
 _LAST_TTS_PROVIDER = ""
+# Scenes that had to be replaced by silence in the most recent
+# synthesize_tts call (health diagnostics: Render logs are not
+# visible from outside, and a nonzero value here after a user
+# reports "audio breaks" tells us scenes went missing).
+_LAST_TTS_SILENCED_SCENES = 0
 
 # Free Microsoft Edge neural TTS as an emergency fallback when every
 # Gemini TTS model is unavailable (in production: the free-tier API
@@ -665,14 +670,17 @@ PREFERRED_TTS_MODELS = [
 ]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
 
+# Per-clip colour for the Deep toggle.  Loudness normalization is
+# NOT part of the per-clip chain any more (v5.14): it runs once on
+# the assembled master narration -- see build_master_voice_filter.
 DEEP_VOICE_FILTER = (
     "highpass=f=55,"
     "asetrate=22080,aresample=24000,atempo=1.0870,"
     "equalizer=f=110:t=q:w=1.0:g=4.5,"
     "equalizer=f=230:t=q:w=1.1:g=2.5,"
-    "equalizer=f=6500:t=q:w=1.0:g=-1.5,"
-    "loudnorm=I=-16:TP=-1.5:LRA=11"
+    "equalizer=f=6500:t=q:w=1.0:g=-1.5"
 )
+MASTER_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
 def get_anim_emoji(frame: int) -> str:
@@ -3061,18 +3069,35 @@ def split_pcm_by_weights(master: np.ndarray, scenes: list) -> list[np.ndarray]:
 
 
 def build_voice_filter(settings: dict = None) -> str:
-    """Settings အလိုက် TTS အသံ filter တည်ဆောက်တယ် (deep / speed / volume)."""
+    """Per-clip TTS filter (deep voice colour / speed).
+
+    No loudnorm and no volume here (v5.14): single-pass loudnorm on
+    every few-second scene clip normalizes each sentence on its
+    own, so loudness jumps and wobbles from scene to scene -- a
+    real cause of "the speech keeps breaking".  Loudness is
+    normalized once on the assembled master narration instead
+    (build_master_voice_filter).  Speed stays per-clip because
+    duration calibration measures these very clips.
+    """
     s = {**DEFAULT_SETTINGS, **(settings or {})}
+    parts = []
     if s.get("deep"):
-        base = DEEP_VOICE_FILTER
-        speed = float(s.get("speed") or 1.0)
-        if abs(speed - 1.0) > 0.01:
-            base += f",atempo={speed:.3f}"
-    else:
-        speed = float(s.get("speed") or 1.0)
-        base = "loudnorm=I=-16:TP=-1.5:LRA=11"
-        if abs(speed - 1.0) > 0.01:
-            base = f"atempo={speed:.3f}," + base
+        parts.append(DEEP_VOICE_FILTER)
+    speed = float(s.get("speed") or 1.0)
+    if abs(speed - 1.0) > 0.01:
+        parts.append(f"atempo={speed:.3f}")
+    return ",".join(parts) if parts else "anull"
+
+
+def build_master_voice_filter(settings: dict = None) -> str:
+    """One loudness pass over the whole assembled narration track.
+
+    Applied where the per-scene clips become one master WAV (direct
+    renderer and worker TTS stage).  User volume is applied after
+    loudnorm here, preserving the pre-v5.14 chain order.
+    """
+    s = {**DEFAULT_SETTINGS, **(settings or {})}
+    base = MASTER_LOUDNORM_FILTER
     vol = float(s.get("volume") or 100) / 100.0
     if abs(vol - 1.0) > 0.01:
         base += f",volume={vol:.2f}"
@@ -3128,6 +3153,74 @@ async def _audio_file_to_master(tmp_raw, tmp_pcm, voice_filter, input_args):
     return np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+CLIP_TRIM_THRESHOLD = 0.002       # ~-54 dBFS: below this is dead air
+CLIP_HEAD_PAD_SECONDS = 0.03      # speech safety margin kept at starts
+CLIP_TAIL_PAD_SECONDS = 0.08      # natural decay kept at ends
+CLIP_FADE_SECONDS = 0.006         # click-free clip joins
+
+
+def _polish_clip(clip) -> np.ndarray:
+    """Trim dead air at a scene clip's edges and add micro-fades.
+
+    Every scene is its own synthesized file (per-scene Edge MP3 /
+    sliced Gemini batch): the service prepends/appends a little
+    silence and MP3 priming can add more.  Butt-joining those raw
+    clips -- on top of the configured inter-scene pause -- made
+    the narration stop-start every few seconds ("speech keeps
+    breaking", user report).  Trimming to the actual speech with
+    small safety pads leaves the configured pause as the only gap,
+    and 6ms fades keep every join click-free.  All-silent clips
+    (explicit silence fallbacks) pass through unchanged so the
+    duration/silence gates still see them.
+    """
+    arr = _clip_array(clip)
+    if arr.size == 0:
+        return arr
+    above = np.where(np.abs(arr) > CLIP_TRIM_THRESHOLD)[0]
+    if above.size == 0:
+        return arr
+    head = int(CLIP_HEAD_PAD_SECONDS * SAMPLE_RATE)
+    tail = int(CLIP_TAIL_PAD_SECONDS * SAMPLE_RATE)
+    start = max(0, int(above[0]) - head)
+    end = min(arr.size, int(above[-1]) + 1 + tail)
+    out = np.array(arr[start:end], dtype=np.float32, copy=True)
+    fade = min(int(CLIP_FADE_SECONDS * SAMPLE_RATE), out.size // 2)
+    if fade > 0:
+        ramp = np.linspace(0.0, 1.0, fade, endpoint=False, dtype=np.float32)
+        out[:fade] *= ramp
+        out[-fade:] *= ramp[::-1]
+    return out
+
+
+def _validate_scene_clip(clip, text: str) -> None:
+    """Reject silent or grossly wrong-length scene audio (retry it).
+
+    A decodable file is not proof of complete speech: an
+    interrupted Edge stream can end mid-word yet decode cleanly,
+    and the old >=400-byte check waved it through -- heard as
+    cut-off speech in the final video.  Bounds are deliberately
+    lenient against the ~6.5 chars/sec planning rate so only
+    obvious truncation/runaway results are rejected.
+    """
+    arr = _clip_array(clip)
+    if _clip_is_silent(arr):
+        raise RuntimeError("synthesized clip is silent")
+    chars = max(1, len(str(text or "").strip()))
+    seconds = float(arr.size) / SAMPLE_RATE
+    min_seconds = max(0.30, chars / 16.0)
+    max_seconds = chars / 2.0 + 3.0
+    if seconds < min_seconds:
+        raise RuntimeError(
+            f"synthesized clip too short for {chars} chars: "
+            f"{seconds:.2f}s < {min_seconds:.2f}s (truncated?)"
+        )
+    if seconds > max_seconds:
+        raise RuntimeError(
+            f"synthesized clip too long for {chars} chars: "
+            f"{seconds:.2f}s > {max_seconds:.2f}s"
+        )
+
+
 # Burmese (my-MM) Microsoft Edge neural voices for the emergency
 # fallback.  Gender follows the selected Gemini voice's pronoun so
 # the first-person narration stays consistent.
@@ -3164,7 +3257,7 @@ async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voic
     so one bad scene cannot sink the whole batch; only if *every*
     scene fails does the batch return None (next provider's turn).
     """
-    global _LAST_TTS_PROVIDER
+    global _LAST_TTS_PROVIDER, _LAST_TTS_SILENCED_SCENES
     voice = _edge_tts_voice_for(s)
     clips = []
     successes = 0
@@ -3174,7 +3267,7 @@ async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voic
         tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}_{scene_idx}.pcm")
         clip = None
         last_error = None
-        for _attempt in range(2):
+        for _attempt in range(3):
             try:
                 if not text:
                     raise RuntimeError("empty scene text")
@@ -3184,6 +3277,10 @@ async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voic
                 clip = await _audio_file_to_master(
                     tmp_raw, tmp_pcm, voice_filter, []
                 )
+                # A decodable file can still be silent or cut off
+                # mid-word; only complete speech may leave this loop.
+                _validate_scene_clip(clip, text)
+                clip = _polish_clip(clip)
                 break
             except Exception as e:
                 last_error = e
@@ -3202,6 +3299,7 @@ async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voic
                 f"{scene_idx + 1} edge-tts failed ({voice}): "
                 f"{str(last_error)[:250]}"
             )
+            _LAST_TTS_SILENCED_SCENES += 1
             clip = np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32)
         else:
             successes += 1
@@ -3320,7 +3418,10 @@ async def _tts_one_batch_gemini(batch, batch_idx, total_batches, work_dir, s, vo
                 master = await _audio_file_to_master(
                     tmp_raw, tmp_pcm, voice_filter, input_args
                 )
-                clips = split_pcm_by_weights(master, batch)
+                clips = [
+                    _polish_clip(c)
+                    for c in split_pcm_by_weights(master, batch)
+                ]
                 _LAST_TTS_PROVIDER = "gemini"
                 logger.info(f"TTS batch {batch_idx + 1}/{total_batches} OK ({model})")
                 return clips
@@ -3364,6 +3465,8 @@ async def _tts_one_batch_gemini(batch, batch_idx, total_batches, work_dir, s, vo
 
 
 async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> list[np.ndarray]:
+    global _LAST_TTS_SILENCED_SCENES
+    _LAST_TTS_SILENCED_SCENES = 0
     BATCH_SIZE = 8
     batches = [scenes[i:i + BATCH_SIZE] for i in range(0, len(scenes), BATCH_SIZE)]
     logger.info(f"TTS: {len(scenes)} scenes in {len(batches)} batches")
@@ -3394,6 +3497,7 @@ async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> 
                 )
             else:
                 logger.error(f"TTS batch {b_idx + 1}/{len(batches)} failed — silence fallback")
+            _LAST_TTS_SILENCED_SCENES += len(batch)
             clips = [np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32) for _ in batch]
         all_clips.extend(clips)
 
@@ -5452,9 +5556,13 @@ JSON ကိုသာပြန်ပေးပါ:
                 np.zeros(pause_samples, dtype=np.int16).tofile(pcm_f)
 
     master_wav = os.path.join(os.path.dirname(chunk_path), "master_audio.wav")
+    # Loudness is normalized once here, over the whole narration --
+    # per-clip loudnorm made loudness jump between scenes (v5.14).
     result = run_cmd([
         FFMPEG_BIN, "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1",
-        "-i", master_pcm_path, master_wav,
+        "-i", master_pcm_path,
+        "-af", build_master_voice_filter(st),
+        master_wav,
     ], 120)
     if os.path.exists(master_pcm_path):
         os.remove(master_pcm_path)
@@ -6395,12 +6503,18 @@ def _concat_video_parts(parts: list[str], output_path: str, concat_path: str) ->
         for part in valid_parts:
             escaped = part.replace("'", "'\\''")
             f.write(f"file '{escaped}'\n")
+    # Video is stream-copied, but audio is re-encoded: copy-concat
+    # of AAC parts keeps each part's encoder priming, which is
+    # heard as a small gap/glitch in the narration at every join
+    # (~every 2 minutes).  One AAC pass joins the audio gaplessly.
     result = run_cmd(
         [
             FFMPEG_BIN, "-y",
             "-f", "concat", "-safe", "0",
             "-i", concat_path,
-            "-c", "copy",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "128k",
             "-movflags", "+faststart",
             output_path,
         ],
@@ -8634,6 +8748,33 @@ async def _worker_stage_tts(state: dict, tracker=None):
     if silent_count > max(1, int(len(entries) * 0.25)):
         raise WorkerJobError(
             f"Gemini TTS produced too many silent scenes: {silent_count}/{len(entries)}" + _last_tts_error_suffix()
+        )
+
+    # Loudness-normalize the assembled narration once (v5.14);
+    # per-clip loudnorm made loudness jump between scenes.  The
+    # pass preserves duration, so the per-scene sample entries
+    # above stay valid.  Best-effort: keep the raw narration if it
+    # fails for any reason.
+    try:
+        loud_path = narration_path + ".loud.wav"
+        loud_result = await asyncio.to_thread(run_cmd, [
+            FFMPEG_BIN, "-y", "-i", narration_path,
+            "-af", build_master_voice_filter(settings),
+            "-ar", str(SAMPLE_RATE), "-ac", "1",
+            loud_path,
+        ], 300)
+        if (
+            loud_result.returncode == 0
+            and os.path.exists(loud_path)
+            and os.path.getsize(loud_path) > 44
+        ):
+            os.replace(loud_path, narration_path)
+        elif os.path.exists(loud_path):
+            os.remove(loud_path)
+    except Exception:
+        logger.warning(
+            "worker narration loudnorm failed; keeping unnormalized narration",
+            exc_info=True,
         )
 
     narration_seconds = (
@@ -13330,7 +13471,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.13-script-gate-fix"
+BUILD_VERSION = "v5.14-audio-smooth"
 BUILD_FEATURES = 20
 
 
@@ -13374,6 +13515,8 @@ async def root():
         "last_tts_provider": _LAST_TTS_PROVIDER,
         "edge_tts_fallback_enabled": EDGE_TTS_FALLBACK_ENABLED,
         "tts_provider_order": list(TTS_PROVIDER_ORDER),
+        "audio_pipeline": "per_scene_validated_trim_fade_master_loudnorm",
+        "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -13455,6 +13598,8 @@ async def health():
         "last_tts_provider": _LAST_TTS_PROVIDER,
         "edge_tts_fallback_enabled": EDGE_TTS_FALLBACK_ENABLED,
         "tts_provider_order": list(TTS_PROVIDER_ORDER),
+        "audio_pipeline": "per_scene_validated_trim_fade_master_loudnorm",
+        "last_tts_silenced_scenes": _LAST_TTS_SILENCED_SCENES,
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
