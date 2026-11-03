@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.13-script-gate-fix` is a **one-shot automatic flow**: the user
+Version `v5.14-audio-smooth` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -78,15 +78,25 @@ pronoun) synthesize each *scene* separately in seconds with no
 plan quota -- per-scene requests mean every clip is exactly its
 own scene's audio (joined-batch slicing guesses were heard as
 doubled/cut speech), and one flaky scene degrades to a short
-silence instead of sinking the batch. Scripts are prompted in
+silence instead of sinking the batch. Each synthesized clip is
+validated (silent or grossly truncated results are retried, not
+shipped), its encoder/service dead air is trimmed with
+click-free micro-fades, and loudness is normalized once over
+the assembled narration -- per-scene files joined raw with
+per-clip loudnorm made the speech stop-start with jumping
+loudness. Final part joins re-encode audio so AAC priming
+cannot leave a gap at each seam. Scripts are prompted in
 spoken Burmese register (စကားပြောဟန်, short sentences -- written
 "book" Burmese made the narration sound read-aloud), and Gemini
 Charon is the fallback if Edge ever fails. (In production
 the free-tier key's Gemini TTS plan quota was exhausted, which is
 what put Edge first.) Set `TTS_PROVIDER_ORDER=gemini,edge` to put
 Charon first again, or `EDGE_TTS_FALLBACK_ENABLED=0` to disable
-Edge entirely. `/healthz` shows `tts_provider_order` and
-`last_tts_provider`.
+Edge entirely. `/healthz` shows `tts_provider_order`,
+`last_tts_provider`, `audio_pipeline`, and
+`last_tts_silenced_scenes` (scenes replaced by silence in the
+most recent synthesis -- nonzero after a job means narration
+went missing somewhere).
 It
 installs the persistent bottom buttons from `/start`, `/menu`,
 **or the first ordinary message/video/link sent to each newly deployed
@@ -308,7 +318,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.13-script-gate-fix"`,
+URLs must show `"version":"v5.14-audio-smooth"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
