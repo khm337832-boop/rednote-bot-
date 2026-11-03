@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.24-pro-edit-natural` is a **one-shot automatic flow**: the user
+Version `v5.25-pro-audit-hardening` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -526,13 +526,14 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.24-pro-edit-natural"`,
+URLs must show `"version":"v5.25-pro-audit-hardening"`,
+`"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
 `"default_voice":"Charon"`, `"default_deep_voice_filter":false`,
 `"script_trim_policy":"sentence_then_word_tail_boundaries"`,
-`"duration_calibration":"measured_rate_budget_sentences_then_word_tails"`,
+`"duration_calibration":"script_first_dedupe_expand_short_shave_over_source"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
 `"active_jobs":{}`, `"last_job_results":{}`,
