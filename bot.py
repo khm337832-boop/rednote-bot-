@@ -3097,8 +3097,8 @@ def _tts_speech_config(voice_name: str, shape: str = "voice"):
     )
 
 
-async def _audio_file_to_clips(tmp_raw, tmp_pcm, batch, voice_filter, input_args):
-    """Decode a synthesized audio file into per-scene float clips.
+async def _audio_file_to_master(tmp_raw, tmp_pcm, voice_filter, input_args):
+    """Decode a synthesized audio file into one float master array.
 
     ``input_args`` are extra ffmpeg *input* flags (empty when the
     file has a sniffable container like WAV/MP3, raw s16le flags for
@@ -3119,8 +3119,7 @@ async def _audio_file_to_clips(tmp_raw, tmp_pcm, batch, voice_filter, input_args
         raise RuntimeError("ffmpeg convert failed")
     if os.path.getsize(tmp_pcm) < 400:
         raise RuntimeError("pcm too small")
-    master = np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    return split_pcm_by_weights(master, batch)
+    return np.fromfile(tmp_pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 # Burmese (my-MM) Microsoft Edge neural voices for the emergency
@@ -3148,37 +3147,67 @@ async def _edge_tts_synthesize_to_file(text: str, voice: str, out_path: str) -> 
 
 
 async def _tts_one_batch_edge(batch, batch_idx, total_batches, work_dir, s, voice_filter, joined):
-    """Emergency free fallback: same clips contract as the Gemini path."""
+    """Edge TTS: synthesize each scene separately (free + fast).
+
+    Per-scene requests matter: one joined request has to be sliced
+    back into scenes by char-weight guessing, and any mis-slice is
+    heard as doubled/cut-off speech in the final video (user
+    report).  Separate requests make every clip exactly its own
+    scene's audio, with clean sentence prosody per request.
+    A scene that still fails after a retry becomes a short silence
+    so one bad scene cannot sink the whole batch; only if *every*
+    scene fails does the batch return None (next provider's turn).
+    """
     global _LAST_TTS_PROVIDER
     voice = _edge_tts_voice_for(s)
-    tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_edge.mp3")
-    tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}.pcm")
-    try:
-        await _edge_tts_synthesize_to_file(joined, voice, tmp_raw)
-        if not os.path.exists(tmp_raw) or os.path.getsize(tmp_raw) < 1000:
-            raise RuntimeError("edge-tts produced no audio file")
-        clips = await _audio_file_to_clips(
-            tmp_raw, tmp_pcm, batch, voice_filter, []
-        )
-        _LAST_TTS_PROVIDER = "edge"
-        logger.info(
-            f"TTS batch {batch_idx + 1}/{total_batches} OK (edge-tts {voice})"
-        )
-        return clips
-    except Exception as e:
-        _LAST_TTS_ERROR_BY_MODEL["edge-tts"] = str(e)[:800]
-        logger.warning(
-            f"TTS batch {batch_idx + 1}/{total_batches} edge-tts "
-            f"fallback failed ({voice}): {str(e)[:250]}"
-        )
+    clips = []
+    successes = 0
+    for scene_idx, scene in enumerate(batch):
+        text = " ".join(str(scene.get("burmese") or "").split())
+        tmp_raw = os.path.join(work_dir, f"tts_{batch_idx}_edge_{scene_idx}.mp3")
+        tmp_pcm = os.path.join(work_dir, f"tts_{batch_idx}_{scene_idx}.pcm")
+        clip = None
+        last_error = None
+        for _attempt in range(2):
+            try:
+                if not text:
+                    raise RuntimeError("empty scene text")
+                await _edge_tts_synthesize_to_file(text, voice, tmp_raw)
+                if not os.path.exists(tmp_raw) or os.path.getsize(tmp_raw) < 400:
+                    raise RuntimeError("edge-tts produced no audio file")
+                clip = await _audio_file_to_master(
+                    tmp_raw, tmp_pcm, voice_filter, []
+                )
+                break
+            except Exception as e:
+                last_error = e
+                clip = None
+            finally:
+                for p in (tmp_raw, tmp_pcm):
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+        if clip is None:
+            _LAST_TTS_ERROR_BY_MODEL["edge-tts"] = str(last_error)[:800]
+            logger.warning(
+                f"TTS batch {batch_idx + 1}/{total_batches} scene "
+                f"{scene_idx + 1} edge-tts failed ({voice}): "
+                f"{str(last_error)[:250]}"
+            )
+            clip = np.zeros(int(2.5 * SAMPLE_RATE), dtype=np.float32)
+        else:
+            successes += 1
+        clips.append(clip)
+    if successes == 0:
         return None
-    finally:
-        for p in (tmp_raw, tmp_pcm):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
+    _LAST_TTS_PROVIDER = "edge"
+    logger.info(
+        f"TTS batch {batch_idx + 1}/{total_batches} OK "
+        f"(edge-tts {voice}, {successes}/{len(batch)} scenes)"
+    )
+    return clips
 
 
 async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_dir: str, settings: dict = None):
@@ -3282,9 +3311,10 @@ async def _tts_one_batch_gemini(batch, batch_idx, total_batches, work_dir, s, vo
                     if data[:4] == b"RIFF"
                     else ["-f", "s16le", "-ar", "24000", "-ac", "1"]
                 )
-                clips = await _audio_file_to_clips(
-                    tmp_raw, tmp_pcm, batch, voice_filter, input_args
+                master = await _audio_file_to_master(
+                    tmp_raw, tmp_pcm, voice_filter, input_args
                 )
+                clips = split_pcm_by_weights(master, batch)
                 _LAST_TTS_PROVIDER = "gemini"
                 logger.info(f"TTS batch {batch_idx + 1}/{total_batches} OK ({model})")
                 return clips
@@ -4557,6 +4587,22 @@ def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
     return trim_scenes_proportionally(scenes, int(target_chars or 0))
 
 
+# The narration is *spoken*, so the script must be in spoken
+# Burmese (စကားပြောဟန်), not literary written Burmese.  Without
+# this, Gemini mirrors the formal style of the instructions and
+# the TTS sounds like someone reading a book aloud (user report).
+_SPOKEN_STYLE_GUIDE = """
+## အပြောဟန် (အလွန် အရေးကြီးပါသည်)
+ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်သည် — «စကားပြောဟန်» (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ စာအုပ်ထဲက ရေးသားဟန်ကို လုံးဝ မသုံးပါနှင့်။
+- ❌ မသုံးရ (ရေးသားဟန်): "…ပါသည်။" "…သည်။" "…၍" "…သောကြောင့်" "…အလို့ငှါ" "…စေရန်" "…ခဲ့ပါသည်" "…ဖြစ်စေသည်" "…ပြုလုပ်" "…ရောက်ရှိလာ" "…ပြောကြား"
+- ✅ သုံးရန် (အပြောဟန်): "…တယ်။" "…ခဲ့တယ်။" "…လို့" "…မို့" "…တဲ့" "…ဆိုတော့" "အဲ့ဒါနဲ့" "ပြီးတော့" "အဲဒါကြောင့်" "…လုပ်" "…ရောက်လာ" "…ပြော"
+- ဥပမာ ❌: "ကျွန်တော် အိမ်သို့ ပြန်လာခဲ့ပါသည်။ အမေ့ကို မြင်လိုက်ရသောအခါ အံ့သြခဲ့သည်။"
+- ဥပမာ ✅: "ကျွန်တော် အိမ်ပြန်ရောက်လာခဲ့တယ်။ အမေ့ကို မြင်လိုက်ရတော့ ကျွန်တော် အံ့သြသွားတယ်။"
+- စာကြောင်းတွေကို တိုတိုထားပါ — တစ်ကြောင်းကို စာလုံး ၂၅ လုံးထက် မရှည်ပါစေနှင့်။ ရှည်တဲ့ စာကြောင်းကို နှစ်ကြောင်း ခွဲရေးပါ။ အသံနားထောင်ရတာ ရှင်းလင်း သဘာဝကျဖို့ အရေးကြီးသည်။
+- သူငယ်ချင်းတစ်ယောက်ကို ဇာတ်လမ်းပြန်ပြောပြနေသလို ရေးပါ။ ဒါပေမဲ့ slang အလွန်အကျွံ (ဗျာ၊ ရှင်၊ ဟဲဟဲ စသည်) မသုံးပါနှင့်။
+""".strip()
+
+
 def _direct_first_person_repair_prompt(
     scenes: list,
     bad_indexes: list,
@@ -4585,6 +4631,7 @@ Scene တိုင်းတွင် «{pronoun}» ကို ပထမဝါက�
 ကိုယ်တိုင်မရှိသော မြင်ကွင်းဆိုလျှင် «အဲဒီတုန်းက {pronoun} မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှ {pronoun} သိလိုက်ရတာက…» ဟုစပါ။
 အဓိကဇာတ်ကောင်အမည်: {protagonist or "မသိရသေး"}
 ပြန်ရေးပြီးစာသားအရှည်သည် current_burmese_chars ထက် မနည်းရပါ။
+ပြန်ရေးရာတွင် စကားပြောဟန် (အပြောမြန်မာ) ကိုပါ ထိန်းပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးပါနှင့်၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။
 
 Scenes:
 {payload_json}
@@ -4771,6 +4818,8 @@ async def build_chunk_recap(
 - ဖယ်ပစ်နိုင်သည်မှာ ဇာတ်လမ်းနှင့် မသက်ဆိုင်သည့် ကြာညောင်းသော တိတ်ဆိတ်မှု၊ ထပ်နေသော မြင်ကွင်း/စကားနှင့် မလိုအပ်သော နားချိန်များသာ ဖြစ်သည်။ အဓိကကျသည့် မည်သည့်အရာမှ မကျန်စေရ။
 - ဤအပိုင်းအဆုံးတွင် ဇာတ်လမ်းဆက်နေပါက နောက်တွင် ဘာဖြစ်မည်ကို ခန့်မှန်း မရေးဘဲ ဤအပိုင်း၌ မြင်ရသည့် နေရာတွင်ပင် ရပ်ပါ။
 
+{_SPOKEN_STYLE_GUIDE}
+
 ## ကြာချိန်နှင့် ဗီဒီယိုတည်းဖြတ်ရန် အချိန်မှတ်ချက်များ
 - နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်းအပိုင်း၏ {st['coverage']}% ဖြစ်ရမည်။ စာလုံးပမာဏသည် အဲဒီကြာချိန်ကို ရအောင်တွက်ထားသော ပမာဏဖြစ်ပြီး အကျဉ်းချုပ်၍ မရပါ။ အရေးမကြီးသော တိတ်ဆိတ်နေမှု၊ ထပ်နေသောမြင်ကွင်းနှင့် မလိုအပ်သော နားချိန်များကိုသာ ဖြတ်ပါ။
 - ဇာတ်ကြောင်းစာသားကို ရည်မှန်းထားသည့် ကြာချိန်နှင့် ကိုက်ညီအောင် လုံလောက်စွာ အသေးစိတ်ရေးပါ။ အလွန်တိုသော အကျဉ်းချုပ် မရေးပါနှင့်။
@@ -4898,6 +4947,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့် (ခန်းပျမ်းမျှ {request_chars_per_scene} လုံး) ရေးပါ။
 - အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် ရွေးထားသော နာမ်စား ပါရမည်။
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
+- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဥပမာ ❌ "ကျွန်တော် ပြန်လာခဲ့ပါသည်။" ✅ "ကျွန်တော် ပြန်ချလာခဲ့တယ်။"
 - JSON key များမှာ "protagonist", "pronoun", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
 
 {{
@@ -4986,6 +5036,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ပထမလူ အမြင် (First person) ကို ဆက်ထိန်းပါ — ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်၍ နာမ်စား «{new_pronoun or pronoun or 'ယခင် script တွင် သုံးထားသော ကျွန်တော်/ကျွန်မ'}» ကိုသာ ဆက်သုံးပါ။ ကိုယ့်အကြောင်းကို «သူ/သူမ» ဟု မပြောင်းပါနှင့်။
 ကိုယ် မရှိခဲ့၊ မမြင်ရသေးသည့် မြင်ကွင်းဖြစ်လျှင် «အဲဒီတုန်းက ကျွန်တော် မသိသေးပေမယ့် ...» ဟု ဆက်စပ် ဖော်ပြပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
+စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။
 🎯 အနည်းဆုံး {missing} လုံး အသစ် ထပ်ဖြည့်ပါ။ စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ပြည့်ရပါမည်။
 
 ယခင် script:
@@ -5272,6 +5323,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{new_pronoun}» တစ်မျိုးတည်းကိုသာ သုံးရမည်။
 Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမည်။
 ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။
+စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
 
 ရှိပြီးသား script:
 {json.dumps(scenes, ensure_ascii=False)}
@@ -5302,13 +5354,27 @@ JSON ကိုသာပြန်ပေးပါ:
                 )
                 raw_extra_scenes = extra_payload.get("scenes") or []
                 cuts.extend(extra_payload.get("cuts") or [])
-                accepted_scenes = [
-                    scene for scene in raw_extra_scenes
+                existing_texts = {
+                    _normalize_burmese_text(scene.get("burmese") or "")
+                    for scene in scenes
                     if isinstance(scene, dict)
-                    and _scene_is_first_person(
+                }
+                accepted_scenes = []
+                for scene in raw_extra_scenes:
+                    if not isinstance(scene, dict):
+                        continue
+                    if not _scene_is_first_person(
                         str(scene.get("burmese") or ""), new_pronoun
-                    )
-                ]
+                    ):
+                        continue
+                    # Skip exact repeats -- duplicated narration text
+                    # is heard as the voice saying the same thing
+                    # twice in the final video.
+                    key = _normalize_burmese_text(scene.get("burmese") or "")
+                    if key and key in existing_texts:
+                        continue
+                    existing_texts.add(key)
+                    accepted_scenes.append(scene)
                 if not accepted_scenes:
                     logger.warning("Direct duration calibration returned no first-person scenes")
                     break
@@ -7495,6 +7561,7 @@ def _rewrite_prompt(
 အဓိကတာဝန်: {task_line}
 လေသံ: {_worker_tone_line(st)}
 နာမ်စား: {pronoun_line}
+စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ စာကြောင်းတိုတို (၂၅ လုံးအောက်) ရေးပါ။ ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်လို့ သူငယ်ချင်းကို ဇာတ်လမ်းပြောပြနေသလို သဘာဝကျရမည်။
 
 လိုက်နာရမည်များ:
 - Output သည် Burmese သာ ဖြစ်ရမည်။ မူရင်းဘာသာစကားကို ဘာသာပြန်ပါ။
@@ -13257,7 +13324,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.11-calibration-converge"
+BUILD_VERSION = "v5.12-spoken-style"
 BUILD_FEATURES = 20
 
 

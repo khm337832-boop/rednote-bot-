@@ -1230,6 +1230,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(summary["pronoun"], MALE_PRONOUN)
         self.assertEqual(len(generate_calls), 3)
+        # Narration is spoken: every script prompt must demand the
+        # spoken register (user: written-style script sounds like
+        # reading a book aloud).
+        self.assertTrue(
+            all("စကားပြောဟန်" in p for p in generate_calls),
+            generate_calls,
+        )
         self.assertIn("FIRST-PERSON REPAIR ONLY", generate_calls[1])
         self.assertIn("ယခင် scenes များကို ပြန်မပေးပါနှင့်", generate_calls[2])
         final_duration, _, _ = bot.probe_video_info(out_chunk)
@@ -5365,10 +5372,51 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(clips)
         self.assertEqual(len(clips), 2)
         self.assertEqual(bot._LAST_TTS_PROVIDER, "edge")
-        self.assertEqual(len(edge_calls), 1)
+        # Per-scene synthesis: one Edge request per scene, each with
+        # exactly that scene's text (no joined slicing guesses).
+        self.assertEqual(len(edge_calls), 2)
+        self.assertEqual([c[0] for c in edge_calls], ["က", "ခ"])
         # Default voice is Charon (male pronoun) -> male Burmese voice.
         self.assertEqual(edge_calls[0][1], "my-MM-ThihaNeural")
         self.assertIn("quota-tts-e1", bot._quota_exhausted_active())
+
+    async def test_tts_edge_partial_scene_failure_keeps_good_scenes(self):
+        # One flaky scene must not sink the batch: it becomes a
+        # short silence, the good scenes keep their real audio.
+        batch = [{"burmese": "က"}, {"burmese": "ခ"}]
+
+        async def fake_edge_save(text, voice, out_path):
+            if text == "ခ":
+                raise RuntimeError("edge scene boom")
+            with open(out_path, "wb") as f:
+                f.write(b"\xff\xfb" + b"\x00" * 4000)
+
+        def fake_run_cmd(cmd, timeout):
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x00\x40" * bot.SAMPLE_RATE)  # loud samples
+            return SimpleNamespace(returncode=0)
+
+        self.start_patch(
+            patch.object(bot, "TTS_PROVIDER_ORDER", ("edge",))
+        )
+        self.start_patch(
+            patch.object(bot, "_edge_tts_synthesize_to_file", new=fake_edge_save)
+        )
+        self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "edge-tts", None)
+        self.addCleanup(setattr, bot, "_LAST_TTS_PROVIDER", "")
+
+        clips = await bot._tts_one_batch(
+            batch, 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(clips), 2)
+        self.assertEqual(bot._LAST_TTS_PROVIDER, "edge")
+        self.assertFalse(bot._clip_is_silent(clips[0]))
+        self.assertTrue(bot._clip_is_silent(clips[1]))
+        self.assertIn("edge-tts", bot._LAST_TTS_ERROR_BY_MODEL)
 
     async def test_tts_default_order_is_free_edge_first(self):
         # User rule: completely free, no queueing.  With the default
