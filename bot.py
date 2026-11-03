@@ -400,17 +400,61 @@ def _gemini_error_is_model_gone(exc: Exception) -> bool:
     return any(token in text for token in _GEMINI_MODEL_GONE_TOKENS)
 
 
+# Models that returned a plan/quota exhaustion 429 ("You exceeded
+# your current quota... check your plan and billing") -- distinct
+# from a momentary rate-limit 429.  Retrying them inside the same
+# job only wastes minutes; remember them for
+# GEMINI_QUOTA_SKIP_SECONDS and skip straight to the next model.
+# Observed in production: gemini-2.5-flash-preview-tts quota-
+# exhausted on the free tier while other models still had budget.
+GEMINI_QUOTA_SKIP_SECONDS = max(
+    60, _parse_int_env("GEMINI_QUOTA_SKIP_SECONDS", 1800)
+)
+_QUOTA_EXHAUSTED_MODELS: dict = {}  # model -> monotonic timestamp
+
+
+def _gemini_error_is_quota_exhausted(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return "quota" in text and (
+        "exceeded" in text or "billing" in text or "plan" in text
+    )
+
+
+def _mark_quota_exhausted(model) -> None:
+    _QUOTA_EXHAUSTED_MODELS[str(model)] = time.monotonic()
+
+
+def _quota_exhausted_active() -> list:
+    now = time.monotonic()
+    return sorted(
+        model
+        for model, marked_at in _QUOTA_EXHAUSTED_MODELS.items()
+        if now - marked_at < GEMINI_QUOTA_SKIP_SECONDS
+    )
+
+
 def _live_gemini_models(models) -> list:
-    """Drop models known to 404; fall back to the full list if all died."""
-    live = [m for m in (models or []) if m not in _DEAD_GEMINI_MODELS]
+    """Drop 404-dead and quota-exhausted models; last-resort: full list."""
+    now = time.monotonic()
+
+    def _usable(model) -> bool:
+        if model in _DEAD_GEMINI_MODELS:
+            return False
+        marked_at = _QUOTA_EXHAUSTED_MODELS.get(model)
+        return marked_at is None or (now - marked_at) >= GEMINI_QUOTA_SKIP_SECONDS
+
+    live = [m for m in (models or []) if _usable(m)]
     return live or list(models or [])
 
 
 # Most recent TTS failure ("model: error"), kept so silent-scene
 # failures are self-diagnosing: it is appended to the user-facing
 # error and exposed on /healthz (Render logs are not always at hand
-# when a job fails in production).
+# when a job fails in production).  The per-model dict keeps the
+# latest full error for *every* TTS model -- seeing only the final
+# model's error hides why the earlier fallbacks really failed.
 _LAST_TTS_ERROR = ""
+_LAST_TTS_ERROR_BY_MODEL: dict = {}
 
 
 def _last_tts_error_suffix() -> str:
@@ -570,10 +614,16 @@ PREFERRED_MODELS = [
     "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
 ]
+# Current names per Google's TTS docs (the 2.5 GA models dropped
+# the "-preview" suffix).  Dead (404) and quota-exhausted entries
+# are skipped automatically at runtime, so a long list costs
+# nothing after each model's first failure.
 PREFERRED_TTS_MODELS = [
     "gemini-3.8-flash-tts",
     "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-tts",
+    "gemini-2.5-pro-tts",
     "gemini-2.5-flash-preview-tts",
 ]
 SPINNING_EMOJIS = ["⏳", "⌛", "⏳", "⌛"]
@@ -3078,12 +3128,21 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
                 with open(tmp_raw, "wb") as f:
                     f.write(data)
 
+                # Current TTS models return a complete WAV file by
+                # default (older ones returned headerless PCM).
+                # Let ffmpeg sniff WAV itself; only force the raw
+                # s16le/24kHz interpretation for headerless data.
+                input_args = (
+                    []
+                    if data[:4] == b"RIFF"
+                    else ["-f", "s16le", "-ar", "24000", "-ac", "1"]
+                )
                 # to_thread: a blocking ffmpeg call here would stall
                 # the event loop (progress edits, keep-alive, and the
                 # other parallel TTS batch) for its whole duration.
                 result = await asyncio.to_thread(run_cmd, [
                     FFMPEG_BIN, "-y",
-                    "-f", "s16le", "-ar", "24000", "-ac", "1",
+                    *input_args,
                     "-i", tmp_raw,
                     "-af", voice_filter,
                     "-f", "s16le", "-acodec", "pcm_s16le",
@@ -3104,11 +3163,24 @@ async def _tts_one_batch(batch: list, batch_idx: int, total_batches: int, work_d
             except Exception as e:
                 err = str(e)[:200]
                 _LAST_TTS_ERROR = f"{model}: {err}"[:300]
+                _LAST_TTS_ERROR_BY_MODEL[model] = str(e)[:800]
                 logger.warning(f"TTS batch {batch_idx + 1} attempt {attempt + 1} ({model}): {err}")
                 if _gemini_error_is_model_gone(e):
                     # Retired model: remember it and move straight to
                     # the next model instead of burning more attempts.
                     _DEAD_GEMINI_MODELS.add(model)
+                    break
+                if _gemini_error_is_quota_exhausted(e):
+                    # Plan quota is gone for this model -- sleeping
+                    # and retrying it inside this job cannot help.
+                    # Remember it (skipped process-wide for a while)
+                    # and move straight to the next model.
+                    _mark_quota_exhausted(model)
+                    logger.warning(
+                        "TTS model %s quota-exhausted; skipping it for %ss",
+                        model,
+                        GEMINI_QUOTA_SKIP_SECONDS,
+                    )
                     break
                 if _gemini_error_is_overload(e):
                     # High-demand spikes need real waiting, not seconds.
@@ -3614,14 +3686,13 @@ async def _generate_direct_gemini_json(
             except Exception:
                 return
             # Even a losing/abandoned attempt can teach us that a
-            # model was retired -- remember it so it is never
-            # launched again in this process.
-            if (
-                exc is not None
-                and model
-                and _gemini_error_is_model_gone(exc)
-            ):
-                _DEAD_GEMINI_MODELS.add(model)
+            # model was retired or ran out of plan quota -- remember
+            # it so later calls skip straight past it.
+            if exc is not None and model:
+                if _gemini_error_is_model_gone(exc):
+                    _DEAD_GEMINI_MODELS.add(model)
+                if _gemini_error_is_quota_exhausted(exc):
+                    _mark_quota_exhausted(model)
 
         task.add_done_callback(_swallow)
 
@@ -3711,6 +3782,14 @@ async def _generate_direct_gemini_json(
                                 "Gemini model %s is unavailable (404); "
                                 "skipping it for the rest of this process",
                                 model,
+                            )
+                        if _gemini_error_is_quota_exhausted(e):
+                            _mark_quota_exhausted(model)
+                            logger.warning(
+                                "Gemini model %s quota-exhausted; "
+                                "skipping it for %ss",
+                                model,
+                                GEMINI_QUOTA_SKIP_SECONDS,
                             )
                         logger.warning(
                             "Direct Gemini %s failed attempt %s/%s "
@@ -7093,6 +7172,8 @@ async def _worker_gemini_json(prompt: str, client=None):
                     saw_overload = True
                 if _gemini_error_is_model_gone(e):
                     _DEAD_GEMINI_MODELS.add(model)
+                if _gemini_error_is_quota_exhausted(e):
+                    _mark_quota_exhausted(model)
                 logger.warning(f"Worker Gemini JSON failed with {model}: {str(e)[:250]}")
         if not saw_overload or round_no >= max_rounds:
             break
@@ -13002,7 +13083,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.7-tts-voice-fix"
+BUILD_VERSION = "v5.8-tts-quota-memory"
 BUILD_FEATURES = 20
 
 
@@ -13041,6 +13122,8 @@ async def root():
         "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
         "direct_tts_models": PREFERRED_TTS_MODELS,
         "last_tts_error": _LAST_TTS_ERROR,
+        "last_tts_error_by_model": dict(_LAST_TTS_ERROR_BY_MODEL),
+        "quota_exhausted_models": _quota_exhausted_active(),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -13117,6 +13200,8 @@ async def health():
         "unavailable_gemini_models": sorted(_DEAD_GEMINI_MODELS),
         "direct_tts_models": PREFERRED_TTS_MODELS,
         "last_tts_error": _LAST_TTS_ERROR,
+        "last_tts_error_by_model": dict(_LAST_TTS_ERROR_BY_MODEL),
+        "quota_exhausted_models": _quota_exhausted_active(),
         "default_voice": DEFAULT_SETTINGS.get("voice"),
         "default_deep_voice_filter": bool(DEFAULT_SETTINGS.get("deep")),
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,

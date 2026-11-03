@@ -2245,6 +2245,17 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 health.json()["last_tts_error"], bot._LAST_TTS_ERROR
             )
             self.assertEqual(
+                health.json()["last_tts_error_by_model"],
+                dict(bot._LAST_TTS_ERROR_BY_MODEL),
+            )
+            self.assertEqual(
+                health.json()["quota_exhausted_models"],
+                bot._quota_exhausted_active(),
+            )
+            self.assertIn(
+                "gemini-2.5-flash-tts", health.json()["direct_tts_models"]
+            )
+            self.assertEqual(
                 health.json()["telegram_webhook_allowed_updates"],
                 bot.TELEGRAM_WEBHOOK_ALLOWED_UPDATES,
             )
@@ -5155,6 +5166,97 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(clips)
         self.assertIn("only-tts", bot._LAST_TTS_ERROR)
         self.assertIn("last TTS error", bot._last_tts_error_suffix())
+
+    async def test_tts_one_batch_remembers_quota_exhausted_model(self):
+        # Production: gemini-2.5-flash-preview-tts answered 429
+        # RESOURCE_EXHAUSTED "You exceeded your current quota".  The
+        # model must be tried once (no pointless retries/sleeps),
+        # remembered as quota-exhausted, skipped by later calls, and
+        # its full error kept per-model for /healthz diagnostics.
+        calls = []
+
+        def gen(model, contents, config):
+            calls.append(model)
+            raise RuntimeError(
+                "429 RESOURCE_EXHAUSTED. You exceeded your current "
+                "quota, please check your plan and billing details."
+            )
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=gen)
+        )
+        self.start_patch(
+            patch.object(bot, "PREFERRED_TTS_MODELS", ["quota-tts"])
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", lambda: fake_client)
+        )
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(bot._QUOTA_EXHAUSTED_MODELS.pop, "quota-tts", None)
+        self.addCleanup(bot._LAST_TTS_ERROR_BY_MODEL.pop, "quota-tts", None)
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+
+        clips = await bot._tts_one_batch(
+            [{"burmese": "က"}], 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNone(clips)
+        self.assertEqual(calls, ["quota-tts"])  # no retry storm
+        self.assertIn("quota-tts", bot._quota_exhausted_active())
+        self.assertIn("429", bot._LAST_TTS_ERROR_BY_MODEL["quota-tts"])
+        self.assertEqual(
+            bot._live_gemini_models(["quota-tts", "fresh-model"]),
+            ["fresh-model"],
+        )
+
+    async def test_tts_one_batch_accepts_wav_audio(self):
+        # Current TTS models return a complete WAV file; ffmpeg must
+        # sniff it instead of being told it is headerless s16le.
+        wav_audio = b"RIFF" + b"\x00" * 40 + b"\x10\x00" * 4000
+        resp = SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[
+                            SimpleNamespace(
+                                inline_data=SimpleNamespace(data=wav_audio)
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        seen_cmds = []
+
+        def fake_run_cmd(cmd, timeout):
+            seen_cmds.append(cmd)
+            with open(cmd[-1], "wb") as f:
+                f.write(b"\x10\x00" * bot.SAMPLE_RATE * 2)
+            return SimpleNamespace(returncode=0)
+
+        fake_client = SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=lambda model, contents, config: resp
+            )
+        )
+        self.start_patch(
+            patch.object(bot, "PREFERRED_TTS_MODELS", ["wav-tts"])
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", lambda: fake_client)
+        )
+        self.start_patch(patch.object(bot, "run_cmd", fake_run_cmd))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=AsyncMock()))
+        self.addCleanup(setattr, bot, "_LAST_TTS_ERROR", "")
+
+        clips = await bot._tts_one_batch(
+            [{"burmese": "က"}], 0, 1, str(self.tmp_path), None
+        )
+
+        self.assertIsNotNone(clips)
+        self.assertEqual(len(seen_cmds), 1)
+        input_args = seen_cmds[0][: seen_cmds[0].index("-i")]
+        self.assertNotIn("s16le", input_args)
 
     def test_tts_speech_config_shapes(self):
         new_cfg = bot._tts_speech_config("Charon", "voice")
