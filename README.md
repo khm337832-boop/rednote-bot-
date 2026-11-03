@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.21-turbo-thiha-no-trim` is a **one-shot automatic flow**: the user
+Version `v5.22-script-first-no-overshoot` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -197,14 +197,20 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
 2. Split the source internally into fixed 2-minute windows in
    chronological order (1:30 → 45 windows, 3:00 → 90; only the last may
    be shorter). The full original is then deleted to save disk.
-3. Recap each window in order: first-person full-retelling script
-   (character names, protagonist/pronoun, prior-events summary, and
-   last scene carried forward after every window), measured TTS, and a
-   render targeted at the selected percentage of that window. Each
-   window gets bounded whole-segment retries
-   (`AUTO_SEGMENT_ATTEMPTS`, default 3) on top of the script/TTS
-   internal retries; story context only advances after a window
-   succeeds. Progress shows window x/y, time range, and percent.
+3. **Script everything first**: write every window's first-person
+   full-retelling script in order (character names,
+   protagonist/pronoun, prior-events summary, and last scene carried
+   forward after every window) *before any audio exists*, then check
+   the joined script once as a whole (sentences repeated across
+   parts are removed, keeping the first telling). Only then voice
+   and edit each window from its finished script: speech-shaped
+   polish (breath points for runaway sentences), a pre-TTS cap so a
+   script cannot predict past its window, measured TTS with error
+   checks, and a render targeted at the selected percentage of that
+   window. Each phase of each window gets bounded whole-segment
+   retries (`AUTO_SEGMENT_ATTEMPTS`, default 3) on top of the
+   script/TTS internal retries. Progress shows window x/y, time
+   range, and percent for both phases.
 4. Join all window recaps in order (join retried once on failure),
    re-check the whole-source duration target, split only for Telegram
    size delivery, and send the final video. Every final piece is
@@ -271,10 +277,15 @@ a 2-minute window at 90% plans about 1,300 characters — close to the
 voice's real speed from the first draft. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
-changed scenes are synthesized again; if it is long, the finished speech
-is kept whole — spoken narration is never trimmed back or force-fitted;
-only short results get script top-ups, and a result that stays short is
-refused rather than shipped as an under-length recap. Calibration targets are
+changed scenes are synthesized again; if it is long *but still inside
+the source's own length*, the finished speech is kept whole — spoken
+narration is never trimmed back to the 90% target or force-fitted. The
+one hard ceiling is the source itself (**the final must never be
+longer than the original**): narration that runs past its window has
+only that excess shaved at whole-sentence boundaries (target just
+under the window) and the changed scenes are re-voiced. A result that
+stays short is refused rather than shipped as an under-length recap,
+and every delivery gate refuses a final that exceeds the source. Calibration targets are
 computed from the *effective* rate (all script chars over all produced
 speech seconds, including any quiet slices) so trims always converge --
 the spoken-only rate inflates when some clips measure as silent and
@@ -487,7 +498,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.21-turbo-thiha-no-trim"`,
+URLs must show `"version":"v5.22-script-first-no-overshoot"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
 `"gemini_overload_retry_budget_seconds":120`, `"gemini_overload_max_rounds":12`,
@@ -554,6 +565,13 @@ Never paste a bot token, cookie, API key, deploy hook, or other secret in
 chat, GitHub issues, or source code. The bot sets `httpx`/`httpcore`
 logging to WARNING and redacts bot-token-shaped values and sensitive URL
 parameters to reduce accidental token exposure in application logs.
+
+After every deploy the bot tells its users it was updated: each chat
+gets one short "✅ Bot ကို အသစ်ပြင်ပြီးပါပြီ" notice per version on its
+first message after an update. For a *proactive* post-deploy DM (before
+you open Telegram), set `OWNER_CHAT_ID` once in Render's Environment —
+`/start` shows your Chat ID to copy. (Render wipes the disk on deploy,
+so an env var is the only address book that survives one.)
 
 Network-free regression tests:
 

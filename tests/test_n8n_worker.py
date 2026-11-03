@@ -1859,8 +1859,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(summary["pronoun"], MALE_PRONOUN)
         # The first script handed to TTS was already the right size for
-        # the voice's measured speed, so no expand/trim round was needed
-        # (and long narration is never trimmed back any more).
+        # the voice's measured speed, so no expand/shave round was
+        # needed (long-but-inside-the-source narration is kept whole;
+        # only an over-source excess is ever shaved).
         first_chars = sum(len(text) for text in tts_calls[0])
         self.assertGreaterEqual(first_chars, 1200)
         self.assertLessEqual(first_chars, 1500)
@@ -1871,9 +1872,313 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(text.strip()[-1], bot.SCRIPT_SENTENCE_END_CHARS)
         final_duration, _, _ = bot.probe_video_info(out_chunk)
         self.assertGreaterEqual(final_duration, 120 * 0.9 * 0.98 - 0.5)
-        # The high side is no longer a hard window edge (finished speech
-        # is kept whole), but a right-sized script still lands close.
+        # Between the 90% target and the source length the speech is
+        # kept whole; a right-sized script lands close to target and
+        # in any case never past the source itself.
         self.assertLessEqual(final_duration, 120 * 0.9 * 1.15 + 2.0)
+
+    async def test_direct_recap_shaves_only_excess_over_source(self):
+        """v5.22: a voice slower than planned must not make the recap
+        longer than the source (the reported final > original job).
+        Only the excess past the window is shaved -- whole sentences,
+        then re-voiced -- never a trim back to the 90% target."""
+        bot.reset_learned_chars_per_second()
+        self.start_patch(
+            patch.object(bot, "GEMINI_HEDGE_INITIAL_PARALLEL", 1)
+        )
+        chunk_path = self.tmp_path / "overshoot_chunk.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=green:s=64x64:r=25:d=120",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                str(chunk_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        sentences = [
+            MALE_PRONOUN + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။",
+            "လမ်းမှာ မိုးက သည်းသည်းမည်းမည်း ရွာနေတယ်။",
+            MALE_PRONOUN + " ထီးမပါလို့ စိုးရွှဲသွားတယ်။",
+            "ရုံးကို အချိန်မီ ရောက်ခဲ့တယ်။",
+            MALE_PRONOUN + " ရုံးမှာ အစည်းအေး တစ်ခု ရှိတယ်။",
+            "အဲဒီမှာ သူငယ်ချင်းနဲ့ ပြန်ဆုံဖြစ်တယ်။",
+            MALE_PRONOUN + " သူနဲ့ စကားအများကြီး ပြောဖြစ်တယ်။",
+            "ညနေမှာ အိမ်ပြန်ရောက်ခဲ့တယ်။",
+            MALE_PRONOUN + " ဒီနေ့က စိတ်ဝင်စားစရာ ကောင်းတဲ့ နေ့တစ်နေ့ ဖြစ်တယ်။",
+            "အိပ်ရာဝင်တော့ ပင်ပန်းပေမယ့် ပျော်တယ်။",
+        ]
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+
+        def fake_generate(model, contents, config):
+            scenes = []
+            total_chars = 0
+            index = 0
+            while total_chars < 1350:
+                text = " ".join([
+                    sentences[index % len(sentences)],
+                    sentences[(index + 3) % len(sentences)],
+                    sentences[(index + 7) % len(sentences)],
+                ])
+                scenes.append({
+                    "start": index * 10.0,
+                    "end": (index + 1) * 10.0,
+                    "burmese": text,
+                })
+                total_chars += len(text)
+                index += 1
+            payload = {
+                "protagonist": "Hero",
+                "pronoun": MALE_PRONOUN,
+                "scenes": scenes,
+                "cuts": [],
+            }
+            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=fake_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+        tts_calls = []
+
+        async def fake_slow_tts(tts_scenes, work_dir, settings):
+            # Slower than the 12 chars/s planning seed: the first
+            # measured narration lands well past the 120s window.
+            tts_calls.append([scene["burmese"] for scene in tts_scenes])
+            return [
+                np.full(
+                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 9.0)),
+                    0.5,
+                    dtype=np.float32,
+                )
+                for scene in tts_scenes
+            ]
+
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_slow_tts))
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(
+                    return_value={
+                        "summary": "done",
+                        "characters": [],
+                        "last_scene": "end",
+                        "protagonist": "Hero",
+                        "pronoun": MALE_PRONOUN,
+                    }
+                ),
+            )
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+        settings = {
+            "coverage": 90,
+            "speed": 1.0,
+            "pause": 0,
+            "voice": "Charon",
+            "resolution": 64,
+            "shield": False,
+            "color": False,
+            "quality": 35,
+            "fast_mode": True,
+        }
+
+        out_chunk, summary = await bot.build_chunk_recap(
+            str(chunk_path), 120, 0, 120, {}, 1, tracker, settings=settings,
+        )
+
+        self.assertEqual(summary["pronoun"], MALE_PRONOUN)
+        # The over-source measurement triggered a shave + re-voice.
+        self.assertGreaterEqual(len(tts_calls), 2)
+        first_chars = sum(len(text) for text in tts_calls[0])
+        last_chars = sum(len(text) for text in tts_calls[-1])
+        self.assertLess(last_chars, first_chars)
+        # ...but only the excess: the kept script is still ~90% sized,
+        # not shredded down toward the window floor.
+        self.assertGreaterEqual(last_chars, 900)
+        for call in tts_calls:
+            for text in call:
+                self.assertIn(text.strip()[-1], bot.SCRIPT_SENTENCE_END_CHARS)
+        final_duration, _, _ = bot.probe_video_info(out_chunk)
+        # The hard user rule: never longer than the source video.
+        self.assertLessEqual(final_duration, 120 * 1.01)
+        self.assertGreaterEqual(final_duration, 120 * 0.9 * 0.98 - 0.5)
+
+    def test_duration_exceeds_source_and_within_limits(self):
+        self.assertFalse(bot._duration_exceeds_source(100.0, 100.0))
+        self.assertFalse(bot._duration_exceeds_source(101.0, 100.0))
+        self.assertTrue(bot._duration_exceeds_source(103.0, 100.0))
+        self.assertFalse(bot._duration_exceeds_source(500.0, 0.0))
+        self.assertTrue(bot._duration_within_limits(95.0, 100.0, {}))
+        self.assertTrue(bot._duration_within_limits(100.0, 100.0, {}))
+        self.assertFalse(bot._duration_within_limits(104.0, 100.0, {}))
+        self.assertFalse(bot._duration_within_limits(50.0, 100.0, {}))
+
+    def test_polish_splits_runaway_sentence_at_clause_commas(self):
+        clause = MALE_PRONOUN + " လမ်းလျှောက်သွားတယ်"
+        runaway = "၊ ".join([clause] * 12) + "။"
+        self.assertGreater(len(runaway), bot._SPEECH_MAX_SENTENCE_CHARS)
+        polished = bot._polish_text_for_speech(runaway)
+        sentences = bot._split_sentences(polished)
+        self.assertGreaterEqual(len(sentences), 2)
+        for sentence in sentences:
+            self.assertLessEqual(
+                len(sentence.strip()), bot._SPEECH_MAX_SENTENCE_CHARS + 40
+            )
+            self.assertIn(sentence.strip()[-1], bot.SCRIPT_SENTENCE_END_CHARS)
+        # Words are preserved -- only punctuation/spacing may change.
+        def _strip(value):
+            return "".join(
+                ch for ch in value if not ch.isspace() and ch not in "၊။"
+            )
+        self.assertEqual(_strip(polished), _strip(runaway))
+        short = MALE_PRONOUN + " အိမ်ပြန်တယ်။"
+        self.assertEqual(bot._polish_text_for_speech(short), short)
+
+    def test_cap_scenes_to_source_trims_predicted_overshoot(self):
+        bot.reset_learned_chars_per_second()
+        sentence = MALE_PRONOUN + " အလုပ်ကို စောစောသွားတယ်။"
+        scenes = [
+            {
+                "start": i * 40.0,
+                "end": (i + 1) * 40.0,
+                "burmese": " ".join([sentence] * 40),
+            }
+            for i in range(3)
+        ]
+        total_before = bot.script_total_chars(scenes)
+        capped = bot._cap_scenes_to_source(scenes, 120.0, {})
+        total_after = bot.script_total_chars(capped)
+        self.assertLess(total_after, total_before)
+        # Cap ~= 95% of 120s at the 12 chars/s cold-start seed.
+        self.assertLessEqual(total_after, 1500)
+        # The validated minimum is a hard floor for the cap.
+        floored = bot._cap_scenes_to_source(
+            scenes, 120.0, {}, minimum_chars=2500
+        )
+        self.assertGreaterEqual(bot.script_total_chars(floored), 2000)
+        # Already-small scripts pass through untouched.
+        small = [{"start": 0.0, "end": 10.0, "burmese": sentence}]
+        self.assertEqual(bot._cap_scenes_to_source(small, 120.0, {}), small)
+
+    def test_shave_scenes_to_seconds_only_shaves_excess(self):
+        sentence = MALE_PRONOUN + " အလုပ်ကို စောစောသွားတယ်။"
+        scenes = [
+            {
+                "start": i * 40.0,
+                "end": (i + 1) * 40.0,
+                "burmese": " ".join([sentence] * 20),
+            }
+            for i in range(3)
+        ]
+        before = bot.script_total_chars(scenes)
+        measurements = {"effective_chars_per_second": 10.0, "pause_seconds": 0.0}
+        shaved, changed = bot._shave_scenes_to_seconds(
+            scenes, measurements, before / 10.0 / 2
+        )
+        self.assertTrue(changed)
+        after = bot.script_total_chars(shaved)
+        self.assertLess(after, before)
+        self.assertGreaterEqual(after, int(before * 0.35))
+        self.assertLessEqual(after, int(before * 0.65))
+        # A ceiling the script already fits is a no-op.
+        same, changed_again = bot._shave_scenes_to_seconds(
+            shaved, measurements, 100000.0
+        )
+        self.assertFalse(changed_again)
+        self.assertEqual(bot.script_total_chars(same), after)
+
+    def test_dedupe_scripts_removes_cross_part_repeats(self):
+        repeated = "မိုးရွာနေတယ်။"
+        first = {
+            "scenes": [
+                {
+                    "start": 0.0,
+                    "end": 10.0,
+                    "burmese": f"{MALE_PRONOUN} ထွက်လာတယ်။ {repeated}",
+                }
+            ],
+            "metrics": {"target_chars": 10},
+        }
+        second = {
+            "scenes": [
+                {
+                    "start": 0.0,
+                    "end": 10.0,
+                    "burmese": f"{repeated} {MALE_PRONOUN} ဆက်သွားတယ်။",
+                }
+            ],
+            "metrics": {"target_chars": 10},
+        }
+        # Removing the repeat here would breach the part's validated
+        # minimum, so it must be kept (repetition beats a summary).
+        third = {
+            "scenes": [
+                {"start": 0.0, "end": 10.0, "burmese": repeated}
+            ],
+            "metrics": {"target_chars": 100000},
+        }
+        stats = bot._dedupe_scripts_in_order([first, second, third])
+        self.assertEqual(stats["removed_sentences"], 1)
+        self.assertIn(repeated, first["scenes"][0]["burmese"])
+        self.assertNotIn(repeated, second["scenes"][0]["burmese"])
+        self.assertIn(repeated, third["scenes"][0]["burmese"])
+
+    async def test_update_notice_sent_once_per_version(self):
+        fake_send = AsyncMock(return_value=777)
+        self.start_patch(patch.object(bot, "send_text", new=fake_send))
+        self.start_patch(patch.object(bot, "_save_persisted", new=lambda: None))
+        users = {}
+        self.start_patch(patch.object(bot, "_PERSISTED_USERS", users))
+        await bot._maybe_send_update_notice(919191)
+        await bot._maybe_send_update_notice(919191)
+        self.assertEqual(fake_send.await_count, 1)
+        self.assertEqual(users["919191"]["_seen_version"], bot.BUILD_VERSION)
+        self.assertIn(bot.BUILD_VERSION, fake_send.await_args.args[1])
+        # A failed send is not marked seen (retried on next contact).
+        fake_send.reset_mock()
+        fake_send.return_value = None
+        users.clear()
+        await bot._maybe_send_update_notice(919191)
+        self.assertNotIn("_seen_version", users.get("919191", {}))
 
     def test_alignment_borrows_only_to_next_scene_and_freezes_last(self):
         scenes = [
@@ -2839,7 +3144,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["duration_calibration"],
-                "expand_only_when_short_long_kept_whole",
+                "script_first_dedupe_expand_short_shave_over_source",
             )
             self.assertEqual(
                 health.json()["script_plain_text_fallback"],
@@ -3255,9 +3560,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             part_num,
             tracker,
             settings,
+            **kwargs,
         ):
+            kind = "script" if kwargs.get("script_only") else "render"
             build_calls.append(
                 {
+                    "kind": kind,
                     "path": chunk_path,
                     "duration": actual_dur,
                     "start": start,
@@ -3267,15 +3575,34 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                     "settings": dict(settings),
                 }
             )
-            output = Path(chunk_path).parents[1] / f"recap_part_{part_num:04d}.mp4"
-            output.write_bytes(b"r" * 100)
-            return str(output), {
+            summary = {
                 "characters": ["Hero", "Mina"],
                 "summary": f"after part {part_num}",
                 "last_scene": f"scene ending {part_num}",
                 "protagonist": "Hero",
                 "pronoun": MALE_PRONOUN,
             }
+            if kind == "script":
+                return {
+                    "version": 1,
+                    "part_index": part_num,
+                    "scenes": [
+                        {
+                            "start": 0.0,
+                            "end": 10.0,
+                            "burmese": f"{MALE_PRONOUN} အပိုင်း {part_num} အကြောင်း ပြောပြတယ်။",
+                        }
+                    ],
+                    "cuts": [],
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                    "story_context_before": dict(story_context),
+                    "story_context_after": summary,
+                    "metrics": {"target_chars": 100},
+                }, summary
+            output = Path(chunk_path).parents[1] / f"recap_part_{part_num:04d}.mp4"
+            output.write_bytes(b"r" * 100)
+            return str(output), summary
 
         def fake_concat(parts, output_path, concat_path):
             concat_calls.append(list(parts))
@@ -3323,18 +3650,30 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(prepare_calls), 1)
         self.assertEqual(prepare_calls[0][2:], (250.0, 120))
-        self.assertEqual([call["part"] for call in build_calls], [1, 2, 3])
+        # Script-first (user's order): *every* window is scripted
+        # before the first window is voiced/edited.
+        script_calls = [c for c in build_calls if c["kind"] == "script"]
+        render_calls = [c for c in build_calls if c["kind"] == "render"]
+        self.assertEqual([call["part"] for call in script_calls], [1, 2, 3])
+        self.assertEqual([call["part"] for call in render_calls], [1, 2, 3])
+        last_script_index = max(
+            i for i, c in enumerate(build_calls) if c["kind"] == "script"
+        )
+        first_render_index = min(
+            i for i, c in enumerate(build_calls) if c["kind"] == "render"
+        )
+        self.assertLess(last_script_index, first_render_index)
         self.assertEqual(
-            [(call["start"], call["end"]) for call in build_calls],
+            [(call["start"], call["end"]) for call in script_calls],
             [(0.0, 120.0), (120.0, 240.0), (240.0, 250.0)],
         )
         self.assertTrue(
             all(call["settings"]["chunk"] == 120 for call in build_calls)
         )
-        self.assertEqual(build_calls[1]["context"]["summary"], "after part 1")
-        self.assertEqual(build_calls[2]["context"]["summary"], "after part 2")
-        self.assertEqual(build_calls[2]["context"]["protagonist"], "Hero")
-        self.assertEqual(build_calls[2]["context"]["characters"], ["Hero", "Mina"])
+        self.assertEqual(script_calls[1]["context"]["summary"], "after part 1")
+        self.assertEqual(script_calls[2]["context"]["summary"], "after part 2")
+        self.assertEqual(script_calls[2]["context"]["protagonist"], "Hero")
+        self.assertEqual(script_calls[2]["context"]["characters"], ["Hero", "Mina"])
         self.assertEqual(len(concat_calls), 1)
         self.assertEqual(
             [Path(path).name for path in concat_calls[0]],
@@ -3365,16 +3704,32 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 }
             ]
 
-        async def fake_build(chunk_path, *_args):
-            output = Path(chunk_path).parent / "recap_part_0001.mp4"
-            output.write_bytes(b"r" * 100)
-            return str(output), {
+        async def fake_build(chunk_path, *_args, **_kwargs):
+            summary = {
                 "characters": ["Hero"],
                 "summary": "done",
                 "last_scene": "end",
                 "protagonist": "Hero",
                 "pronoun": MALE_PRONOUN,
             }
+            if _kwargs.get("script_only"):
+                return {
+                    "scenes": [
+                        {
+                            "start": 0.0,
+                            "end": 10.0,
+                            "burmese": f"{MALE_PRONOUN} ပြောပြတယ်။",
+                        }
+                    ],
+                    "cuts": [],
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                    "story_context_after": summary,
+                    "metrics": {"target_chars": 100},
+                }, summary
+            output = Path(chunk_path).parent / "recap_part_0001.mp4"
+            output.write_bytes(b"r" * 100)
+            return str(output), summary
 
         self.start_patch(
             patch.object(bot, "download_telegram_file", new=fake_telegram_download)
@@ -5236,15 +5591,31 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         async def fake_build(chunk_path, *_args, **_kwargs):
-            output = Path(chunk_path).parent / "recap_part_0001.mp4"
-            output.write_bytes(b"r" * 100)
-            return str(output), {
+            summary = {
                 "characters": ["Hero"],
                 "summary": "done",
                 "last_scene": "end",
                 "protagonist": "Hero",
                 "pronoun": MALE_PRONOUN,
             }
+            if _kwargs.get("script_only"):
+                return {
+                    "scenes": [
+                        {
+                            "start": 0.0,
+                            "end": 10.0,
+                            "burmese": f"{MALE_PRONOUN} ပြောပြတယ်။",
+                        }
+                    ],
+                    "cuts": [],
+                    "protagonist": "Hero",
+                    "pronoun": MALE_PRONOUN,
+                    "story_context_after": summary,
+                    "metrics": {"target_chars": 100},
+                }, summary
+            output = Path(chunk_path).parent / "recap_part_0001.mp4"
+            output.write_bytes(b"r" * 100)
+            return str(output), summary
 
         def fake_concat(parts, output_path, concat_path):
             Path(concat_path).write_text("\n".join(parts), encoding="utf-8")

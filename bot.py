@@ -1468,12 +1468,14 @@ def start_features_text(chat_id=None) -> str:
             "2️⃣ ဘယ်လောက်ရှည်ရှည် အတွင်းမှာ <b>၂ မိနစ်စီ အစဉ်အတိုင်း</b> ခွဲ၍ လုပ်သွားမယ်။ "
             "ဥပမာ ၁ နာရီခွဲ (၁:၃၀) = ၄၅ ပိုင်း၊ ၃ နာရီ = ၉၀ ပိုင်း။ "
             "<b>အပိုင်းခလုတ်တွေ တစ်ခုချင်း နှိပ်စရာ လုံးဝမလိုပါ — တစ်ခါပို့ရင် အဆုံးထိ အလိုအလျောက် လုပ်မယ်။</b>\n"
-            "3️⃣ အပိုင်းတစ်ခုချင်းစီအတွက် ပထမလူ Script ရေးမယ်။ "
+            "3️⃣ <b>အရင် Script အကုန်လုံးကို အစဉ်အတိုင်း ရေးမယ်</b> — အပိုင်းတစ်ခုချင်းစီအတွက် ပထမလူ Script ရေး၊ "
             "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
             "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။\n"
-            f"4️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
-            f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ်။ အသံကို stretch/tempo မလုပ်ဘူး။\n"
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ ရှေ့အကျဉ်းနဲ့ နောက်ဆုံးမြင်ကွင်းကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
+            "Script အကုန်ပြီးရင် <b>ထပ်နေတဲ့ ဝါကျတွေ တစ်ခေါက် စစ်ဖယ်</b>မယ်။\n"
+            f"4️⃣ ပြီးမှ <b>အသံသွင်းပြီး Edit</b> မယ်။ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
+            f"<b>{coverage}%</b> ဖြစ်အောင် ညှိမယ် — <b>Final က မူရင်းဗီဒီယိုထက် ဘယ်တော့မှ မရှည်ပါ</b>။ အသံကို stretch/tempo မလုပ်ဘူး။ "
+            "Edit တိုင်း error နဲ့ ကြာချိန်ကို စစ်တယ်။\n"
             "5️⃣ အပိုင်းအားလုံး ပြီးရင် အစဉ်အတိုင်း <b>အလိုအလျောက် ပြန်ဆက်ပြီး "
             "Final duration စစ်ဆေးကာ Final video ပို့ပေးမယ်</b>။ File ကြီးရင် Telegram အတွက် ခွဲပို့မယ်။ "
             "Download/Script/TTS/Render/Upload ယာယီအမှားဖြစ်ရင် auto-retry လုပ်မယ်။\n\n"
@@ -1498,6 +1500,11 @@ def start_features_text(chat_id=None) -> str:
         "<b>🎛️ လက်ရှိ Feature ၂၀ နဲ့ တန်ဖိုးများ</b>\n"
         + "\n".join(feature_lines)
         + version_line
+        + (
+            f"\n🆔 သင့် Chat ID: <code>{chat_id}</code>"
+            if chat_id is not None
+            else ""
+        )
         + "\n\n🎬 စဖို့အတွက် video file ဒါမှမဟုတ် link ကို ဒီအတိုင်း ပို့လိုက်ပါ။"
     )
 
@@ -5246,17 +5253,49 @@ def _duration_meets_minimum(
 ) -> bool:
     """True unless the narration is *short* of the target window.
 
-    User rule: finished speech is never cut back to fit -- when
-    the narration comes out long it is kept whole (the script
-    sizing layer prevents recurrence via the learned rate).
-    Only "short" fails: a too-short recap is a summary, which
-    the user rejects just as strongly, so expansion/retry/refusal
-    on the low side stays strict.
+    User rule: finished speech is never cut back to fit the 90%
+    target -- when the narration comes out long (but still inside
+    the source's own length) it is kept whole.  Only "short"
+    fails here: a too-short recap is a summary, which the user
+    rejects just as strongly, so expansion/retry/refusal on the
+    low side stays strict.  The one hard ceiling is the source
+    duration itself (see ``_duration_exceeds_source``): a final
+    video must never be longer than the original.
     """
     if float(source_duration or 0) <= 0:
         return False
     _, low, _high = _final_duration_window(source_duration, settings)
     return float(actual_seconds or 0) >= low
+
+
+def _duration_exceeds_source(
+    actual_seconds: float,
+    source_duration: float,
+) -> bool:
+    """True when a result runs *longer than the original video*.
+
+    The recap may sit anywhere between the 90% target and the
+    source's own length, but it must never exceed the source:
+    the alignment renderer would have to invent footage (freeze
+    frames) and the user explicitly rejects a final that is
+    longer than the video they sent.  A hair of tolerance covers
+    container/fade rounding only.
+    """
+    source = float(source_duration or 0)
+    if source <= 0:
+        return False
+    return float(actual_seconds or 0) > source + max(2.0, source * 0.005)
+
+
+def _duration_within_limits(
+    actual_seconds: float,
+    source_duration: float,
+    settings: dict = None,
+) -> bool:
+    """Final-delivery rule: at/above the 90% floor, never over source."""
+    return _duration_meets_minimum(
+        actual_seconds, source_duration, settings
+    ) and not _duration_exceeds_source(actual_seconds, source_duration)
 
 
 def _duration_status(actual_seconds: float, source_duration: float, settings: dict = None) -> str:
@@ -5729,6 +5768,194 @@ def trim_scenes_to_target(scenes: list, target_chars: int) -> list:
     return trim_scenes_proportionally(scenes, limit)
 
 
+# A single spoken sentence much beyond this turns into a breathless
+# run-on when the TTS reads it (production scripts arrived with
+# mega-sentences chained by "၊" for a whole scene).  The polish pass
+# below breaks only those runaways, at their own clause commas.
+_SPEECH_MAX_SENTENCE_CHARS = 150
+
+
+def _polish_text_for_speech(text: str) -> str:
+    """Make one scene's text easier for the TTS voice to speak naturally.
+
+    Punctuation/whitespace only -- words are never added, dropped or
+    reordered:
+    - whitespace runs collapse to single spaces;
+    - a runaway "sentence" longer than ``_SPEECH_MAX_SENTENCE_CHARS``
+      that is chained with Burmese clause commas (၊) is re-grouped
+      into shorter sentences ending in ။ (natural breath points);
+    - a final fragment with no terminator gains a closing ။ so the
+      voice lands instead of trailing off mid-thought.
+    """
+    polished_sentences = []
+    for raw_sentence in _split_sentences(text):
+        sentence = " ".join(str(raw_sentence or "").split())
+        if not sentence:
+            continue
+        if len(sentence) > _SPEECH_MAX_SENTENCE_CHARS and "၊" in sentence:
+            terminator = ""
+            body = sentence
+            while body and body[-1] in SCRIPT_SENTENCE_END_CHARS:
+                terminator = body[-1] + terminator
+                body = body[:-1].rstrip()
+            clauses = [c.strip() for c in body.split("၊") if c.strip()]
+            groups = []
+            current = ""
+            for clause in clauses:
+                candidate = f"{current}၊ {clause}" if current else clause
+                if current and len(candidate) > _SPEECH_MAX_SENTENCE_CHARS:
+                    groups.append(current)
+                    current = clause
+                else:
+                    current = candidate
+            if current:
+                groups.append(current)
+            for index, group in enumerate(groups):
+                ending = terminator if index == len(groups) - 1 and terminator else "။"
+                polished_sentences.append(group + ending)
+        else:
+            polished_sentences.append(sentence)
+    result = " ".join(polished_sentences).strip()
+    if result and result[-1] not in SCRIPT_SENTENCE_END_CHARS:
+        result += "။"
+    return result
+
+
+def _polish_scenes_for_speech(scenes: list) -> list:
+    polished = []
+    for scene in scenes or []:
+        if not isinstance(scene, dict):
+            continue
+        text = _polish_text_for_speech(str(scene.get("burmese") or ""))
+        if text:
+            polished.append({**scene, "burmese": text})
+    return polished
+
+
+def _cap_scenes_to_source(
+    scenes: list,
+    source_seconds: float,
+    settings: dict = None,
+    *,
+    minimum_chars: int = 0,
+    cap_ratio: float = 0.95,
+) -> list:
+    """Pre-TTS insurance so the narration cannot outrun the source.
+
+    If the script is *predicted* (at the learned speaking rate) to
+    run past ``cap_ratio`` of the source window, whole sentences
+    are trimmed before any audio exists -- no finished speech is
+    ever harmed by this pass.  The 90% sizing target already aims
+    lower; this only catches rate drift (e.g. a script written
+    while the learned rate was still a cold-start guess).  The
+    validated minimum is a hard floor: the cap never turns a full
+    retelling into a summary.
+    """
+    scene_list = [s for s in (scenes or []) if isinstance(s, dict)]
+    source = float(source_seconds or 0)
+    if not scene_list or source <= 0:
+        return scenes
+    rate = _settings_script_rate(settings) * _settings_speed(settings)
+    if rate <= 0:
+        return scenes
+    pause_total = _settings_pause_seconds(settings) * max(0, len(scene_list) - 1)
+    budget_seconds = max(0.1, source * float(cap_ratio or 0.95) - pause_total)
+    cap_chars = max(int(minimum_chars or 0), int(budget_seconds * rate))
+    if script_total_chars(scene_list) <= cap_chars:
+        return scenes
+    logger.info(
+        "Pre-TTS duration cap: %s chars predicted past %.0f%% of %.1fs "
+        "source at %.1f chars/s; trimming to %s chars before synthesis",
+        script_total_chars(scene_list),
+        float(cap_ratio or 0.95) * 100,
+        source,
+        rate,
+        cap_chars,
+    )
+    return sort_scenes(trim_scenes_proportionally(scene_list, cap_chars))
+
+
+def _shave_scenes_to_seconds(
+    scenes: list, measurements: dict, target_seconds: float, *, sort_result: bool = True
+) -> tuple:
+    """Trim whole sentences so measured-rate narration fits a ceiling.
+
+    Returns ``(scenes, changed)``.  Only ever used to pull a
+    narration that *exceeds its own source video* back under it --
+    narration between the 90% target and the source length is kept
+    whole (user rule).  Worker callers keep their group order
+    (``sort_result=False``) so clip/group alignment is untouched.
+    """
+    scene_list = [s for s in (scenes or []) if isinstance(s, dict)]
+    if not scene_list:
+        return scenes, False
+    before = script_total_chars(scene_list)
+    trimmed = _trim_scenes_for_duration(
+        scene_list, measurements, float(target_seconds or 0)
+    )
+    if not trimmed or script_total_chars(trimmed) >= before:
+        return scenes, False
+    return (sort_scenes(trimmed) if sort_result else trimmed), True
+
+
+def _dedupe_key(sentence: str) -> str:
+    """Comparison key for repeat detection (spacing/punctuation-free)."""
+    key = _normalize_burmese_text(sentence)
+    key = "".join(ch for ch in key if not ch.isspace())
+    return key.strip("။!?…၊\"'«»“”‘’")
+
+
+def _dedupe_scripts_in_order(scripts: list) -> dict:
+    """Drop sentences already narrated earlier in the same job.
+
+    Windows are scripted one after another, and a model re-telling
+    the boundary event of the previous window (or a top-up echo)
+    makes the listener hear the same sentence twice.  Walking the
+    finished scripts in story order and removing later exact
+    repeats keeps the first telling and deletes the echo.  A part
+    is never reduced below its own validated minimum, so render
+    checks still pass and no part silently turns into a summary.
+    Mutates each script's ``scenes``; returns removal stats.
+    """
+    seen = set()
+    removed_sentences = 0
+    removed_chars = 0
+    for script in scripts or []:
+        if not isinstance(script, dict):
+            continue
+        scenes = [s for s in (script.get("scenes") or []) if isinstance(s, dict)]
+        if not scenes:
+            continue
+        floor = _minimum_script_chars(
+            int((script.get("metrics") or {}).get("target_chars") or 0)
+        )
+        total = script_total_chars(scenes)
+        new_scenes = []
+        for scene in scenes:
+            kept = []
+            for sentence in _split_sentences(str(scene.get("burmese") or "")):
+                text = sentence.strip()
+                if not text:
+                    continue
+                key = _dedupe_key(text)
+                if key and key in seen and total - len(text) >= floor:
+                    total -= len(text)
+                    removed_sentences += 1
+                    removed_chars += len(text)
+                    continue
+                if key:
+                    seen.add(key)
+                kept.append(text)
+            joined = " ".join(kept).strip()
+            if joined:
+                new_scenes.append({**scene, "burmese": joined})
+        script["scenes"] = new_scenes
+    return {
+        "removed_sentences": removed_sentences,
+        "removed_chars": removed_chars,
+    }
+
+
 # The narration is *spoken*, so the script must be in spoken
 # Burmese (စကားပြောဟန်), not literary written Burmese.  Without
 # this, Gemini mirrors the formal style of the instructions and
@@ -5868,6 +6095,7 @@ async def build_chunk_recap(
 
     # Output script must equal coverage% (default 90%) of the input chunk.
     target_chars = script_target_chars(chunk_dur, st)
+    prepared_target_chars = 0
     target_seconds = chunk_dur * coverage_ratio
     # Keep the requested scene count and per-scene length mathematically
     # consistent.  The old values required at least 15 x 80 chars even for
@@ -6046,6 +6274,12 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         )
         if prepared_pronoun in ("ကျွန်တော်", "ကျွန်မ"):
             new_pronoun = prepared_pronoun
+        try:
+            prepared_target_chars = int(
+                (prepared_script.get("metrics") or {}).get("target_chars") or 0
+            )
+        except (TypeError, ValueError, AttributeError):
+            prepared_target_chars = 0
         await tracker.update(
             "📝 သိမ်းထားပြီးသား Script ကို သုံး၍ Recap ပြင်ဆင်နေပါသည်...",
             force=True,
@@ -6456,7 +6690,18 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         f"{first_person_metrics.get('first_person_scene_count')}/{len(scenes)}"
     )
 
-    minimum_chars = _minimum_script_chars(target_chars)
+    # A prepared (script-first / stored manual) script is validated
+    # against the target it was *written* for, not today's freshly
+    # recomputed one: the learned rate moves after every measured
+    # window, and re-grading an already-valid script against a moved
+    # target would refuse good scripts (the measured-TTS calibration
+    # below still corrects the real duration either way).
+    validation_target_chars = (
+        prepared_target_chars
+        if has_prepared_script and prepared_target_chars > 0
+        else target_chars
+    )
+    minimum_chars = _minimum_script_chars(validation_target_chars)
     bad_first_person = first_person_metrics.get("bad_scene_indexes") or []
     if not scenes or total_chars < minimum_chars or bad_first_person:
         await _delete_gemini_file(client, video_file)
@@ -6465,7 +6710,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         )
         raise RuntimeError(
             "Script failed duration/first-person validation after repairs: "
-            f"{total_chars}/{target_chars} chars "
+            f"{total_chars}/{validation_target_chars} chars "
             f"(~{spoken_est:.1f}s of {chunk_dur:.1f}s input, "
             f"target {float(st.get('coverage') or 90):.0f}%), "
             f"third-person scene indexes={bad_first_person}; "
@@ -6523,13 +6768,27 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     target_final_seconds, duration_low, duration_high = _final_duration_window(
         chunk_dur, st
     )
+
+    # Spoken-shape polish (breath points for runaway sentences) and a
+    # pre-TTS source cap.  Both run *before* any audio exists, so no
+    # finished speech is ever cut here; they just stop a fresh script
+    # from being predictable overshoot (user rule: the recap must
+    # never end up longer than the source video).
+    scenes = sort_scenes(_polish_scenes_for_speech(scenes))
+    scenes = _cap_scenes_to_source(
+        scenes, chunk_dur, st, minimum_chars=minimum_chars
+    )
+
     await tracker.update(f"🎙️ {st.get('voice', 'Charon')} AI မှ အသံသွင်းနေပါသည်...", force=True)
 
     # Character counts are only an estimate.  Measure the real TTS audio;
     # if it is not already at the requested final duration, use this job's
-    # measured chars/second to ask Gemini for precisely the missing amount
-    # Finished speech is never trimmed back to fit: a long narration is
-    # kept whole, only a short one is topped up (user rule).
+    # measured chars/second to ask Gemini for precisely the missing amount.
+    # Finished speech is never trimmed back to the 90% target: long
+    # narration inside the source's own length is kept whole.  The single
+    # exception is narration that runs past the source video itself --
+    # only that excess is shaved, at whole-sentence boundaries, and the
+    # changed scenes are re-synthesized (user rules).
     clips = []
     audio_seconds = 0.0
     duration_status = "unknown"
@@ -6564,11 +6823,16 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 f"from {chunk_dur:.1f}s input, status={duration_status}, "
                 f"measured_rate={measurements.get('measured_chars_per_second')} chars/s"
             )
-            if duration_status in ("on_target", "long"):
-                # Long narration is accepted as-is (user rule):
-                # cutting finished speech to hit the target is what
-                # made earlier outputs sound broken.  The learned
-                # rate sizes the next script correctly instead.
+            over_source = audio_seconds > float(chunk_dur or 0) + 0.25
+            if duration_status == "on_target" or (
+                duration_status == "long" and not over_source
+            ):
+                # Long-but-inside-the-source narration is accepted
+                # as-is (user rule): cutting finished speech to hit
+                # the 90% target is what made earlier outputs sound
+                # broken.  The learned rate sizes the next script
+                # correctly instead.  Only narration that runs past
+                # the source window itself gets shaved below.
                 break
             if calibration_round >= DURATION_CALIBRATION_ROUNDS:
                 break
@@ -6653,12 +6917,91 @@ JSON ကိုသာပြန်ပေးပါ:
                 scenes = sort_scenes(scenes)
                 if script_total_chars(scenes) <= current_chars:
                     break
+            elif over_source:
+                # The narration runs past the source window itself:
+                # shave *only the excess* at whole-sentence boundaries
+                # (target just under the window, never the 90% mark),
+                # then re-synthesize and re-measure next round.
+                shaved_scenes, shaved = _shave_scenes_to_seconds(
+                    scenes, measurements, float(chunk_dur or 0) * 0.98
+                )
+                if not shaved:
+                    logger.warning(
+                        "Chunk %s narration %.1fs exceeds its %.1fs source "
+                        "window but no sentence-boundary shave is possible; "
+                        "accepting as-is",
+                        chunk_index,
+                        audio_seconds,
+                        chunk_dur,
+                    )
+                    break
+                scenes = shaved_scenes
+                calibration_history[-1][
+                    "trimmed_to_chars"
+                ] = script_total_chars(scenes)
+                await tracker.update(
+                    f"✂️ အသံ ({fmt_time(audio_seconds)}) က မူရင်းအပိုင်း "
+                    f"({fmt_time(chunk_dur)}) ထက် ရှည်နေလို့ ကျော်နေတဲ့ "
+                    f"အပိုင်းလေးကိုပဲ ဝါကျအပြည့်နဲ့ ညှိနေပါသည်... "
+                    f"({calibration_round + 1}/{DURATION_CALIBRATION_ROUNDS})",
+                    force=True,
+                )
             else:
                 break
 
             clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
     finally:
         await _delete_gemini_file(client, video_file)
+
+    if (
+        duration_status in ("on_target", "long")
+        and audio_seconds > float(chunk_dur or 0) + 0.25
+        and scenes
+    ):
+        # Rounds exhausted, or the excess only showed on the final
+        # measurement: one deterministic sentence-boundary shave to
+        # just under the source window, then re-measure once.  The
+        # recap must never run longer than the original video (user
+        # rule); anything at/under the source length stays whole.
+        shaved_scenes, shaved = _shave_scenes_to_seconds(
+            scenes, measurements, float(chunk_dur or 0) * 0.98
+        )
+        if shaved:
+            scenes = shaved_scenes
+            calibration_history[-1][
+                "trimmed_to_chars"
+            ] = script_total_chars(scenes)
+            await tracker.update(
+                f"✂️ အသံ ({fmt_time(audio_seconds)}) က မူရင်းအပိုင်း "
+                f"({fmt_time(chunk_dur)}) ထက် ရှည်နေလို့ ကျော်နေတဲ့ "
+                "အပိုင်းလေးကိုပဲ ဝါကျအပြည့်နဲ့ ညှိနေပါသည်...",
+                force=True,
+            )
+            clips = await synthesize_tts(scenes, os.path.dirname(chunk_path), st)
+            if clips is None or len(clips) < len(scenes):
+                raise RuntimeError(
+                    "TTS မှ အသံဖိုင် အလုံအလောက် မရပါ (too few clips)"
+                    + _last_tts_error_suffix()
+                )
+            clips = list(clips)[:len(scenes)]
+            measurements = _narration_measurements(scenes, clips, st)
+            silent_after_shave = int(measurements.get("silent_count") or 0)
+            if silent_after_shave > max(1, int(len(clips) * 0.25)):
+                raise RuntimeError(
+                    _silent_scenes_error(silent_after_shave, len(clips))
+                )
+            audio_seconds = float(measurements.get("narration_seconds") or 0)
+            duration_status = _duration_status(audio_seconds, chunk_dur, st)
+            calibration_history.append({
+                "round": "final_shave",
+                **measurements,
+                "status": duration_status,
+            })
+            logger.info(
+                f"Chunk {chunk_index} final over-source shave: "
+                f"{audio_seconds:.1f}s of {chunk_dur:.1f}s window, "
+                f"status={duration_status}"
+            )
 
     if duration_status in ("on_target", "long"):
         _LAST_DURATION_CALIBRATION = {
@@ -7605,6 +7948,133 @@ async def _build_chunk_recap_with_retry(
             )
     raise RuntimeError(
         f"အပိုင်း {part_num} Recap ကို {attempts} ကြိမ် ကြိုးစားပြီးသော်လည်း မရပါ: "
+        f"{_safe_error_text(last_exc, 500)}"
+    )
+
+
+async def _generate_chunk_script_with_retry(
+    chunk_path: str,
+    actual_dur: float,
+    start: float,
+    end: float,
+    story_context: dict,
+    part_num: int,
+    tracker,
+    settings: dict,
+    *,
+    total_parts: int = 0,
+) -> dict:
+    """Script-first phase: write one window's script, bounded retries.
+
+    Same retry policy as the combined builder: transient failures
+    retry a few times, but a GeminiScriptError (every model/prompt
+    fallback already exhausted) surfaces immediately.
+    """
+    attempts = max(1, int(globals().get("AUTO_SEGMENT_ATTEMPTS", 3) or 3))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            if tracker is not None:
+                label = f"{part_num}/{total_parts}" if total_parts else str(part_num)
+                await tracker.update(
+                    f"♻️ အပိုင်း {label} Script ကို ပြန်ကြိုးစားနေပါသည်... "
+                    f"({attempt}/{attempts})",
+                    force=True,
+                )
+            await asyncio.sleep(min(30, 5 * attempt))
+        try:
+            script = await generate_chunk_script(
+                chunk_path,
+                actual_dur,
+                start,
+                end,
+                story_context,
+                part_num,
+                tracker,
+                settings,
+            )
+            if not script or not script.get("scenes"):
+                raise RuntimeError(f"အပိုင်း {part_num} Script မရပါ။")
+            return script
+        except asyncio.CancelledError:
+            raise
+        except GeminiScriptError:
+            raise
+        except Exception as exc:
+            if str(exc) == "cancelled":
+                raise
+            last_exc = exc
+            logger.warning(
+                "Auto segment %s script attempt %s/%s failed: %s",
+                part_num,
+                attempt,
+                attempts,
+                _safe_error_text(exc, 500),
+            )
+    raise RuntimeError(
+        f"အပိုင်း {part_num} Script ကို {attempts} ကြိမ် ကြိုးစားပြီးသော်လည်း မရပါ: "
+        f"{_safe_error_text(last_exc, 500)}"
+    )
+
+
+async def _render_chunk_script_with_retry(
+    chunk_path: str,
+    actual_dur: float,
+    start: float,
+    end: float,
+    script: dict,
+    part_num: int,
+    tracker,
+    settings: dict,
+    *,
+    total_parts: int = 0,
+) -> str:
+    """Voice/edit phase: render one window from its prepared script."""
+    attempts = max(1, int(globals().get("AUTO_SEGMENT_ATTEMPTS", 3) or 3))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            _cleanup_auto_segment_retry_artifacts(chunk_path)
+            if tracker is not None:
+                label = f"{part_num}/{total_parts}" if total_parts else str(part_num)
+                await tracker.update(
+                    f"♻️ အပိုင်း {label} အသံ/Edit ကို ပြန်ကြိုးစားနေပါသည်... "
+                    f"({attempt}/{attempts})",
+                    force=True,
+                )
+            await asyncio.sleep(min(30, 5 * attempt))
+        try:
+            async with video_render_semaphore:
+                recap_chunk, _updated_script = await render_chunk_recap_from_script(
+                    chunk_path,
+                    actual_dur,
+                    start,
+                    end,
+                    script,
+                    part_num,
+                    tracker,
+                    settings,
+                )
+            if not recap_chunk:
+                raise RuntimeError(f"အပိုင်း {part_num} Recap မရပါ။")
+            return recap_chunk
+        except asyncio.CancelledError:
+            raise
+        except GeminiScriptError:
+            raise
+        except Exception as exc:
+            if str(exc) == "cancelled":
+                raise
+            last_exc = exc
+            logger.warning(
+                "Auto segment %s render attempt %s/%s failed: %s",
+                part_num,
+                attempt,
+                attempts,
+                _safe_error_text(exc, 500),
+            )
+    raise RuntimeError(
+        f"အပိုင်း {part_num} အသံ/Edit ကို {attempts} ကြိမ် ကြိုးစားပြီးသော်လည်း မရပါ: "
         f"{_safe_error_text(last_exc, 500)}"
     )
 
@@ -9775,9 +10245,14 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     narration_now / source_seconds_initial, 4
                 ) if source_seconds_initial > 0 else 0.0,
             })
-            if narration_now >= final_low:
-                # On target *or long*: finished speech is kept whole
-                # (user rule -- never trim to fit); only short expands.
+            over_source = (
+                source_seconds_initial > 0
+                and narration_now > source_seconds_initial + 0.25
+            )
+            if narration_now >= final_low and not over_source:
+                # On target, or long but still inside the source:
+                # finished speech is kept whole (user rule); only
+                # short expands and only over-source is shaved.
                 break
             if calibration_round >= DURATION_CALIBRATION_ROUNDS:
                 break
@@ -9837,10 +10312,35 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     settings,
                 )
             else:
-                # Unreachable while the break above accepts every
-                # narration at/above the minimum, but kept explicit:
-                # long narration is never trimmed back (user rule).
-                break
+                # Narration runs past the source itself: shave only
+                # the excess at sentence boundaries (target just
+                # under the source, never down to the 90% mark) and
+                # re-synthesize just the changed groups.
+                await _worker_progress(
+                    state,
+                    "✂️ အသံက မူရင်းထက် ရှည်နေလို့ ကျော်နေတဲ့ အပိုင်းလေးကိုပဲ "
+                    f"ဝါကျအပြည့်နဲ့ ညှိနေပါသည်... ({calibration_round + 1}/{DURATION_CALIBRATION_ROUNDS})",
+                    tracker,
+                )
+                shaved_scenes, shaved = _shave_scenes_to_seconds(
+                    scenes,
+                    measurements,
+                    source_seconds_initial * 0.98,
+                    sort_result=False,
+                )
+                if not shaved:
+                    calibration_history[-1]["calibration_stalled"] = True
+                    break
+                scenes = shaved_scenes
+                calibration_history[-1][
+                    "trimmed_to_chars"
+                ] = script_total_chars(scenes)
+                # Full re-synthesis: the shave can drop a whole scene,
+                # which would shift index-aligned clips if only the
+                # changed groups were re-voiced.
+                clips = await synthesize_tts(
+                    scenes, str(state.get("job_dir") or ""), settings
+                )
 
         final_measurements = _narration_measurements(scenes, clips, settings)
         final_narration = float(final_measurements.get("narration_seconds") or 0)
@@ -9863,6 +10363,13 @@ async def _worker_stage_tts(state: dict, tracker=None):
                 f"duration: {_duration_status(final_narration, source_seconds_initial, settings)}; "
                 f"calibration_history={calibration_history}; refusing to render "
                 "a shortened recap"
+            )
+        if _duration_exceeds_source(final_narration, source_seconds_initial):
+            raise WorkerJobError(
+                "TTS narration exceeds the source duration: "
+                f"{final_narration:.1f}s from a {source_seconds_initial:.1f}s "
+                f"source; calibration_history={calibration_history}; refusing "
+                "to render a recap longer than the original"
             )
         _persist_worker_calibrated_script(
             state,
@@ -10363,6 +10870,13 @@ async def _worker_stage_deliver(state: dict, tracker=None):
                 "before delivery: "
                 f"{_duration_status(final_duration, delivery_source_seconds, settings)}; "
                 "refusing to upload a shortened recap"
+            )
+        if _duration_exceeds_source(final_duration, delivery_source_seconds):
+            raise WorkerJobError(
+                "Final video duration exceeds the original before "
+                f"delivery: {final_duration:.1f}s from a "
+                f"{delivery_source_seconds:.1f}s source; refusing to "
+                "upload a recap longer than the source video"
             )
     delivery_scenes = delivery_script.get("scenes") or []
     if delivery_scenes:
@@ -12748,7 +13262,7 @@ async def _run_manual_part_recap(
             else 0.0
         )
         updated_script = script
-        if existing_duration > 0 and _duration_meets_minimum(
+        if existing_duration > 0 and _duration_within_limits(
             existing_duration, actual_dur, settings
         ):
             rendered_path = output_path
@@ -12806,6 +13320,11 @@ async def _run_manual_part_recap(
             if not _duration_meets_minimum(rendered_duration, actual_dur, settings):
                 raise RuntimeError(
                     "Rendered part duration is below the minimum target: "
+                    f"{rendered_duration:.1f}s from {actual_dur:.1f}s source part"
+                )
+            if _duration_exceeds_source(rendered_duration, actual_dur):
+                raise RuntimeError(
+                    "Rendered part duration exceeds its source part: "
                     f"{rendered_duration:.1f}s from {actual_dur:.1f}s source part"
                 )
             _save_manual_script(state, part, updated_script)
@@ -13467,7 +13986,7 @@ async def _run_manual_join(
         if not (
             final_duration > 0
             and source_duration > 0
-            and _duration_meets_minimum(final_duration, source_duration, settings)
+            and _duration_within_limits(final_duration, source_duration, settings)
         ):
             await tracker.update(
                 f"🔗 Recap ပြီးတဲ့ {len(recap_paths)} ပိုင်းအားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်နေပါသည်...",
@@ -13490,6 +14009,12 @@ async def _run_manual_join(
                 "Final joined video duration is below the minimum target: "
                 f"{final_duration:.1f}s actual, target {target_final:.1f}s "
                 f"(minimum {final_low:.1f}s)"
+            )
+        if _duration_exceeds_source(final_duration, source_duration):
+            raise RuntimeError(
+                "Final joined video duration exceeds the original: "
+                f"{final_duration:.1f}s actual from a "
+                f"{source_duration:.1f}s source"
             )
         if session_id in CANCELLED_JOBS:
             raise asyncio.CancelledError()
@@ -14126,16 +14651,15 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
             pass
         await tracker.update(
             f"✅ ၂ မိနစ်ပိုင်း {total_parts} ခုရပါပြီ\n"
-            "🎬 တစ်ပိုင်းချင်း အစဉ်အတိုင်း Recap လုပ်ပြီး နောက်ဆုံးမှာ အားလုံးပြန်ဆက်ပါမယ်",
+            "📝 အရင် Script အကုန်ရေးမယ် → 🔍 စစ်ဆေးမယ် → 🎙️ အသံသွင်း → 🎬 Edit → 🔗 ပြန်ဆက်",
             force=True,
         )
 
-        chunks = []
-        for segment in source_segments:
-            if job_id in CANCELLED_JOBS:
-                raise Exception("cancelled")
-
-            part_num = int(segment.get("index") or (len(chunks) + 1))
+        # Resolve every window's file/timing up front so both phases
+        # below iterate identical, validated inputs.
+        segment_infos = []
+        for position, segment in enumerate(source_segments):
+            part_num = int(segment.get("index") or (position + 1))
             chunk_path = str(segment.get("path") or "")
             start = float(segment.get("start") or 0)
             segment_end = float(segment.get("end") or 0)
@@ -14146,39 +14670,53 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 raise RuntimeError(f"၂ မိနစ်ပိုင်း {part_num} ကြာချိန် မရပါ။")
             if segment_end <= start:
                 segment_end = start + actual_dur
+            segment_infos.append({
+                "part_num": part_num,
+                "path": chunk_path,
+                "start": start,
+                "end": segment_end,
+                "duration": actual_dur,
+            })
 
+        # Phase 1 -- write the *whole* script first (user's order):
+        # every window is scripted in story order, threading the
+        # running story context, before any audio exists.  Windows
+        # stay ~2 minutes because Gemini cannot ingest or emit a
+        # whole feature-length retelling in one call, but all
+        # scripting now finishes (and is checked as one script)
+        # before the first TTS call.
+        part_scripts = []
+        for info in segment_infos:
+            if job_id in CANCELLED_JOBS:
+                raise Exception("cancelled")
+            part_num = info["part_num"]
             logger.info(
-                "Source segment %s/%s: %s-%s (%ss)",
+                "Source segment %s/%s script: %s-%s (%ss)",
                 part_num,
                 total_parts,
-                fmt_time(start),
-                fmt_time(segment_end),
-                f"{actual_dur:.1f}",
+                fmt_time(info["start"]),
+                fmt_time(info["end"]),
+                f"{info['duration']:.1f}",
             )
             await tracker.update(
-                f"🎧 ၂ မိနစ်ပိုင်း {part_num}/{total_parts} "
-                f"({fmt_time(start)}–{fmt_time(segment_end)}) ကို Recap လုပ်နေပါသည်...\n"
-                f"📊 {fmt_progress_bar(int((start / total_dur) * 100) if total_dur else 0)}",
+                f"📝 Script ရေးနေပါသည် — အပိုင်း {part_num}/{total_parts} "
+                f"({fmt_time(info['start'])}–{fmt_time(info['end'])})\n"
+                f"📊 {fmt_progress_bar(int((info['start'] / total_dur) * 40) if total_dur else 0)}",
                 force=True,
             )
-
-            recap_chunk, new_summary = await _build_chunk_recap_with_retry(
-                chunk_path,
-                actual_dur,
-                start,
-                segment_end,
+            script = await _generate_chunk_script_with_retry(
+                info["path"],
+                info["duration"],
+                info["start"],
+                info["end"],
                 story_context,
                 part_num,
                 tracker,
                 job_settings,
                 total_parts=total_parts,
             )
-
-            if not recap_chunk:
-                raise RuntimeError(f"အပိုင်း {part_num} Recap မရပါ။")
-
-            chunks.append(recap_chunk)
-            story_context = new_summary
+            part_scripts.append(script)
+            story_context = script.get("story_context_after") or story_context
             logger.info(
                 f"Story context: protagonist='{story_context.get('protagonist', '')}', "
                 f"pronoun='{story_context.get('pronoun', '')}', "
@@ -14186,9 +14724,56 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 f"{len(story_context.get('summary', ''))} summary"
             )
 
-            if os.path.exists(chunk_path):
+        # Whole-script check before voicing: drop sentences that an
+        # earlier part already narrated (boundary re-tellings and
+        # top-up echoes), so nothing is heard twice in the final.
+        dedupe_stats = _dedupe_scripts_in_order(part_scripts)
+        logger.info(
+            "Script-first phase done for job %s: %s parts, dedupe=%s",
+            job_id,
+            len(part_scripts),
+            dedupe_stats,
+        )
+        dedupe_note = (
+            f" (ထပ်နေတဲ့ ဝါကျ {dedupe_stats['removed_sentences']} ကြောင်း ဖယ်ပြီး)"
+            if dedupe_stats.get("removed_sentences")
+            else ""
+        )
+        await tracker.update(
+            f"🔍 Script အကုန် စစ်ပြီးပါပြီ{dedupe_note}\n"
+            "🎙️ အသံသွင်းပြီး Edit စလုပ်ပါတော့မယ်",
+            force=True,
+        )
+
+        # Phase 2 -- voice + edit each window from its finished,
+        # checked script (measured durations are verified per
+        # window inside the render; see build_chunk_recap).
+        chunks = []
+        for info, script in zip(segment_infos, part_scripts):
+            if job_id in CANCELLED_JOBS:
+                raise Exception("cancelled")
+            part_num = info["part_num"]
+            await tracker.update(
+                f"🎙️ အသံသွင်း + Edit — အပိုင်း {part_num}/{total_parts} "
+                f"({fmt_time(info['start'])}–{fmt_time(info['end'])})\n"
+                f"📊 {fmt_progress_bar(40 + int(((part_num - 1) / max(1, total_parts)) * 55))}",
+                force=True,
+            )
+            recap_chunk = await _render_chunk_script_with_retry(
+                info["path"],
+                info["duration"],
+                info["start"],
+                info["end"],
+                script,
+                part_num,
+                tracker,
+                job_settings,
+                total_parts=total_parts,
+            )
+            chunks.append(recap_chunk)
+            if os.path.exists(info["path"]):
                 try:
-                    os.remove(chunk_path)
+                    os.remove(info["path"])
                 except Exception:
                     pass
 
@@ -14224,6 +14809,12 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 f"{final_dur:.1f}s actual, target {target_final_dur:.1f}s "
                 f"(minimum {final_low:.1f}s from "
                 f"{total_dur:.1f}s source)"
+            )
+        if _duration_exceeds_source(final_dur, total_dur):
+            raise RuntimeError(
+                "Final video duration exceeds the original: "
+                f"{final_dur:.1f}s actual from a {total_dur:.1f}s source; "
+                "refusing to deliver a recap longer than the source video"
             )
         await tracker.update(
             f"📤 ဗီဒီယို ပို့ပေးနေပါသည်... ({fmt_time(final_dur)})\n"
@@ -14682,6 +15273,9 @@ async def lifespan(_app: FastAPI):
             )
     except Exception as e:
         logger.warning("job recovery failed: %s", e)
+    _spawn_background(
+        _announce_update_to_owner_chats(), name="update-announce"
+    )
     setup_task = _spawn_background(_setup_bot(), name="telegram-setup")
     keepalive_task = _spawn_background(
         _keep_awake_while_working(), name="keepalive"
@@ -14701,7 +15295,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.21-turbo-thiha-no-trim"
+BUILD_VERSION = "v5.22-script-first-no-overshoot"
 BUILD_FEATURES = 20
 
 
@@ -14786,7 +15380,7 @@ async def root():
         "script_length_rate": learned_script_rate_state(),
         "script_trim_policy": "sentence_then_word_tail_boundaries",
         "duration_calibration": (
-            "expand_only_when_short_long_kept_whole"
+            "script_first_dedupe_expand_short_shave_over_source"
         ),
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -14799,7 +15393,7 @@ async def root():
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
             if MANUAL_PARTS_ENABLED
-            else "download_split_120s_recap_each_concat_send"
+            else "download_split_120s_script_all_dedupe_then_voice_edit_concat_send"
         ),
         "input_types": ["telegram_video", "telegram_document_video", "video_link"],
         "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_rednote_and_telegram_fallbacks",
@@ -14909,7 +15503,7 @@ async def health():
         "script_length_rate": learned_script_rate_state(),
         "script_trim_policy": "sentence_then_word_tail_boundaries",
         "duration_calibration": (
-            "expand_only_when_short_long_kept_whole"
+            "script_first_dedupe_expand_short_shave_over_source"
         ),
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -14920,7 +15514,7 @@ async def health():
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
             if MANUAL_PARTS_ENABLED
-            else "download_split_120s_recap_each_concat_send"
+            else "download_split_120s_script_all_dedupe_then_voice_edit_concat_send"
         ),
         "input_types": ["telegram_video", "telegram_document_video", "video_link"],
         "source_download_diagnostics": "redacted_yt_dlp_stderr_with_direct_rednote_and_telegram_fallbacks",
@@ -15394,6 +15988,93 @@ async def _setup_bot():
     )
 
 
+def _update_notice_text(version: str) -> str:
+    return (
+        f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
+        "ဒီတစ်ခါ ပြင်ထားတာတွေ —\n"
+        "• Final ဗီဒီယိုက မူရင်းထက် <b>မရှည်တော့ပါ</b>\n"
+        "• အလုပ်စဉ်: Script အကုန် <b>အရင်ရေး</b> → ထပ်တာတွေ စစ်ဖယ် → "
+        "အသံသွင်း → Edit (error စစ်) → Final ခွဲပို့\n"
+        "• အသံ: Thiha တစ်မျိုးတည်း၊ Turbo ဖွင့်ထားပြီး၊ သဘာဝကျတဲ့ အပြောဟန်\n"
+        "• Script: ထပ်နေတဲ့ ဝါကျတွေ မပါအောင် စစ်ထား\n\n"
+        "🎬 ဗီဒီယို ဒါမှမဟုတ် link ပို့ပြီး စမ်းကြည့်ပါ။"
+    )
+
+
+async def _maybe_send_update_notice(chat_id) -> None:
+    """Tell a chat, once per bot version, that the bot was updated.
+
+    The per-chat seen-version lives in the persisted users store, so
+    the notice fires at most once per version per chat (a failed
+    send is *not* marked seen and is retried on the next contact).
+    """
+    try:
+        cid_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    version = str(globals().get("BUILD_VERSION") or "")
+    if not version:
+        return
+    cid = str(cid_int)
+    record = _PERSISTED_USERS.get(cid)
+    if isinstance(record, dict) and record.get("_seen_version") == version:
+        return
+    try:
+        message_id = await send_text(cid_int, _update_notice_text(version))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(
+            "update notice to %s failed: %s", cid, _safe_error_text(e, 200)
+        )
+        return
+    if not message_id:
+        return
+    try:
+        _PERSISTED_USERS.setdefault(cid, {})["_seen_version"] = version
+        _save_persisted()
+    except Exception:
+        pass
+    logger.info("Sent %s update notice to chat %s", version, cid)
+
+
+async def _announce_update_to_owner_chats() -> None:
+    """Proactively DM the owner after a deploy (``OWNER_CHAT_ID`` env).
+
+    Render's disk is wiped on deploy, so the bot cannot remember
+    who to tell unless the owner's chat id is configured once in
+    the environment; ``/start`` now shows the chat id to copy.
+    Without it, the same notice still reaches every chat on its
+    first message after the update (see the update hook below).
+    """
+    await asyncio.sleep(5)
+    raw = str(os.environ.get("OWNER_CHAT_ID", "") or "")
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if part:
+            await _maybe_send_update_notice(part)
+
+
+def _update_notice_chat_id(update: dict):
+    """Best-effort chat id of an incoming Telegram update (or None)."""
+    try:
+        update = update or {}
+        for key in ("message", "edited_message"):
+            chat = ((update.get(key) or {}).get("chat") or {}).get("id")
+            if chat:
+                return chat
+        callback = update.get("callback_query") or {}
+        chat = ((callback.get("message") or {}).get("chat") or {}).get("id")
+        if chat:
+            return chat
+        sender = (callback.get("from") or {}).get("id")
+        if sender:
+            return sender
+        return ((update.get("message") or {}).get("from") or {}).get("id")
+    except Exception:
+        return None
+
+
 async def _process_admin_update_guarded(update: dict) -> None:
     """Run one Telegram update; never let an error look like a dead bot.
 
@@ -15402,6 +16083,15 @@ async def _process_admin_update_guarded(update: dict) -> None:
     Now the callback spinner is answered and the user gets an explicit,
     retryable message (the underlying job/session state stays intact).
     """
+    try:
+        notice_chat_id = _update_notice_chat_id(update)
+        if notice_chat_id:
+            _spawn_background(
+                _maybe_send_update_notice(notice_chat_id),
+                name="update-notice",
+            )
+    except Exception:
+        pass
     try:
         await process_admin_update(update)
     except asyncio.CancelledError:
