@@ -2225,13 +2225,15 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan[2]["repeat_count"], 1)
         self.assertEqual(len(plan[2]["render_passes"]), 1)
 
-        # Beyond one stretched pass, the same five seconds may be
-        # replayed once (two total, never three); only the shortage
-        # beyond two capped passes freezes.
+        # A pathological late first timestamp is moved only far
+        # enough to leave two natural-speed moving passes for the
+        # 30s narration.  The old plan trusted start=45, stretched
+        # the last five seconds twice, and still froze for 12.5s.
         extreme = bot._build_alignment_plan(
             [{"start": 45, "end": 46}], [30.0], 50, pause_seconds=0.0
         )
-        self.assertEqual(extreme[0]["input_seconds"], 5.0)
+        self.assertEqual(extreme[0]["source_start"], 35.0)
+        self.assertEqual(extreme[0]["input_seconds"], 15.0)
         self.assertEqual(extreme[0]["repeat_count"], 2)
         self.assertEqual(len(extreme[0]["render_passes"]), 2)
         self.assertTrue(
@@ -2240,18 +2242,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 for render_pass in extreme[0]["render_passes"]
             )
         )
-        self.assertAlmostEqual(
-            extreme[0]["stretch_factor"], bot.ALIGNMENT_MAX_STRETCH, places=6
-        )
-        self.assertAlmostEqual(
-            extreme[0]["freeze_seconds"],
-            30.0 - 2 * 5.0 * bot.ALIGNMENT_MAX_STRETCH,
-            places=6,
-        )
+        self.assertAlmostEqual(extreme[0]["stretch_factor"], 1.0, places=6)
+        self.assertEqual(extreme[0]["freeze_seconds"], 0.0)
         self.assertEqual(extreme[0]["render_passes"][0]["freeze_seconds"], 0.0)
-        self.assertAlmostEqual(
-            extreme[0]["render_passes"][1]["freeze_seconds"], 12.5, places=6
-        )
+        self.assertEqual(extreme[0]["render_passes"][1]["freeze_seconds"], 0.0)
         self.assertAlmostEqual(
             sum(
                 render_pass["desired_output_seconds"]
@@ -2301,8 +2295,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # on two tiny early scenes (0-8, 8-16) and the rest on one
         # huge scene. Trusting those timestamps would stretch/freeze
         # ~17s; proportional boundaries (drift 4.8s on a 120s source)
-        # move the boundaries to 12.8 / 20.8 so footage need roughly
-        # matches narration need.
+        # move them to 12.8 / 21.0 -- the final 0.2s is the
+        # minimum-span repair giving scene 2 exactly half its
+        # narration length, so two natural-speed passes cover it.
         scenes = [
             {"start": 0, "end": 8},
             {"start": 8, "end": 16},
@@ -2312,18 +2307,18 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             scenes, [16.0, 16.0, 76.0], 120.0, pause_seconds=0.4
         )
         self.assertAlmostEqual(plan[1]["source_start"], 12.8, places=6)
-        self.assertAlmostEqual(plan[2]["source_start"], 20.8, places=6)
+        self.assertAlmostEqual(plan[2]["source_start"], 21.0, places=6)
         # Scene 1: 16.4s wanted over 12.8s footage -> mild stretch,
         # no freeze at all.
         self.assertAlmostEqual(
             plan[0]["stretch_factor"], 16.4 / 12.8, places=4
         )
         self.assertEqual(plan[0]["freeze_seconds"], 0.0)
-        # Scene 2 still has only 8s of footage for 16.4s. Showing it
-        # twice at near-natural speed is better than one 1.75x
-        # slow-motion crawl plus a 2.4s freeze.
+        # Scene 2 gets 8.2s of footage for 16.4s after repair:
+        # exactly two natural-speed passes, no slow-motion crawl
+        # and no freeze.
         self.assertEqual(plan[1]["repeat_count"], 2)
-        self.assertAlmostEqual(plan[1]["stretch_factor"], 1.025, places=6)
+        self.assertAlmostEqual(plan[1]["stretch_factor"], 1.0, places=6)
         self.assertEqual(plan[1]["freeze_seconds"], 0.0)
         self.assertTrue(
             all(
@@ -2335,6 +2330,62 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan[2]["stretch_factor"], 1.0)
         total_freeze = sum(item["freeze_seconds"] for item in plan)
         self.assertEqual(total_freeze, 0.0)
+
+    def test_alignment_repairs_clustered_anchors_without_any_freeze(self):
+        # Regression for the remaining production freeze: anchor-
+        # first boundaries trusted badly clustered model starts
+        # and left a long narration with only a few seconds of
+        # unique footage.  Two capped passes could not cover it,
+        # so the remainder was a literal frozen frame.  Starts
+        # must move enough to reserve half the narration length as
+        # unique footage (two natural-speed passes at most).
+        clustered = bot._build_alignment_plan(
+            [
+                {"start": 0, "end": 3},
+                {"start": 3, "end": 12},
+                {"start": 12, "end": 30},
+            ],
+            [25.0, 1.0, 1.0],
+            30.0,
+            pause_seconds=0.0,
+        )
+        self.assertAlmostEqual(clustered[1]["source_start"], 12.5, places=6)
+        self.assertAlmostEqual(clustered[2]["source_start"], 13.0, places=6)
+        self.assertEqual(clustered[0]["repeat_count"], 2)
+        self.assertAlmostEqual(clustered[0]["stretch_factor"], 1.0, places=6)
+        self.assertTrue(all(item["freeze_seconds"] == 0.0 for item in clustered))
+        self.assertTrue(all(item["repeat_count"] <= 2 for item in clustered))
+
+        tiny_final = bot._build_alignment_plan(
+            [
+                {"start": 0, "end": 40},
+                {"start": 49.9, "end": 50},
+            ],
+            [5.0, 20.0],
+            50.0,
+            pause_seconds=0.0,
+        )
+        self.assertAlmostEqual(tiny_final[1]["source_start"], 40.0, places=6)
+        self.assertTrue(all(item["freeze_seconds"] == 0.0 for item in tiny_final))
+
+        # Replay distribution: show the whole ten seconds once,
+        # then only the six-second remainder again.  An even 8+8
+        # split would never show the scene's final two seconds.
+        replay_tail = bot._build_alignment_plan(
+            [{"start": 0, "end": 10}], [16.0], 10.0, pause_seconds=0.0
+        )
+        self.assertEqual(
+            [
+                (
+                    render_pass["input_seconds"],
+                    render_pass["stretch_factor"],
+                    render_pass["desired_output_seconds"],
+                )
+                for render_pass in replay_tail[0]["render_passes"]
+            ],
+            [(10.0, 1.0, 10.0), (6.0, 1.0, 6.0)],
+        )
+        self.assertEqual(replay_tail[0]["freeze_seconds"], 0.0)
 
     def test_story_context_merge_keeps_cards_beats_and_threads(self):
         first = {
@@ -3819,7 +3870,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["edit_sync"],
-                "proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation",
+                "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
             )
             self.assertEqual(
                 health.json()["story_continuity"],
@@ -5747,7 +5798,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(video_seconds, 105.0)
         alignment = (bot._LAST_DURATION_CALIBRATION or {}).get("alignment") or {}
         self.assertLessEqual(alignment.get("max_stretch", 99), 1.75)
-        self.assertLess(alignment.get("freeze_seconds_total", 99), 3.0)
+        self.assertEqual(alignment.get("freeze_seconds_total"), 0.0)
         self.assertGreaterEqual(alignment.get("repeated_scenes", 0), 1)
         self.assertLessEqual(alignment.get("max_repeat_count", 99), 2)
 

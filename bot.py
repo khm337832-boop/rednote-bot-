@@ -11806,6 +11806,122 @@ def _detect_shot_cuts(video_path: str, duration: float = 0.0) -> list:
     return list(cuts)
 
 
+def _repair_alignment_starts(starts: list, desired_list: list, source_duration: float) -> list:
+    """Move preferred starts only enough that no scene needs a freeze.
+
+    The proportional/anchor pass chooses starts that best match the
+    model's scene timestamps.  Those timestamps are estimates: when
+    they cluster too tightly around a long narration clip, the
+    scene can be left with so little footage that even two capped
+    replay passes cannot cover the speech and the old plan filled
+    the remainder with a frozen final frame.  This repair keeps the
+    preferred starts whenever possible, but enforces a minimum
+    unique-footage span for every scene:
+
+    - preferred: ``desired / ALIGNMENT_MAX_REPEATS`` -- at most two
+      moving passes at natural speed (ratio <= 2), never a freeze;
+    - hard floor: ``desired / (repeats * max stretch)`` -- still no
+      freeze, only slower motion, used only if the preferred spans
+      cannot fit the source span at all.
+    """
+    count = len(starts or [])
+    if count <= 1:
+        return list(starts or [])
+
+    source = max(0.0, float(source_duration or 0))
+    if source <= 0:
+        return list(starts)
+
+    def _safe_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    first_start = min(max(0.0, _safe_float(starts[0], 0.0)), source)
+    total_span = max(0.0, source - first_start)
+    if total_span <= 0:
+        return list(starts)
+
+    desired = []
+    for index in range(count):
+        raw = desired_list[index] if index < len(desired_list or []) else 0.0
+        desired.append(max(0.0, _safe_float(raw, 0.0)))
+
+    preferred_spans = [
+        max(0.25, value / float(ALIGNMENT_MAX_REPEATS)) for value in desired
+    ]
+    hard_spans = [
+        max(
+            0.04,
+            value
+            / (float(ALIGNMENT_MAX_REPEATS) * float(ALIGNMENT_MAX_STRETCH)),
+        )
+        for value in desired
+    ]
+    if sum(preferred_spans) <= total_span:
+        min_spans = preferred_spans
+    elif sum(hard_spans) <= total_span:
+        min_spans = hard_spans
+    else:
+        scale = total_span / max(1e-9, sum(hard_spans))
+        min_spans = [value * scale for value in hard_spans]
+
+    lower_bounds = []
+    upper_bounds = []
+    prefix = 0.0
+    for index in range(count):
+        lower_bounds.append(first_start + prefix)
+        prefix += min_spans[index]
+    suffix = 0.0
+    for index in range(count - 1, -1, -1):
+        suffix += min_spans[index]
+        upper_bounds.append(source - suffix)
+    upper_bounds.reverse()
+    lower_bounds[0] = first_start
+    upper_bounds[0] = first_start
+
+    repaired = [first_start]
+    for index in range(1, count):
+        candidate = _safe_float(starts[index], lower_bounds[index])
+        repaired.append(
+            min(max(candidate, lower_bounds[index]), upper_bounds[index])
+        )
+
+    def _spans_satisfied(values) -> bool:
+        for index in range(count):
+            next_start = values[index + 1] if index + 1 < count else source
+            if next_start - values[index] < min_spans[index] - 1e-6:
+                return False
+        return True
+
+    # Project the preferred starts onto the chain constraints.  The
+    # forward pass pushes a start right when the previous scene is
+    # starved; the backward pass pulls it left when a later scene is
+    # starved.  Preferred starts that already satisfy every minimum
+    # span are returned unchanged.
+    for _ in range(max(2, count)):
+        for index in range(1, count):
+            min_allowed = max(
+                lower_bounds[index], repaired[index - 1] + min_spans[index - 1]
+            )
+            repaired[index] = min(
+                max(repaired[index], min_allowed), upper_bounds[index]
+            )
+        for index in range(count - 1, 0, -1):
+            next_start = repaired[index + 1] if index + 1 < count else source
+            max_allowed = min(
+                upper_bounds[index], next_start - min_spans[index]
+            )
+            repaired[index] = max(
+                min(repaired[index], max_allowed), lower_bounds[index]
+            )
+        if _spans_satisfied(repaired):
+            break
+
+    return repaired
+
+
 def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: float, pause_seconds: float = 0.0, cut_times: list = None) -> list:
     """Build start-aligned video cuts without changing narration speed.
 
@@ -11827,8 +11943,10 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
       never a third (user rule).  Each pass stays within the
       stretch cap, so replayed footage moves at a believable
       speed instead of crawling.
-    - A frozen final frame covers only any shortage beyond two
-      capped passes.
+    - Preferred starts are repaired before planning passes so a
+      scene is never left with less unique footage than two
+      moving passes need; a frozen final frame remains only for
+      pathological totals beyond even that hard capacity.
     """
     if len(scenes) != len(audio_durations):
         raise WorkerJobError("scene/audio count mismatch while building render plan")
@@ -11887,6 +12005,18 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
     total_desired = sum(desired_list)
     first_start = _snap_start(anchors[0]) if anchors else 0.0
     first_start = max(0.0, min(first_start, max_start))
+    if total_desired > 0:
+        # A pathological late first timestamp can leave less source
+        # span than two natural-speed passes need for the whole
+        # narration.  Move only that first start earlier, and only
+        # as far as needed; ordinary first scenes start at/near 0
+        # and are unchanged.
+        preferred_total_span = total_desired / float(ALIGNMENT_MAX_REPEATS)
+        latest_first_start = max(
+            0.0,
+            source_duration - min(source_duration, preferred_total_span),
+        )
+        first_start = min(first_start, latest_first_start)
     proportional_scale = (
         (source_duration - first_start) / total_desired
         if total_desired > 0
@@ -11909,6 +12039,14 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
             boundary = latest
         starts.append(max(0.0, min(boundary, max_start)))
         proportional_cursor = starts[-1]
+
+    # Anchor-first boundaries can still starve an individual scene
+    # when model timestamps cluster badly against the measured
+    # narration distribution.  Repair only those starts: every
+    # scene must keep enough unique footage for its speech to be
+    # covered by moving passes, instead of falling through to a
+    # frozen final frame below.
+    starts = _repair_alignment_starts(starts, desired_list, source_duration)
 
     plan = []
     output_cursor = 0.0
@@ -11974,30 +12112,45 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
             )
             per_pass_target = desired_seconds / pass_count
             moving_outputs = []
-            for _pass_offset in range(pass_count):
-                if per_pass_target <= available_seconds:
-                    # This pass only needs the first part of the
-                    # scene, replayed from its start at natural
-                    # speed -- no slowdown at all.
-                    pass_input = per_pass_target
-                    pass_stretch = 1.0
-                else:
-                    pass_input = available_seconds
-                    pass_stretch = min(
-                        per_pass_target / available_seconds,
-                        ALIGNMENT_MAX_STRETCH,
+            if pass_count == 2 and per_pass_target <= available_seconds:
+                # Show the whole scene once at natural speed, then
+                # replay only the head needed for the remainder.
+                # Splitting evenly here would show the first part
+                # twice and never show the scene's tail at all --
+                # exactly the "narration mentions an action the
+                # picture never reaches" mismatch.
+                remainder_seconds = desired_seconds - available_seconds
+                moving_outputs = [
+                    (available_seconds, 1.0, available_seconds),
+                    (remainder_seconds, 1.0, remainder_seconds),
+                ]
+            else:
+                for _pass_offset in range(pass_count):
+                    if per_pass_target <= available_seconds:
+                        pass_input = per_pass_target
+                        pass_stretch = 1.0
+                    else:
+                        pass_input = available_seconds
+                        pass_stretch = min(
+                            per_pass_target / available_seconds,
+                            ALIGNMENT_MAX_STRETCH,
+                        )
+                    moving_outputs.append(
+                        (pass_input, pass_stretch, per_pass_target)
                     )
-                moving_outputs.append((pass_input, pass_stretch))
             total_moving = sum(
                 pass_input * pass_stretch
-                for pass_input, pass_stretch in moving_outputs
+                for pass_input, pass_stretch, _pass_target in moving_outputs
             )
             freeze_seconds = max(0.0, desired_seconds - total_moving)
             stretch_factor = max(
-                (pass_stretch for _pass_input, pass_stretch in moving_outputs),
+                (
+                    pass_stretch
+                    for _pass_input, pass_stretch, _pass_target in moving_outputs
+                ),
                 default=1.0,
             )
-            for pass_offset, (pass_input, pass_stretch) in enumerate(
+            for pass_offset, (pass_input, pass_stretch, pass_target) in enumerate(
                 moving_outputs
             ):
                 is_last_pass = pass_offset == len(moving_outputs) - 1
@@ -12008,7 +12161,7 @@ def _build_alignment_plan(scenes: list, audio_durations: list, source_duration: 
                     "input_seconds": round(pass_input, 6),
                     "stretch_factor": round(float(pass_stretch), 6),
                     "freeze_seconds": round(pass_freeze, 6),
-                    "target_output_seconds": round(per_pass_target, 6),
+                    "target_output_seconds": round(pass_target, 6),
                     "desired_output_seconds": round(
                         pass_input * pass_stretch + pass_freeze,
                         6,
@@ -16888,7 +17041,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.26-story-clarity-replay2"
+BUILD_VERSION = "v5.27-freeze-span-repair"
 BUILD_FEATURES = 20
 
 
@@ -16968,7 +17121,7 @@ async def root():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
-        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation",
+        "edit_sync": "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
@@ -17088,7 +17241,7 @@ async def health():
         "duration_calibration": (
             "script_first_dedupe_expand_short_shave_over_source"
         ),
-        "edit_sync": "proportional_boundaries_cut_snapped_input_side_t_replay_max2_no_truncation",
+        "edit_sync": "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
@@ -17601,13 +17754,12 @@ async def _setup_bot():
 def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
-        "ဒီတစ်ခါ ပြင်ထားတာတွေ —\n"
-        "• <b>ဇာတ်လမ်းကို အသံကနေ ပိုနားလည်လွယ်အောင်</b> — ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ ဆိုတာ အစဉ်လိုက်ရှင်းရှင်းရေးပါမယ်\n"
-        "• <b>Story bible အသစ်</b> — ဇာတ်ကောင်တွေရဲ့ အမည်/ဆက်နွယ်ပုံ၊ ဖြစ်ရပ်အစဉ်၊ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို အပိုင်းတိုင်း ဆက်မှတ်ထားပြီး ဇာတ်လမ်း မပြတ်တော့အောင် လုပ်ထားပါတယ်\n"
-        "• ဇာတ်လမ်း ဆက်စပ်မှု အားနည်းရင် <b>Story editor</b> နဲ့ ထပ်စစ်ပြီးမှ အသံသွင်းပါတယ်\n"
-        "• <b>အသံနဲ့ မြင်ကွင်း ပိုကိုက်ပြီး freeze လျော့အောင်</b> — လိုအပ်ရင်သာ အဲဒီ scene ကိုပဲ အများဆုံး <b>၂ ကြိမ်</b> ပြန်ပြပြီး ပုံဆက်လှုပ်နေအောင် လုပ်ထားပါတယ် (၃ ကြိမ် မပြပါ)\n"
+        "ဒီတစ်ခါ <b>freeze အပိုင်းကို သီးသန့်ထပ်ပြင်ထားပါတယ်</b> —\n"
+        "• Scene တစ်ခုရဲ့ footage က အသံထက် တိုနေရင် boundary ကို အလိုအလျောက် ပြန်ညှိပေးပြီး <b>ပုံဆက်လှုပ်နေ</b>ပါမယ်\n"
+        "• တကယ်လိုအပ်မှသာ အဲဒီ scene ကို အများဆုံး <b>၂ ကြိမ်</b>ပဲ ပြပါတယ် (၃ ကြိမ် မပြပါ)\n"
+        "• အသံပြောနေချိန်မှာ နောက်ဆုံး frame တစ်ပုံတည်း ရပ်နေတဲ့ frozen tail မဖြစ်အောင် Render မတိုင်ခင် ကြိုကာကွယ်ထားပါတယ်\n"
         "• Final က မူရင်းထက် <b>မရှည်ပါ</b> · Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
-        "🎬 ဗီဒီယို ဒါမှမဟုတ် link ပို့ပြီး စမ်းကြည့်ပါ။"
+        "🎬 ဗီဒီယို ဒါမှမဟုတ် link အသစ်ပို့ပြီး စမ်းကြည့်ပါ။"
     )
 
 
