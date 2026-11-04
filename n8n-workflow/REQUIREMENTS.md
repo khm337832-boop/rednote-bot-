@@ -25,9 +25,9 @@
    - Link ကရတဲ့ video ကို transcript တစ်ဦး/တစ်ခုခုက အရင်လုပ်ပေးမယ်။
    - ⚠️ timestamps (start/end စက္ကန့်) ပါတဲ့ transcript လိုပါမယ် — နောက်ဆုံး video ဖြတ်တဲ့နေရာ သုံးရမှာမို့။
 
-2. **Transcript ကို Gemini ပို့မယ် → First-person အပြည့်အဝ ပြန်ပြောအောင် ပြင်ရေးမယ်**
-   - Gemini က transcript ကို အဓိကဇာတ်ကောင် ကိုယ်တိုင် သူ့အကြောင်း ပြန်ပြောနေသလို (ပထမလူ / ကျွန်တော်-ကျွန်မ) ပြန်ရေးမယ်။
-   - Scene တိုင်း၏ Burmese စာသားထဲတွင် ရွေးထားသော နာမ်စား တစ်မျိုးတည်း အမှန်တကယ်ပါဝင်ရမည်ဖြစ်ပြီး JSON metadata မှန်ရုံနှင့် မလုံလောက်ပါ။ Third-person scene များကို ပြန်ပြင်ရမည်။
+2. **Transcript ကို Gemini ပို့မယ် → Third-person Cast Lock အပြည့်အဝ ပြန်ပြောအောင် ပြင်ရေးမယ်**
+   - Gemini က transcript ကို ဇာတ်လမ်းအပြင်က တတိယလူ movie-recap narrator အဖြစ် ပြန်ရေးမယ်။ Quotation marks ပြင်ပတွင် narrator အဖြစ် `ကျွန်တော်`/`ကျွန်မ` မသုံးရ။
+   - လူတိုင်းအတွက် subtitle/on-screen အမည်ကို ဦးစားပေးထားတဲ့ `spoken_name` တစ်မျိုးတည်း၊ အမည်မသေချာလျှင် stable descriptive label တစ်မျိုးတည်းကို Cast Lock လုပ်ရမည်။ JSON metadata မှန်ရုံနှင့် မလုံလောက်ဘဲ scene တိုင်းကို quote-aware စစ်ပြီး မရှင်းလျှင် ပြန်ပြင်ရမည်။
    - မူရင်း အကြောင်းအရာကို အကျဉ်းချုံးမပစ်ဘဲ အစဉ်လိုက်အပြည့်အဝ ပြန်ပြောရမည်။
    - တိုင်းတာပုံကို အောက်ပိုင်း "အတည်ပြုပြီးသား ဆုံးဖြတ်ချက်များ" တွင် အတိအကျ သတ်မှတ်ပြီးဖြစ်ပါသည်။ Link/video တိုင်းအတွက် final duration အနည်းဆုံး 90% ဖြစ်ပြီး မပြည့်သေးသော group များကို Gemini top-up လုပ်ရမည်။
 
@@ -49,7 +49,7 @@
 [Trigger: Telegram/Webhook – link လက်ခံ] → [စပြီ လို့ ပြန်ပြော]
 → [yt-dlp download (Execute Command)] → [ffprobe: duration/size]
 → [ffmpeg: audio ထုတ်] → [Transcript (timestamps ပါ)]
-→ [Code: 90% ပစ်မှတ်တွက်] → [Gemini: first-person ပြန်ရေး (segment JSON)]
+→ [Code: 90% ပစ်မှတ်တွက်] → [Gemini: third-person Cast Lock ပြန်ရေး (segment JSON)]
 → [Code+IF: 90% ပြည့်/မပြည့် စစ် → မပြည့် Gemini top-up loop]
 → [TTS: ရွေးထားတဲ့အသံ – segment လိုက်အသံထုတ်]
 → [ffmpeg: မူရင်း video ကို segment လိုက်ဖြတ် (အသံကို မထိ) → ဆက် → အသံထည့် mux]
@@ -86,9 +86,9 @@
 
 - [x] **Link လက်ခံခြင်းနှင့် final video ပြန်ပို့ခြင်း** — လက်ရှိ Telegram bot ကိုပဲ သုံးပါမည်။ Bot က menu/settings/status/cancel တွေကို ဆက်ကိုင်တွယ်ပြီး n8n Webhook ကို job လွှဲပေးပါမည်။ Telegram webhook နှစ်ခု တပြိုင်နက် အပြိုင်မဖြစ်စေရန် n8n Telegram Trigger မသုံးပါ။
 - [x] **Transcript** — Whisper (OpenAI-compatible API) ကို timestamp ပါဝင်သော segment များနှင့် သုံးပါမည်။ အသံကို အပိုင်းခွဲပို့နိုင်ရန်လည်း စီစဉ်ထားပါမည်။
-- [x] **Voiceover** — လက်ရှိ Gemini TTS နှင့် Telegram Settings ထဲက ရွေးထားသည့် အသံကိုပဲ သုံးပါမည်။
+- [x] **Voiceover** — Edge `my-MM-ThihaNeural` ကို အဓိကသုံးပြီး လိုမှသာ Telegram Settings ထဲက Gemini အသံ (Charon default) သို့ fallback လုပ်ပါမည်။
 - [x] **Heavy work လုပ်သည့်နေရာ** — yt-dlp/ffmpeg ပါပြီးသား လက်ရှိ Render bot server ကိုပဲ worker အဖြစ် သုံးပြီး n8n က stage အဆင့်ဆင့်ကို လမ်းညွှန်ခေါ်ဆိုပါမည်။
-- [x] **Script ဘာသာစကား** — V1 တွင် transcript ကို Burmese ပထမလူ script အဖြစ်ပဲ ပြန်ရေးပါမည်။ မူရင်း video ဘာသာမတူလျှင်လည်း Burmese သို့ အဓိပ္ပာယ်တူအောင် ပြန်ရေးရပါမည်။
+- [x] **Script ဘာသာစကား** — V1 တွင် transcript ကို Burmese တတိယလူ Cast Lock script အဖြစ်ပဲ ပြန်ရေးပါမည်။ မူရင်း video ဘာသာမတူလျှင်လည်း Burmese သို့ အဓိပ္ပာယ်တူအောင် ပြန်ရေးရပါမည်။
 - [x] **Final duration 90% တိုင်းတာပုံ (link/video တိုင်းအတွက်)** —
   1. Percentage setting သည် final video အမှန်တကယ်ကြာချိန်၏ target ဖြစ်ပြီး အနည်းဆုံး 90% ဟု သတ်မှတ်ရမည်။ 90% အောက် သိမ်းထားသော တန်ဖိုးဟောင်းများကို 90% သို့ မြှင့်ပြီး 95%/100% ရွေးထားမှုများကိုသာ ၎င်းအတိုင်း ထားရမည်။ လက်ခံနိုင်သော window မှာ target ± max(0.35 စက္ကန့်, မူရင်းကြာချိန်၏ 2%) ဖြစ်သည်။
   2. Whisper segment တွေကို worker က group ပြုလုပ်ထားပြီး Gemini က group တစ်ခုလျှင် scene တစ်ခုစီ ပြန်ပေးရမည်။
@@ -97,11 +97,11 @@
   5. Burmese စာသားပမာဏကို `source video duration (မသိလျှင်သာ speech-active duration) × final-duration percentage × characters/second × voice speed` ဖြင့် ပထမ target တွက်ပြီး source timeline အလိုက် group များသို့ ခွဲဝေကာ မပြည့်လျှင် top-up လုပ်ရမည်။
   6. TTS ပြီးလျှင် တကယ့်အသံစက္ကန့်နှင့် measured chars/second ကို အခြေခံ၍ script ကို ချဲ့/ခ်ဳံ့ပြီး ပြန်အသံသွင်းကာ အများဆုံး 4 ကြိမ် calibrate လုပ်ရမည်။
   7. Render မစခင် planned duration၊ render ပြီးသော final MP4 နှင့် delivery မတိုင်မီ final MP4 ကြာချိန်များကို စစ်ရမည်။ Window အတွင်း မရှိလျှင် delivery မလုပ်ဘဲ failed ဖြစ်စေရမည်။
-- [x] **ပထမလူအပြော အတည်ပြုခြင်း** — Scene တိုင်း၏ Burmese narration ထဲ၌ `ကျွန်တော်` သို့မဟုတ် `ကျွန်မ` တစ်မျိုးတည်း တစ်သမတ်တည်း ပါရမည်။ JSON pronoun field တစ်ခုတည်းဖြင့် မလုံလောက်ပါ။ Third-person scene များကို Gemini ဖြင့် ပြန်ပြင်ပြီး မအောင်မြင်လျှင် မပို့ရပါ။
+- [x] **တတိယလူ Cast Lock အတည်ပြုခြင်း** — Narrator သည် quotation marks ပြင်ပတွင် `ကျွန်တော်`/`ကျွန်မ` မသုံးရ။ လူတိုင်းကို `spoken_name` သို့မဟုတ် stable descriptive label တစ်မျိုးတည်းဖြင့် ပြောရမည်။ Scene တိုင်းကို quote-aware စစ်ပြီး မအောင်မြင်လျှင် Gemini ဖြင့် ပြန်ပြင်ကာ မပြင်နိုင်လျှင် မပို့ရပါ။
 - [x] **Telegram ခလုတ်များ** — `/start` ဖြင့် persistent bottom buttons နှင့် inline main menu နှစ်မျိုးလုံး ပြရမည်။ Progress message တွင်လည်း Cancel/Status/Settings/Main ခလုတ်များ ကပ်ထားရမည်ဖြစ်ပြီး Cancel သည် direct job များသာမက worker job ၏ persisted state ကိုပါ ရပ်ခိုင်းနိုင်ရမည်။
-- [x] **Audio** — V1 တွင် မူရင်းအသံ/BGM ကို မထားဘဲ Gemini TTS narration တစ်ခုတည်း ထည့်ပါမည်။
+- [x] **Audio** — V1 တွင် မူရင်းအသံ/BGM ကို မထားဘဲ Edge Thiha narration (လိုမှ Gemini Charon fallback) တစ်ခုတည်း ထည့်ပါမည်။
 - [x] **Subtitles** — V1 တွင် subtitle/caption burn-in မပါပါ။
-- [x] **Video alignment** — narration ကို speed ပြောင်း/stretch/pad မလုပ်ပါ။ Scene အစကိုသာ align လုပ်ပြီး narration တိုလျှင် video အစိတ်အပိုင်းကိုဖြတ်ကာ, ရှည်လျှင် နောက် scene မစမီကြားထဲက footage ကိုသာ ချေးယူပါမည်။ မဖြစ်မနေလိုမှသာ နောက်ဆုံး frame ကို freeze လုပ်ပါမည်။
+- [x] **Video alignment** — narration ကို speed ပြောင်း/stretch/pad မလုပ်ပါ။ Scene အစကိုသာ align လုပ်ပြီး narration တိုလျှင် video အစိတ်အပိုင်းကိုဖြတ်ကာ, ရှည်လျှင် နောက် scene မစမီကြားထဲက footage ကိုသာ ချေးယူပါမည်။ Planned freeze မသုံးပါ။ Footage ပြန်သုံးရန် မဖြစ်မနေလိုမှသာ စုစုပေါင်း အများဆုံး ၂ ကြိမ်သာ ပြန်ပြပါမည်။
 - [x] **ကြီးမားသော final video** — Telegram မပို့ခင် အပိုင်းတိုင်းသည် worker limit (45MB) အောက်တွင် ရှိ/မရှိ စစ်ပြီး လိုပါက ထပ်ခွဲပါမည်။
 
 ### V1 ကန့်သတ်ချက်
