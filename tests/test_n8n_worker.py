@@ -1781,6 +1781,195 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Aiden", cast_scenes[0]["burmese"])
         self.assertNotIn("Li Wei", cast_scenes[0]["burmese"])
 
+    def test_tts_sanitizer_matches_cjk_traditional_variant(self):
+        story_map = {
+            "character_cards": [
+                {
+                    "spoken_name": "Yang Wei",
+                    "short_name": "ယန်ဝေ",
+                    "source_name": "杨伟",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                }
+            ],
+            "terms": [
+                {
+                    "spoken_term": "ကျူဇိုးအကယ်ဒမီ၏ အကြီးအကဲ",
+                    "source_term": "九州学院长老",
+                    "meaning": "အကယ်ဒမီကို ဦးဆောင်သူ",
+                }
+            ],
+        }
+        scenes = [
+            {
+                "burmese": (
+                    "楊偉 က 九州學院長老 ကို တံခါးနားမှာ စောင့်နေခဲ့တယ်။"
+                )
+            }
+        ]
+
+        stats = bot._sanitize_tts_unsafe_scenes(scenes, story_map, {})
+
+        self.assertEqual(stats["replacements"], 2)
+        self.assertIn("ယန်ဝေ", scenes[0]["burmese"])
+        self.assertIn("ကျူဇိုးအကယ်ဒမီ၏ အကြီးအကဲ", scenes[0]["burmese"])
+        self.assertEqual(bot._tts_unsafe_script_chars(scenes[0]["burmese"]), 0)
+
+    def test_tts_token_repair_locks_foreign_card_names(self):
+        def chinese_cards():
+            return [
+                {
+                    "spoken_name": "董礼茂",
+                    "gender": "male",
+                    "role": "ကျောင်းသား",
+                    "relation": "အဓိကဇာတ်ကောင်",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+                {
+                    "spoken_name": "杨伟",
+                    "role": "အတန်းဖော်",
+                    "relation": "သူငယ်ချင်း",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+            ]
+
+        def chinese_terms():
+            return [
+                {
+                    "spoken_term": "唤神",
+                    "meaning": "နတ်ဘုရားကို ခေါ်ယူတဲ့ အခမ်းအနား",
+                }
+            ]
+
+        story_map = {
+            "protagonist": "董礼茂",
+            "character_cards": chinese_cards(),
+            "terms": chinese_terms(),
+        }
+        story_context = {
+            "protagonist": "董礼茂",
+            "characters": ["董礼茂", "杨伟"],
+            "character_cards": chinese_cards(),
+            "terms": chinese_terms(),
+        }
+        scenes = [
+            {
+                "burmese": (
+                    f"{MALE_PRONOUN}အမည်က 董礼茂ဖြစ်တယ်။ "
+                    f"{MALE_PRONOUN}九州学院 မှာ 杨伟 နဲ့ တွေ့ခဲ့တယ်။"
+                )
+            },
+            {
+                "burmese": (
+                    "楊偉 က 唤神 ကို စတင်တော့ 神像 က တုန်လာတယ်။ "
+                    "未知力 က ကျန်တယ်။"
+                )
+            },
+        ]
+
+        # The exact live failure supplied Chinese *as* spoken_name.
+        # Prompt context must demote it to evidence, not present it
+        # as the locked form the narrator should preserve.
+        context_lines = bot._story_context_prompt_lines(story_context)
+        self.assertIn("Burmese spoken_name မရှိသေး", context_lines)
+        self.assertIn("narration မှာ လုံးဝမသုံးဘဲ", context_lines)
+
+        contexts = bot._tts_unsafe_token_contexts(scenes)
+        allowed_tokens = [item["source"] for item in contexts]
+        self.assertEqual(
+            allowed_tokens,
+            ["董礼茂", "九州学院", "杨伟", "楊偉", "唤神", "神像", "未知力"],
+        )
+        prompt = bot._tts_token_repair_prompt(
+            scenes,
+            story_map,
+            story_context,
+            protagonist="董礼茂",
+            tokens=allowed_tokens,
+        )
+        self.assertIn("locked spoken form မဟုတ်ပါ", prompt)
+        self.assertIn("董礼茂", prompt)
+
+        replacements = bot._parse_tts_token_replacements(
+            {
+                "replacements": [
+                    {"source": "董礼茂", "burmese": "တုံလီမောင်"},
+                    {"source": "九州学院", "burmese": "ကျူဇိုးအကယ်ဒမီ"},
+                    # One Simplified answer must also repair the
+                    # Traditional spelling used in the next scene.
+                    {"source": "杨伟", "burmese": "ယန်ဝေ"},
+                    {"source": "唤神", "burmese": "နတ်ဘုရားခေါ်ယူမှု"},
+                    {"source": "神像", "burmese": "နတ်ဘုရားရုပ်ထု"},
+                    # Unsafe targets and unrequested tokens are rejected.
+                    {"source": "未知力", "burmese": "Unknown"},
+                    {"source": "不在场", "burmese": "မပါသူ"},
+                ]
+            },
+            allowed_tokens,
+        )
+        self.assertNotIn("未知力", replacements)
+        self.assertNotIn("不在场", replacements)
+
+        stats = bot._apply_tts_token_replacements(
+            scenes,
+            replacements,
+            story_map=story_map,
+            story_context=story_context,
+        )
+
+        self.assertEqual(stats["replacements"], 6)
+        self.assertEqual(stats["remaining_tokens"], ["未知力"])
+        self.assertIn("တုံလီမောင်", scenes[0]["burmese"])
+        self.assertIn("ကျူဇိုးအကယ်ဒမီ", scenes[0]["burmese"])
+        self.assertIn("ယန်ဝေ", scenes[1]["burmese"])
+        self.assertIn("နတ်ဘုရားရုပ်ထု", scenes[1]["burmese"])
+        self.assertNotIn("杨伟", scenes[0]["burmese"])
+        self.assertNotIn("楊偉", scenes[1]["burmese"])
+
+        # Later windows/metrics must inherit Burmese locks while the
+        # source spellings survive only as non-spoken evidence.
+        self.assertEqual(story_map["protagonist"], "တုံလီမောင်")
+        self.assertEqual(story_context["protagonist"], "တုံလီမောင်")
+        self.assertEqual(
+            story_context["characters"], ["တုံလီမောင်", "ယန်ဝေ"]
+        )
+        for container in (story_map, story_context):
+            self.assertEqual(
+                container["character_cards"][0]["spoken_name"],
+                "တုံလီမောင်",
+            )
+            self.assertIn(
+                "董礼茂", container["character_cards"][0]["aliases"]
+            )
+            self.assertEqual(
+                container["character_cards"][1]["spoken_name"],
+                "ယန်ဝေ",
+            )
+            self.assertEqual(
+                container["terms"][0]["spoken_term"],
+                "နတ်ဘုရားခေါ်ယူမှု",
+            )
+            self.assertEqual(container["terms"][0]["source_term"], "唤神")
+
+        self.assertEqual(
+            bot._professional_repair_scene_indexes(
+                {
+                    "scene_count": 9,
+                    "actor_unclear_scene_opening_indexes": [1, 3, 5],
+                    "unnamed_actor_scenes": 0,
+                    "ambiguous_pronoun_sentence_refs": [],
+                    "unattributed_dialogue_sentence_refs": [
+                        "2:0",
+                        "2:1",
+                        "7:0",
+                    ],
+                }
+            ),
+            [1, 2, 3, 5, 7],
+        )
+
     async def test_worker_gemini_json_recovers_wrapped_response_text(self):
         payload = {
             "scenes": [
@@ -1916,6 +2105,220 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 protagonist_forms=[HERO_NAME],
             )
         )
+
+    async def test_worker_foreign_card_names_use_token_repair(self):
+        groups = [
+            {
+                "group_id": 1,
+                "source_segment_ids": [1],
+                "start": 0,
+                "end": 10,
+                "speech_seconds": 10,
+                "timeline_seconds": 10,
+                "source_text": "The hero introduces himself at the academy.",
+            },
+            {
+                "group_id": 2,
+                "source_segment_ids": [2],
+                "start": 10,
+                "end": 20,
+                "speech_seconds": 10,
+                "timeline_seconds": 10,
+                "source_text": "His friend begins the ritual.",
+            },
+        ]
+        scenes_by_group = {
+            1: (
+                f"{MALE_PRONOUN}အမည်က 董礼茂ဖြစ်တယ်။ "
+                f"{MALE_PRONOUN}九州学院 မှာ 杨伟 နဲ့ တွေ့ခဲ့တယ်။"
+            ),
+            2: "楊偉 က 唤神 ကို စတင်တော့ တံခါးကြီး ပွင့်လာခဲ့တယ်။",
+        }
+
+        def chinese_cards():
+            return [
+                {
+                    "spoken_name": "董礼茂",
+                    "gender": "male",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                }
+            ]
+
+        def chinese_terms():
+            return [
+                {
+                    "spoken_term": "唤神",
+                    "meaning": (
+                        "နတ်ဘုရားတစ်ပါးကို အကူအညီပေးရန် ခေါ်ယူတဲ့ "
+                        "အထူးအခမ်းအနားလုပ်ငန်းစဉ် အပြည့်အစုံကို ဆိုလိုတယ်"
+                    ),
+                }
+            ]
+
+        story_context = {
+            "protagonist": "董礼茂",
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "characters": ["董礼茂"],
+            "character_cards": chinese_cards(),
+            "terms": chinese_terms(),
+        }
+        story_map = {
+            "protagonist": "董礼茂",
+            "character_cards": chinese_cards(),
+            "terms": chinese_terms(),
+        }
+        call_types = []
+
+        async def fake_gemini(prompt, client):
+            if "TTS FOREIGN-SCRIPT TOKEN REPAIR ONLY" in prompt:
+                call_types.append("token")
+                return {
+                    "replacements": [
+                        {"source": "董礼茂", "burmese": "တုံလီမောင်"},
+                        {"source": "九州学院", "burmese": "ကျူဇိုးအကယ်ဒမီ"},
+                        {"source": "杨伟", "burmese": "ယန်ဝေ"},
+                        {"source": "唤神", "burmese": "နတ်ဘုရားခေါ်ယူမှု"},
+                    ]
+                }
+            call_types.append("scene")
+            return {"scenes": []}
+
+        self.start_patch(
+            patch.object(bot, "_worker_gemini_json", new=fake_gemini)
+        )
+        perspective, bad, _cast_replacements = (
+            await bot._repair_worker_narrator_scenes(
+                groups,
+                scenes_by_group,
+                {1: 100, 2: 100},
+                story_context,
+                {"coverage": 90, "voice": "Charon"},
+                object(),
+                rounds=1,
+                story_map=story_map,
+            )
+        )
+
+        self.assertEqual(perspective, bot.NARRATOR_PERSPECTIVE)
+        self.assertEqual(call_types, ["token"])
+        self.assertEqual(bad, [])
+        self.assertTrue(
+            all(
+                not bot._tts_unsafe_script_chars(text)
+                for text in scenes_by_group.values()
+            )
+        )
+        self.assertIn("တုံလီမောင်", scenes_by_group[1])
+        self.assertIn("ယန်ဝေ", scenes_by_group[2])
+        self.assertEqual(story_context["protagonist"], "တုံလီမောင်")
+        self.assertEqual(story_map["protagonist"], "တုံလီမောင်")
+        self.assertEqual(
+            story_map["character_cards"][0]["spoken_name"],
+            "တုံလီမောင်",
+        )
+        self.assertEqual(
+            story_map["terms"][0]["spoken_term"],
+            "နတ်ဘုရားခေါ်ယူမှု",
+        )
+
+    async def test_worker_professional_actor_blockers_are_targeted_once(self):
+        groups = [
+            {
+                "group_id": gid,
+                "source_segment_ids": [gid],
+                "start": (gid - 1) * 10,
+                "end": gid * 10,
+                "speech_seconds": 10,
+                "timeline_seconds": 10,
+                "source_text": f"Source event {gid}.",
+            }
+            for gid in range(1, 5)
+        ]
+        scenes_by_group = {
+            1: (
+                f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။ "
+                f"{MALE_PRONOUN} အိမ်ပြန်သွားခဲ့တယ်။"
+            ),
+            2: f"{MALE_PRONOUN} တံခါးဖွင့်လိုက်တယ်။",
+            3: f"{MALE_PRONOUN} သေတ္တာကိုယူလိုက်တယ်။",
+            4: f"{MALE_PRONOUN} မြစ်ကမ်းဘက်သွားခဲ့တယ်။",
+        }
+        story_context = {
+            "protagonist": HERO_NAME,
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+        }
+
+        def severe_metrics(scenes, *args, **kwargs):
+            return {
+                "scene_count": len(scenes),
+                "actor_unclear_scene_opening_indexes": [1, 2, 3],
+                "unnamed_actor_scenes": 0,
+                "unnamed_actor_scene_indexes": [],
+                "unnamed_scene_opening_indexes": [],
+                "ambiguous_pronoun_sentence_refs": [],
+                "unattributed_dialogue_sentence_refs": [
+                    "1:0",
+                    "2:0",
+                    "3:0",
+                ],
+            }
+
+        captured_group_ids = []
+
+        async def fake_gemini(prompt, client):
+            payload_text = prompt.split(
+                "ပြန်ရေးရမည့် transcript groups:", 1
+            )[1].split("JSON ကိုသာ", 1)[0]
+            captured_group_ids.append(
+                sorted(
+                    {
+                        int(value)
+                        for value in re.findall(
+                            r'"group_id":\s*(\d+)', payload_text
+                        )
+                    }
+                )
+            )
+            return {
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "scenes": [
+                    {
+                        "group_id": gid,
+                        "burmese": (
+                            f"{MALE_PRONOUN} အမည်တပ်ပြီး "
+                            "တံခါးကို ဖြည်းဖြည်းချင်း ဖွင့်လိုက်တယ်။"
+                        ),
+                    }
+                    for gid in (2, 3, 4)
+                ],
+            }
+
+        self.start_patch(
+            patch.object(bot, "_story_clarity_metrics", new=severe_metrics)
+        )
+        self.start_patch(
+            patch.object(bot, "_worker_gemini_json", new=fake_gemini)
+        )
+        _perspective, bad, _cast = await bot._repair_worker_narrator_scenes(
+            groups,
+            scenes_by_group,
+            {gid: 100 for gid in range(1, 5)},
+            story_context,
+            {"coverage": 90, "voice": "Charon"},
+            object(),
+            rounds=2,
+        )
+
+        # The three severe actor/dialogue scenes are targeted, but
+        # the same professional-only rewrite is not resent forever.
+        # If it still fails, final bad IDs remain visible to the gate.
+        self.assertEqual(captured_group_ids, [[2, 3, 4]])
+        self.assertEqual(bad, [2, 3, 4])
 
     async def test_worker_duration_adjustment_accepts_third_person_expansion(self):
         script = {
@@ -4789,6 +5192,177 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertIn("ကျူဇိုး", script["scenes"][2]["burmese"])
+        self.assertEqual(
+            script["metrics"]["story_editor"][
+                "professional_quality_failures"
+            ],
+            [],
+        )
+
+    async def test_direct_foreign_card_names_use_token_repair(self):
+        purposes = []
+        target_protagonist = "တုံလီမောင်"
+        initial_texts = [
+            (
+                f"{MALE_PRONOUN}အမည်က 董礼茂ဖြစ်တယ်။ "
+                f"{MALE_PRONOUN}九州学院 မှာ 杨伟 နဲ့ တွေ့ခဲ့တယ်။"
+            ),
+            "楊偉 က 唤神 ကို စတင်တော့ တံခါးကြီး ဖြည်းဖြည်းချင်း ပွင့်လာခဲ့တယ်။",
+            f"{MALE_PRONOUN} မြစ်ကမ်းနားမှာ သစ်သားသေတ္တာဟောင်းတစ်ခုကို တွေ့ခဲ့တယ်။",
+            f"{MALE_PRONOUN} ကျောင်းဝင်းထဲမှာ လက်စွပ်ငယ်တစ်ခုကို ကောက်ရခဲ့တယ်။",
+            f"{MALE_PRONOUN} လယ်ကွင်းဘေးမှာ ရေဘူးချပြီး ခဏနားနေခဲ့တယ်။",
+        ]
+        initial_story_map = {
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "character_cards": [
+                {
+                    # This is the live v5.38 failure shape: the card's
+                    # own spoken_name is Chinese, so the deterministic
+                    # ledger has no Burmese target at all.
+                    "spoken_name": "董礼茂",
+                    "gender": "male",
+                    "introduction": (
+                        f"{MALE_PRONOUN}အမည်က 董礼茂ဖြစ်တယ်။"
+                    ),
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                }
+            ],
+            "terms": [
+                {
+                    "spoken_term": "唤神",
+                    "meaning": (
+                        "နတ်ဘုရားတစ်ပါးကို အကူအညီပေးရန် ခေါ်ယူတဲ့ "
+                        "အထူးအခမ်းအနားလုပ်ငန်းစဉ် အပြည့်အစုံကို ဆိုလိုတယ်"
+                    ),
+                }
+            ],
+            "beats": [
+                {
+                    "start": index * 18,
+                    "end": index * 18 + 18,
+                    "beat": f"Hero event {index}",
+                }
+                for index in range(5)
+            ],
+        }
+
+        async def fake_generate(_client, _contents, **kwargs):
+            purpose = str(kwargs.get("purpose") or "")
+            purposes.append(purpose)
+            if purpose == "story editor":
+                return {
+                    "scenes": [
+                        {
+                            "scene_index": 0,
+                            "start": 0,
+                            "end": 10,
+                            "burmese": initial_texts[0],
+                        }
+                    ]
+                }
+            if purpose == "TTS foreign-script token repair":
+                return {
+                    "replacements": [
+                        {"source": "董礼茂", "burmese": target_protagonist},
+                        {"source": "九州学院", "burmese": "ကျူဇိုးအကယ်ဒမီ"},
+                        {"source": "杨伟", "burmese": "ယန်ဝေ"},
+                        {"source": "唤神", "burmese": "နတ်ဘုရားခေါ်ယူမှု"},
+                    ]
+                }
+            if purpose == "first-person protagonist narrator repair":
+                return {"scenes": []}
+            return {
+                "protagonist": "董礼茂",
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
+                "story_map": initial_story_map,
+                "scenes": [
+                    {
+                        "start": index * 10,
+                        "end": index * 10 + 10,
+                        "burmese": initial_texts[index],
+                    }
+                    for index in range(5)
+                ],
+                "cuts": [],
+            }
+
+        summary = bot._normalize_story_context(
+            {
+                "characters": [target_protagonist, "ယန်ဝေ"],
+                "summary": "Hero met his friend at the academy.",
+                "protagonist": target_protagonist,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
+            }
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", return_value=object())
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "_upload_video_to_gemini",
+                new=AsyncMock(return_value=object()),
+            )
+        )
+        self.start_patch(
+            patch.object(bot, "_delete_gemini_file", new=AsyncMock())
+        )
+        self.start_patch(
+            patch.object(bot, "_generate_direct_gemini_json", new=fake_generate)
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(return_value=summary),
+            )
+        )
+        self.start_patch(patch.object(bot, "SCRIPT_TOPUP_ATTEMPTS", 0))
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        script, _summary = await bot.build_chunk_recap(
+            str(self.tmp_path / "chunk.mp4"),
+            93,
+            0,
+            93,
+            {},
+            1,
+            tracker,
+            settings={"coverage": 90, "rate": 3.6},
+            script_only=True,
+            extract_summary=True,
+            keep_source_chunk=True,
+        )
+
+        self.assertIn("TTS foreign-script token repair", purposes)
+        self.assertNotIn("first-person protagonist narrator repair", purposes)
+        self.assertEqual(script["protagonist"], target_protagonist)
+        self.assertTrue(
+            all(
+                not bot._tts_unsafe_script_chars(scene["burmese"])
+                for scene in script["scenes"]
+            )
+        )
+        self.assertIn(target_protagonist, script["scenes"][0]["burmese"])
+        self.assertIn("ကျူဇိုးအကယ်ဒမီ", script["scenes"][0]["burmese"])
+        self.assertIn("ယန်ဝေ", script["scenes"][1]["burmese"])
+        self.assertIn("နတ်ဘုရားခေါ်ယူမှု", script["scenes"][1]["burmese"])
+        self.assertEqual(
+            script["story_map"]["character_cards"][0]["name"],
+            target_protagonist,
+        )
+        self.assertEqual(
+            script["metrics"]["story_editor"]["tts_token_repair"][
+                "replacements"
+            ],
+            5,
+        )
         self.assertEqual(
             script["metrics"]["story_editor"][
                 "professional_quality_failures"

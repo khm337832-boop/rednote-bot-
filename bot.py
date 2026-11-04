@@ -7303,7 +7303,23 @@ def _story_context_prompt_lines(story_context: dict) -> str:
         spoken_name = _character_card_spoken_name(card)
         if not spoken_name:
             continue
-        bits = [spoken_name]
+        safe_spoken_name = _character_card_safe_spoken_form(card)
+        short_name = str(card.get("short_name") or "").strip()
+        safe_short_name = _tts_safe_spoken_form(short_name, limit=120)
+        if safe_spoken_name:
+            bits = [safe_spoken_name]
+        elif safe_short_name:
+            bits = [
+                safe_short_name
+                + " (လက်ရှိ Burmese spoken form — ဒါကိုသာသုံးပါ; "
+                + f"မူရင်းစာလုံး {spoken_name} ကို narration မှာ မသုံးရ)"
+            ]
+        else:
+            bits = [
+                "Burmese spoken_name မရှိသေး — မူရင်းအထောက်အထားစာလုံး "
+                f"{spoken_name} ကို narration မှာ လုံးဝမသုံးဘဲ "
+                "မြန်မာအသံထွက် transliteration အသစ်တစ်ခုတည်း lock လုပ်ပါ"
+            ]
         source_name = str(card.get("source_name") or "").strip()
         if source_name and _normalize_burmese_text(source_name) != _normalize_burmese_text(
             spoken_name
@@ -7315,15 +7331,23 @@ def _story_context_prompt_lines(story_context: dict) -> str:
             bits.append(str(card["role"]))
         if card.get("relation"):
             bits.append(str(card["relation"]))
-        if card.get("introduction"):
-            bits.append("ပထမမိတ်ဆက်ရန်: " + str(card["introduction"]))
-        short_name = str(card.get("short_name") or "").strip()
-        if short_name and _normalize_burmese_text(short_name) != _normalize_burmese_text(
-            spoken_name
+        introduction = str(card.get("introduction") or "")
+        if introduction and not _tts_unsafe_script_chars(introduction):
+            bits.append("ပထမမိတ်ဆက်ရန်: " + introduction)
+        elif introduction:
+            bits.append(
+                "ပထမမိတ်ဆက်စာသားမှာ နိုင်ငံခြားစာလုံးပါနေ၍ အတိအကျမသုံးရ — "
+                "Burmese transliteration နဲ့ ပြန်ရေးပါ"
+            )
+        if (
+            safe_short_name
+            and _normalize_burmese_text(safe_short_name)
+            != _normalize_burmese_text(safe_spoken_name or spoken_name)
         ):
-            bits.append("နောက်ပိုင်းနေ့တိုင်းခေါ်ရန်: " + short_name)
-        if card.get("identity_anchor"):
-            bits.append("ပြန်ပေါ်လာရင်အမှတ်ရစေရန်: " + str(card["identity_anchor"]))
+            bits.append("နောက်ပိုင်းနေ့တိုင်းခေါ်ရန်: " + safe_short_name)
+        identity_anchor = str(card.get("identity_anchor") or "")
+        if identity_anchor and not _tts_unsafe_script_chars(identity_anchor):
+            bits.append("ပြန်ပေါ်လာရင်အမှတ်ရစေရန်: " + identity_anchor)
         if card.get("goal"):
             bits.append("ရည်မှန်းချက်: " + str(card["goal"]))
         if card.get("motivation"):
@@ -7335,10 +7359,13 @@ def _story_context_prompt_lines(story_context: dict) -> str:
         bits.append(f"အမည်အထောက်အထား: {name_source}/{confidence}")
         if card.get("name_evidence_text"):
             bits.append("အမည်အထောက်အထားစာသား: " + str(card["name_evidence_text"]))
-        if card.get("name_reveal_bridge"):
+        name_reveal_bridge = str(card.get("name_reveal_bridge") or "")
+        if name_reveal_bridge and not _tts_unsafe_script_chars(
+            name_reveal_bridge
+        ):
             bits.append(
                 "အမည်ပြောင်းချိန် ယခင်အပိုင်းမှာ မပြောရသေးရင်သာ တစ်ခါတည်းသုံးရန်: "
-                + str(card["name_reveal_bridge"])
+                + name_reveal_bridge
             )
         if card.get("aliases"):
             bits.append("မသုံးရန် variant: " + ", ".join(card["aliases"][:3]))
@@ -7352,9 +7379,16 @@ def _story_context_prompt_lines(story_context: dict) -> str:
     elif context["characters"]:
         lines.append("- ဇာတ်ကောင်များ: " + ", ".join(context["characters"][:10]))
     if context.get("protagonist"):
+        protagonist_form = str(context["protagonist"])
+        if _tts_unsafe_script_chars(protagonist_form):
+            protagonist_form = (
+                "Burmese spoken form မရှိသေး — မူရင်းအထောက်အထားစာလုံး "
+                f"{protagonist_form} ကို narration မှာ မသုံးဘဲ "
+                "မြန်မာအသံထွက် transliteration အသစ်တစ်ခု lock လုပ်ပါ"
+            )
         protagonist_bits = [
             "- Narrator protagonist (ကိုယ်တိုင်ပြန်ပြောသူ): "
-            + str(context["protagonist"])
+            + protagonist_form
         ]
         if context.get("protagonist_pronoun"):
             protagonist_bits.append(
@@ -7375,13 +7409,24 @@ def _story_context_prompt_lines(story_context: dict) -> str:
         spoken_term = str(term.get("spoken_term") or "").strip()
         if not spoken_term:
             continue
-        bits = [spoken_term]
+        safe_spoken_term = _tts_safe_spoken_form(spoken_term, limit=120)
+        if safe_spoken_term:
+            bits = [safe_spoken_term]
+        else:
+            bits = [
+                "Burmese spoken_term မရှိသေး — မူရင်းအထောက်အထားစာလုံး "
+                f"{spoken_term} ကို narration မှာ မသုံးဘဲ "
+                "မြန်မာအဓိပ္ပာယ်/transliteration အသစ်တစ်ခု lock လုပ်ပါ"
+            ]
         if term.get("source_term"):
             bits.append("မူရင်းအခေါ်: " + str(term["source_term"]))
         if term.get("meaning"):
             bits.append("အဓိပ္ပာယ်: " + str(term["meaning"]))
-        if term.get("first_explanation"):
-            bits.append("ပထမအကြိမ်ရှင်းပြရန်: " + str(term["first_explanation"]))
+        first_explanation = str(term.get("first_explanation") or "")
+        if first_explanation and not _tts_unsafe_script_chars(
+            first_explanation
+        ):
+            bits.append("ပထမအကြိမ်ရှင်းပြရန်: " + first_explanation)
         if term.get("aliases"):
             bits.append("မသုံးရန် variant: " + ", ".join(term["aliases"][:3]))
         term_lines.append(" — ".join(bit for bit in bits if bit))
@@ -7619,12 +7664,16 @@ def _sanitize_tts_unsafe_scenes(
             or not _tts_unsafe_script_chars(raw)
         ):
             return
-        previous = replacements.get(raw)
-        if previous is not None:
-            if previous != target and not only_if_new:
-                conflicting.add(raw)
-            return
-        replacements[raw] = target
+        # The narration may use the Traditional spelling while the
+        # card kept the Simplified one (or vice versa). The Burmese
+        # ledger target is exactly as trustworthy for the variant.
+        for form in _cjk_variant_forms(raw):
+            previous = replacements.get(form)
+            if previous is not None:
+                if previous != target and not only_if_new:
+                    conflicting.add(form)
+                continue
+            replacements[form] = target
 
     # Character names first: they are the tokens a listener most
     # needs to hear, and their locked form outranks a visible-text
@@ -9858,6 +9907,461 @@ def _tts_unsafe_scene_indexes(scenes: list) -> list:
     return indexes
 
 
+# Chinese subtitles and model story maps routinely mix Simplified and
+# Traditional spellings of the same name (杨伟 / 楊偉, 九州学院长老 /
+# 九州學院長老). Exact-string ledger matching therefore missed the very
+# tokens it knew. This deliberately small character table only expands
+# a *known* ledger/token form to its other common spelling; it never
+# translates or guesses a whole word by itself.
+_CJK_VARIANT_PAIRS = (
+    ("杨", "楊"), ("伟", "偉"), ("学", "學"), ("长", "長"),
+    ("关", "關"), ("闭", "閉"), ("间", "間"), ("灵", "靈"),
+    ("讳", "諱"), ("强", "強"), ("么", "麼"), ("们", "們"),
+    ("这", "這"), ("个", "個"), ("时", "時"), ("还", "還"),
+    ("来", "來"), ("国", "國"), ("龙", "龍"), ("凤", "鳳"),
+    ("云", "雲"), ("风", "風"), ("电", "電"), ("声", "聲"),
+    ("气", "氣"), ("门", "門"), ("开", "開"), ("进", "進"),
+    ("远", "遠"), ("运", "運"), ("动", "動"), ("战", "戰"),
+    ("场", "場"), ("点", "點"), ("实", "實"), ("现", "現"),
+    ("发", "發"), ("会", "會"), ("对", "對"), ("说", "說"),
+    ("话", "話"), ("语", "語"), ("问", "問"), ("题", "題"),
+    ("应", "應"), ("变", "變"), ("样", "樣"), ("东", "東"),
+    ("车", "車"), ("马", "馬"), ("鸟", "鳥"), ("鱼", "魚"),
+    ("书", "書"), ("画", "畫"), ("写", "寫"), ("读", "讀"),
+    ("听", "聽"), ("见", "見"), ("观", "觀"), ("觉", "覺"),
+    ("亲", "親"), ("爱", "愛"), ("乐", "樂"), ("欢", "歡"),
+    ("庆", "慶"), ("兴", "興"), ("军", "軍"), ("农", "農"),
+    ("医", "醫"), ("药", "藥"), ("师", "師"), ("贵", "貴"),
+    ("宾", "賓"), ("钱", "錢"), ("银", "銀"), ("铁", "鐵"),
+    ("铜", "銅"), ("钢", "鋼"), ("钟", "鐘"), ("针", "針"),
+    ("权", "權"), ("势", "勢"), ("号", "號"), ("称", "稱"),
+    ("历", "歷"), ("经", "經"), ("统", "統"), ("领", "領"),
+    ("导", "導"), ("团", "團"), ("队", "隊"), ("员", "員"),
+    ("级", "級"), ("阶", "階"), ("层", "層"),
+)
+_CJK_VARIANT_MAP = {}
+for _simplified, _traditional in _CJK_VARIANT_PAIRS:
+    _CJK_VARIANT_MAP[_simplified] = _traditional
+    _CJK_VARIANT_MAP[_traditional] = _simplified
+
+
+def _cjk_variant_forms(value) -> list:
+    """Common Simplified/Traditional spellings of one exact CJK form."""
+
+    text = str(value or "")
+    forms = {text}
+    for char in text:
+        variant = _CJK_VARIANT_MAP.get(char)
+        if not variant or variant == char:
+            continue
+        expanded = set()
+        for form in forms:
+            expanded.add(form.replace(char, variant))
+        forms.update(expanded)
+        if len(forms) >= 32:
+            break
+    return sorted(forms, key=lambda item: (item != text, item))
+
+
+def _tts_unsafe_token_contexts(
+    scenes: list,
+    tokens=None,
+    *,
+    limit: int = 32,
+) -> list:
+    """Unique foreign tokens with one short spoken context for repair."""
+
+    scene_texts = [_scene_text_for_pov(scene) for scene in (scenes or [])]
+    requested = []
+    for token in tokens or []:
+        clean = str(token or "").strip()
+        if clean and clean not in requested:
+            requested.append(clean)
+    if not requested:
+        for text in scene_texts:
+            for token in _tts_unsafe_tokens(text):
+                if token not in requested:
+                    requested.append(token)
+
+    contexts = []
+    for token in requested[: max(0, int(limit or 0))]:
+        context = ""
+        scene_index = None
+        for index, text in enumerate(scene_texts):
+            if token not in text:
+                continue
+            scene_index = index
+            context = next(
+                (
+                    sentence.strip()
+                    for sentence in _split_sentences(text)
+                    if token in sentence
+                ),
+                text,
+            )
+            break
+        contexts.append(
+            {
+                "source": token,
+                "scene_index": scene_index,
+                "context": _clean_story_text(context, 260),
+            }
+        )
+    return contexts
+
+
+def _tts_token_repair_prompt(
+    scenes: list,
+    story_map: dict = None,
+    story_context: dict = None,
+    *,
+    protagonist: str = "",
+    tokens=None,
+) -> str:
+    """Ask only for a source-token -> Burmese-speech mapping.
+
+    Rewriting whole scenes proved unreliable for this narrow job: a
+    weak fallback model copied the Chinese names straight back,
+    especially when the story map itself (incorrectly) used them as
+    ``spoken_name``. A mapping is a much smaller, checkable task;
+    local code then performs the replacements deterministically, so
+    scene content, POV, order and length cannot drift.
+    """
+
+    contexts = _tts_unsafe_token_contexts(scenes, tokens)
+    normalized_map = _normalize_story_map(story_map)
+    normalized_context = _normalize_story_context(story_context or {})
+    cards = _normalize_character_cards(
+        list(normalized_context.get("character_cards") or [])
+        + list(normalized_map.get("character_cards") or [])
+    )
+    ledger = {
+        "protagonist_source_form": protagonist,
+        "character_cards": [
+            {
+                "spoken_name": _character_card_spoken_name(card),
+                "short_name": _character_card_short_name(card),
+                "source_name": card.get("source_name") or "",
+                "aliases": card.get("aliases") or [],
+                "role": card.get("role") or "",
+                "relation": card.get("relation") or "",
+                "identity_anchor": card.get("identity_anchor") or "",
+                "visual_cue": card.get("visual_cue") or "",
+            }
+            for card in cards
+        ],
+        "terms": _normalize_story_terms(
+            list(normalized_context.get("terms") or [])
+            + list(normalized_map.get("terms") or [])
+        ),
+        "visible_texts": normalized_map.get("visible_texts") or [],
+    }
+    return f"""
+TTS FOREIGN-SCRIPT TOKEN REPAIR ONLY — scene တွေကို ပြန်မရေးပါနှင့်။ အောက်ပါ source token တစ်ခုစီအတွက် Burmese TTS ဖတ်နိုင်တဲ့ မြန်မာအက္ခရာသီးသန့် အစားထိုးပုံစံသာ ပြန်ပေးပါ။
+
+စည်းကမ်းများ:
+- Token အားလုံးကို တစ်ကြိမ်စီ အတိအကျထည့်ပါ။ `source` ကို မူရင်းအတိုင်း ကူးပါ။
+- `burmese` ထဲမှာ မြန်မာအက္ခရာနဲ့ space သာရှိရမည်။ အင်္ဂလိပ်/တရုတ်/ကိုရီးယား/ဂျပန်စာလုံး၊ ဂဏန်း၊ parenthesis၊ ရှင်းလင်းချက်စာသား လုံးဝမထည့်ရ။
+- လူ/နေရာ/အဖွဲ့အမည်ဆိုလျှင် မူရင်းအသံကို သဘာဝကျတဲ့ မြန်မာအသံထွက်နဲ့ ရေးပါ။ Card ထဲမှာ Burmese spoken_name/short_name အမှန်ရှိလျှင် အဲဒီပုံစံအတိအကျကိုသာ သုံးပါ။
+- Story map ထဲက `spoken_name` ကိုယ်တိုင်က နိုင်ငံခြားစာလုံးဖြစ်နေလျှင် အဲဒါ locked spoken form မဟုတ်ပါ — evidence သာဖြစ်သည်။ Burmese transliteration အသစ်ကို lock လုပ်ပါ။
+- အမည်နဲ့ ရာထူး/အဖွဲ့ ပေါင်းထားတဲ့ token ဆိုလျှင် အမည်ကို အသံထွက်ရေးပြီး ရာထူး/အဖွဲ့ကို မြန်မာအဓိပ္ပာယ်နဲ့ သဘာဝကျကျ ပေါင်းရေးပါ။
+- သာမန်နာမ်၊ စွမ်းအား၊ အခမ်းအနား၊ စည်းမျဉ်းနဲ့ စာကြောင်းတိုဆိုလျှင် အဓိပ္ပာယ်ကို တိုပြီး ဝါကျထဲ သဘာဝကျကျ အစားထိုးနိုင်တဲ့ မြန်မာနာမ်စကားစုနဲ့ ပြန်ပါ။
+- နတ်ဘုရား/ဒဏ္ဍာရီ ဘွဲ့အမည်ဆိုလျှင် အသံထွက်ကိုရေးပါ။ အဓိပ္ပာယ်က နားလည်မှုအတွက် မရှိမဖြစ်ဆိုလျှင် အသံထွက်နောက် မြန်မာဘွဲ့အဓိပ္ပာယ်တိုတိုကိုသာ ပေါင်းပါ။
+- Token ကို မဖျက်ပါနှင့်၊ ဝါကျအသစ် မဖန်တီးပါနှင့်၊ source အတိုင်း ပြန်မပေးပါနှင့်။
+
+Cast/term ledger (foreign forms are evidence only):
+{json.dumps(ledger, ensure_ascii=False)}
+
+Tokens and spoken contexts:
+{json.dumps(contexts, ensure_ascii=False)}
+
+JSON ကိုသာပြန်ပေးပါ:
+{{"replacements": [{{"source": "မူရင်း token အတိအကျ", "burmese": "မြန်မာအက္ခရာသီးသန့် အစားထိုးပုံစံ"}}]}}
+""".strip()
+
+
+def _parse_tts_token_replacements(data, allowed_tokens) -> dict:
+    """Parse and validate a token-mapping response."""
+
+    try:
+        parsed = _parse_gemini_json_text(data)
+    except Exception:
+        parsed = data
+    allowed = []
+    for token in allowed_tokens or []:
+        clean = str(token or "").strip()
+        if clean and clean not in allowed:
+            allowed.append(clean)
+    allowed_set = set(allowed)
+
+    def canonical_source(value) -> str:
+        source = str(value or "").strip().strip("\"'“”‘’")
+        if source in allowed_set:
+            return source
+        for form in _cjk_variant_forms(source):
+            if form in allowed_set:
+                return form
+        return ""
+
+    candidates = []
+    if isinstance(parsed, list):
+        candidates.extend(parsed)
+    elif isinstance(parsed, dict):
+        for key in (
+            "replacements",
+            "token_replacements",
+            "translations",
+            "tokens",
+            "items",
+        ):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+            elif isinstance(value, dict):
+                candidates.extend(
+                    {"source": source, "burmese": target}
+                    for source, target in value.items()
+                )
+        if not candidates:
+            candidates.extend(
+                {"source": source, "burmese": target}
+                for source, target in parsed.items()
+                if isinstance(target, str)
+            )
+
+    replacements = {}
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        source_value = ""
+        for key in ("source", "token", "original", "source_text", "text"):
+            if item.get(key):
+                source_value = item.get(key)
+                break
+        source = canonical_source(source_value)
+        if not source or source in replacements:
+            continue
+        target_value = ""
+        for key in (
+            "burmese",
+            "replacement",
+            "spoken",
+            "spoken_form",
+            "transliteration",
+            "translation",
+            "target",
+        ):
+            if item.get(key):
+                target_value = item.get(key)
+                break
+        target = _tts_safe_spoken_form(target_value, limit=180)
+        target = target.strip(" \"'“”‘’()[]{}")
+        if target and target != source:
+            replacements[source] = target
+    return replacements
+
+
+def _apply_tts_token_replacements(
+    scenes: list,
+    replacements: dict,
+    story_map: dict = None,
+    story_context: dict = None,
+) -> dict:
+    """Apply a validated token mapping and lock Burmese name forms."""
+
+    stats = {
+        "replacements": 0,
+        "replaced_tokens": [],
+        "locked_tokens": {},
+        "remaining_unsafe_chars": 0,
+        "remaining_tokens": [],
+    }
+    clean_replacements = {}
+    conflicting = set()
+    for raw_source, raw_target in (replacements or {}).items():
+        source = _clean_story_text(raw_source, 180)
+        target = _tts_safe_spoken_form(raw_target, limit=180)
+        if not source or not target or source == target:
+            continue
+        if not _tts_unsafe_script_chars(source):
+            continue
+        for form in _cjk_variant_forms(source):
+            previous = clean_replacements.get(form)
+            if previous is not None and previous != target:
+                conflicting.add(form)
+            else:
+                clean_replacements[form] = target
+    for form in conflicting:
+        clean_replacements.pop(form, None)
+
+    def collect_remaining():
+        remaining = []
+        total = 0
+        for scene in scenes or []:
+            text = _scene_text_for_pov(scene)
+            total += int(_tts_unsafe_script_chars(text))
+            for token in _tts_unsafe_tokens(text):
+                if token not in remaining:
+                    remaining.append(token)
+        stats["remaining_unsafe_chars"] = int(total)
+        stats["remaining_tokens"] = remaining[:16]
+
+    if not clean_replacements:
+        collect_remaining()
+        return stats
+
+    def values_match(left, right) -> bool:
+        clean_left = str(left or "").strip()
+        clean_right = str(right or "").strip()
+        if not clean_left or not clean_right:
+            return False
+        return bool(
+            set(_cjk_variant_forms(clean_left))
+            & set(_cjk_variant_forms(clean_right))
+        )
+
+    def lock_container(container):
+        if not isinstance(container, dict):
+            return
+        for source, target in clean_replacements.items():
+            for key in ("protagonist", "main_character"):
+                if values_match(container.get(key), source):
+                    container[key] = target
+            characters = container.get("characters")
+            if isinstance(characters, list):
+                container["characters"] = [
+                    target
+                    if isinstance(item, str) and values_match(item, source)
+                    else item
+                    for item in characters
+                ]
+            for list_key in ("character_cards", "characters"):
+                for card in container.get(list_key) or []:
+                    if not isinstance(card, dict):
+                        continue
+                    old_spoken = _character_card_spoken_name(card)
+                    old_short = _character_card_short_name(card)
+                    forms = [
+                        old_spoken,
+                        old_short,
+                        card.get("source_name"),
+                        *(card.get("aliases") or []),
+                    ]
+                    if not any(values_match(form, source) for form in forms):
+                        continue
+                    if old_spoken and _tts_unsafe_script_chars(old_spoken):
+                        card["spoken_name"] = target
+                        card["name"] = target
+                        if not card.get("source_name"):
+                            card["source_name"] = source
+                    if (
+                        old_short
+                        and _tts_unsafe_script_chars(old_short)
+                        and values_match(old_short, source)
+                        and _normalize_burmese_text(old_short)
+                        != _normalize_burmese_text(old_spoken)
+                    ):
+                        card["short_name"] = target
+                    aliases = [
+                        str(alias)
+                        for alias in (card.get("aliases") or [])
+                        if str(alias).strip()
+                    ]
+                    if source not in aliases and source != target:
+                        aliases.append(source)
+                    card["aliases"] = aliases[:8]
+            for list_key in ("terms", "glossary", "world_terms", "key_terms"):
+                for term in container.get(list_key) or []:
+                    if not isinstance(term, dict):
+                        continue
+                    forms = [
+                        term.get("spoken_term"),
+                        term.get("source_term"),
+                        *(term.get("aliases") or []),
+                    ]
+                    if not any(values_match(form, source) for form in forms):
+                        continue
+                    old_spoken = str(term.get("spoken_term") or "")
+                    if old_spoken and _tts_unsafe_script_chars(old_spoken):
+                        term["spoken_term"] = target
+                        if not term.get("source_term"):
+                            term["source_term"] = source
+
+    lock_container(story_map)
+    lock_container(story_context)
+
+    replaced_tokens = []
+    for scene in scenes or []:
+        if not isinstance(scene, dict):
+            continue
+        original = str(scene.get("burmese") or "")
+        updated = original
+        for source, target in sorted(
+            clean_replacements.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if source not in updated:
+                continue
+            if all(ord(char) < 128 for char in source):
+                pattern = (
+                    r"(?<![A-Za-z])" + re.escape(source) + r"(?![A-Za-z])"
+                )
+                updated, count = re.subn(pattern, target, updated)
+            else:
+                count = updated.count(source)
+                updated = updated.replace(source, target)
+            if count:
+                stats["replacements"] += int(count)
+                if source not in replaced_tokens:
+                    replaced_tokens.append(source)
+                stats["locked_tokens"][source] = target
+        if updated != original:
+            scene["burmese"] = updated
+
+    stats["replaced_tokens"] = replaced_tokens[:16]
+    collect_remaining()
+    return stats
+
+
+def _professional_repair_scene_indexes(metrics: dict) -> list:
+    """Scenes behind severe actor/dialogue-identity gate failures."""
+
+    metrics = metrics if isinstance(metrics, dict) else {}
+    scene_count = int(metrics.get("scene_count") or 0)
+    if scene_count < 4:
+        return []
+    severe_scene_threshold = max(3, math.ceil(scene_count / 3))
+    indexes = set()
+
+    def add_indexes(values):
+        for value in values or []:
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < scene_count:
+                indexes.add(index)
+
+    actor_indexes = metrics.get("actor_unclear_scene_opening_indexes") or []
+    if len(actor_indexes) >= severe_scene_threshold:
+        add_indexes(actor_indexes)
+    unnamed_indexes = list(metrics.get("unnamed_actor_scene_indexes") or [])
+    unnamed_indexes.extend(metrics.get("unnamed_scene_opening_indexes") or [])
+    if int(metrics.get("unnamed_actor_scenes") or 0) >= severe_scene_threshold:
+        add_indexes(unnamed_indexes)
+    for refs_key in (
+        "ambiguous_pronoun_sentence_refs",
+        "unattributed_dialogue_sentence_refs",
+    ):
+        refs = metrics.get(refs_key) or []
+        if len(refs) < 3:
+            continue
+        for ref in refs:
+            add_indexes([str(ref or "").split(":", 1)[0]])
+    return sorted(indexes)
+
+
 def _burmese_number_words(value) -> str:
     """Render an integer as spoken Burmese words.
 
@@ -10921,7 +11425,7 @@ def _direct_narrator_repair_prompt(
     context_lines = _story_context_prompt_lines(resolved_context)
     map_json = json.dumps(_normalize_story_map(story_map), ensure_ascii=False)
     return f"""
-FIRST-PERSON PROTAGONIST NARRATOR REPAIR ONLY — အောက်ပါ scenes တွေမှာ protagonist ကိုယ်တိုင်ပြောနေတဲ့ POV မှားနေတယ်၊ wrong/mixed self-pronoun ပါနေတယ်၊ protagonist ကို ကိုယ့်အမည်နဲ့ တတိယလူလုပ်ဆောင်သူလို ပြောထားတယ်၊ သို့မဟုတ် TTS မဖတ်နိုင်တဲ့ အင်္ဂလိပ်/တရုတ်/ကိုရီးယား/ဂျပန်စာလုံး ကျန်နေတယ်။ နိုင်ငံခြားအမည်တိုင်းကို story_map/context ထဲက locked Burmese spoken_name/short_name နဲ့ အစားထိုးပြီး term တိုင်းကို locked spoken_term သို့မဟုတ် မြန်မာအဓိပ္ပာယ်နဲ့ အစားထိုးပါ။ Locked form မရှိမှသာ မူရင်းအသံကို မြန်မာအက္ခရာနဲ့ အသံထွက်အတိုင်း ရေးပါ — နာမည်/term ကိုဖျက်ပြီး ဝါကျကိုအဓိပ္ပာယ်ပျက်အောင် မလုပ်ရ။
+FIRST-PERSON PROTAGONIST NARRATOR REPAIR ONLY — အောက်ပါ scenes တွေမှာ protagonist ကိုယ်တိုင်ပြောနေတဲ့ POV မှားနေတယ်၊ wrong/mixed self-pronoun ပါနေတယ်၊ protagonist ကို ကိုယ့်အမည်နဲ့ တတိယလူလုပ်ဆောင်သူလို ပြောထားတယ်၊ TTS မဖတ်နိုင်တဲ့ အင်္ဂလိပ်/တရုတ်/ကိုရီးယား/ဂျပန်စာလုံး ကျန်နေတယ်၊ သို့မဟုတ် scene အစ/စကားပြောခန်းမှာ ဘယ်သူလုပ်ဆောင်/ပြောမှန်း မရှင်းပါ။ နိုင်ငံခြားအမည်တိုင်းကို story_map/context ထဲက TTS-safe Burmese spoken_name/short_name နဲ့ အစားထိုးပြီး term တိုင်းကို TTS-safe spoken_term သို့မဟုတ် မြန်မာအဓိပ္ပာယ်နဲ့ အစားထိုးပါ။ Story map ထဲက spoken_name/spoken_term ကိုယ်တိုင်က နိုင်ငံခြားစာလုံးဖြစ်နေလျှင် အဲဒါ locked form မဟုတ် — evidence သာဖြစ်သည်။ Burmese transliteration/အဓိပ္ပာယ် အသစ်တစ်ခု lock လုပ်ပြီးမှ သုံးပါ။ Safe Burmese form လုံးဝမရှိလျှင် မူရင်းအသံကို မြန်မာအက္ခရာနဲ့ အသံထွက်အတိုင်း ရေးပါ — နာမည်/term ကိုဖျက်ပြီး ဝါကျကိုအဓိပ္ပာယ်ပျက်အောင် မလုပ်ရ။ လုပ်ဆောင်သူ/ပြောသူ မရှင်းတဲ့ scene မှာတော့ ပထမဝါကျနဲ့ စကားပြောဝါကျတိုင်းရဲ့အစမှာ protagonist ဆိုလျှင် locked pronoun၊ အခြားသူဆိုလျှင် သူ့ TTS-safe အမည်/approved short_name/unique label ကို ပြန်တပ်ပါ။
 အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ protagonist ကိုယ်တိုင် သူကြုံခဲ့ရတာကို သဘာဝကျကျ ပြန်ပြောနေသလို ပြန်ရေးပါ။ Locked self-pronoun က «{protagonist_pronoun or "story_map/context က အတည်ပြုထားတဲ့ pronoun"}» ပါ။ Pronoun ကို အမည်ကနေ မခန့်မှန်းရ၊ scene တိုင်းမှာ အဲ့ဒီတစ်ခုပဲ သုံးပါ။
 မူရင်းစာသားမှာ ပါပြီးသား လူမိတ်ဆက်/approved short_name/ပြန်အမှတ်ရစေတဲ့ identity_anchor/name-reveal bridge၊ term ရဲ့ ပထမဆုံးရှင်းပြချက်၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန်၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ အဆုံးသတ် မဖြေရှင်းရသေးတဲ့ ပြဿနာကိုလည်း မပျောက်အောင် ထိန်းပါ။
 ဇာတ်လမ်းအဆက်အစပ်ကိုပါ ထိန်းပြီး အရင်ရလဒ် → ဘယ်သူဘာလိုချင်လဲ → အဟန့်အတား/စကားပြော → လုပ်ရပ် → တုံ့ပြန်မှု → အကျိုးဆက် ရှင်းအောင် လုပ်ပါ။ အချက်အသစ် မတီထွင်ပါနှင့်၊ ဖြစ်ရပ်ကို scene အချင်းချင်း မရွှေ့ပါနှင့်။ Source က အထောက်အပံ့မရှိတဲ့ စိတ်ထဲကအတွေး မထည့်ရ။
@@ -13192,6 +13696,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     latest_sentence_actor_stats = {}
     latest_introduction_stats = {}
     latest_tts_sanitize_stats = {}
+    latest_tts_token_repair_stats = {}
     latest_dedupe_stats = {}
     cast_lock_replacements = 0
     last_script_error = ""
@@ -14189,6 +14694,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # The last case matters even when the whole-script story editor
     # was rejected: one invalid editor scene must not make a few
     # transliterable tokens fatal to the entire window.
+    tts_token_repair_attempts = {}
+    professional_repair_attempted = set()
     for repair_round in range(0 if has_prepared_script else NARRATOR_REPAIR_ROUNDS):
         _sync_protagonist_identity()
         protagonist_forms = _protagonist_name_forms(
@@ -14201,6 +14708,142 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 "protagonist_pronoun": new_protagonist_pronoun,
             },
         )
+        token_repair_progress = False
+        # Deterministic ledger replacement first, then a *token-only*
+        # model mapping for names/terms whose ledger entries are
+        # themselves foreign script. Asking a weak fallback model to
+        # rewrite whole scenes for this narrow problem made it copy
+        # the Chinese back, because the story map labelled those
+        # forms ``spoken_name``; a checkable mapping cannot drift
+        # scene content, POV, order, or length.
+        ledger_sanitize_stats = _sanitize_tts_unsafe_scenes(
+            scenes,
+            story_map=story_map,
+            story_context={
+                **(story_context or {}),
+                "protagonist": new_protagonist,
+                "protagonist_gender": new_protagonist_gender,
+                "protagonist_pronoun": new_protagonist_pronoun,
+            },
+        )
+        if int(ledger_sanitize_stats.get("replacements") or 0):
+            latest_tts_sanitize_stats = ledger_sanitize_stats
+        token_contexts = _tts_unsafe_token_contexts(scenes)
+        pending_tokens = [
+            str(item.get("source") or "")
+            for item in token_contexts
+            if item.get("source")
+            and int(tts_token_repair_attempts.get(str(item["source"]), 0)) < 2
+        ]
+        if pending_tokens:
+            for token in pending_tokens:
+                tts_token_repair_attempts[token] = (
+                    int(tts_token_repair_attempts.get(token, 0)) + 1
+                )
+            await tracker.update(
+                "🔤 အသံမဖတ်နိုင်တဲ့ နာမည်/အခေါ်တွေကို မြန်မာအသံထွက်"
+                "ပုံစံသို့ ပြောင်းနေပါသည်... "
+                f"({repair_round + 1}/{NARRATOR_REPAIR_ROUNDS})",
+                force=True,
+            )
+            token_prompt = _tts_token_repair_prompt(
+                scenes,
+                story_map,
+                {
+                    **(story_context or {}),
+                    "protagonist": new_protagonist,
+                    "protagonist_gender": new_protagonist_gender,
+                    "protagonist_pronoun": new_protagonist_pronoun,
+                },
+                protagonist=new_protagonist,
+                tokens=pending_tokens,
+            )
+            try:
+                token_data = await _generate_direct_gemini_json(
+                    client,
+                    [token_prompt],
+                    purpose="TTS foreign-script token repair",
+                    tracker=tracker,
+                    max_output_tokens=4096,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_script_error = _safe_error_text(e, 900)
+                latest_tts_token_repair_stats = {
+                    "rounds": repair_round + 1,
+                    "error": type(e).__name__,
+                    "tokens": pending_tokens[:16],
+                }
+                logger.warning(
+                    "Direct TTS token repair failed: %s",
+                    last_script_error,
+                )
+            else:
+                token_replacements = _parse_tts_token_replacements(
+                    token_data,
+                    pending_tokens,
+                )
+                token_stats = _apply_tts_token_replacements(
+                    scenes,
+                    token_replacements,
+                    story_map=story_map,
+                    story_context=story_context,
+                )
+                latest_tts_token_repair_stats = {
+                    **token_stats,
+                    "rounds": repair_round + 1,
+                    "tokens": pending_tokens[:16],
+                }
+                locked_tokens = token_stats.get("locked_tokens") or {}
+                for source, target in locked_tokens.items():
+                    if new_protagonist and set(
+                        _cjk_variant_forms(new_protagonist)
+                    ) & set(_cjk_variant_forms(source)):
+                        new_protagonist = target
+                        break
+                token_repair_progress = bool(
+                    int(token_stats.get("replacements") or 0)
+                )
+                if token_repair_progress:
+                    scenes, token_pass_stats = _apply_first_person_pass(
+                        scenes,
+                        is_opening=(chunk_index == 1),
+                    )
+                    cast_lock_replacements += int(
+                        token_pass_stats.get("cast_lock_replacements") or 0
+                    )
+                    latest_first_person_stats = (
+                        token_pass_stats.get("first_person") or {}
+                    )
+                    latest_scene_opening_stats = (
+                        token_pass_stats.get("scene_opening") or {}
+                    )
+                    latest_tts_sanitize_stats = (
+                        token_pass_stats.get("tts_sanitize") or {}
+                    )
+                    protagonist_forms = _protagonist_name_forms(
+                        new_protagonist,
+                        story_map=story_map,
+                        story_context={
+                            **(story_context or {}),
+                            "protagonist": new_protagonist,
+                            "protagonist_gender": new_protagonist_gender,
+                            "protagonist_pronoun": new_protagonist_pronoun,
+                        },
+                    )
+        repair_metrics = _story_clarity_metrics(
+            scenes,
+            story_map,
+            story_context,
+            is_final_window=is_final_window,
+            protagonist=new_protagonist,
+            is_opening_window=(chunk_index == 1),
+            source_duration=chunk_dur,
+        )
+        professional_indexes = set(
+            _professional_repair_scene_indexes(repair_metrics)
+        ) - professional_repair_attempted
         bad_indexes = sorted(
             set(
                 _first_person_repair_scene_indexes(
@@ -14211,9 +14854,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 )
             )
             | set(_tts_unsafe_scene_indexes(scenes))
+            | professional_indexes
         )
         if not bad_indexes:
             break
+        professional_repair_attempted.update(professional_indexes)
         await tracker.update(
             "🎙️ POV သို့မဟုတ် အသံဖတ်နိုင်သော မြန်မာစာသားပုံစံ မကိုက်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
             f"({repair_round + 1}/{NARRATOR_REPAIR_ROUNDS})",
@@ -14280,7 +14925,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
             latest_first_person_stats = repair_pass_stats.get("first_person") or {}
             latest_scene_opening_stats = repair_pass_stats.get("scene_opening") or {}
-        if accepted <= 0:
+            latest_tts_sanitize_stats = (
+                repair_pass_stats.get("tts_sanitize") or {}
+            )
+        if accepted <= 0 and not token_repair_progress:
             break
 
 
@@ -14383,6 +15031,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     story_editor_metrics["tts_sanitize"] = json.loads(
         json.dumps(latest_tts_sanitize_stats, ensure_ascii=False)
     )
+    story_editor_metrics["tts_token_repair"] = json.loads(
+        json.dumps(latest_tts_token_repair_stats, ensure_ascii=False)
+    )
     story_editor_metrics["within_window_dedupe"] = json.loads(
         json.dumps(latest_dedupe_stats, ensure_ascii=False)
     )
@@ -14433,6 +15084,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             final_story_metrics.get("tts_unsafe_tokens") or []
         ),
         "tts_sanitize": latest_tts_sanitize_stats,
+        "tts_token_repair": latest_tts_token_repair_stats,
         "scene_timeline": final_story_metrics.get("scene_timeline") or {},
         "scene_timeline_before": scene_timeline_before,
         "scene_timeline_renormalized": bool(scene_timeline_renormalized),
@@ -14463,6 +15115,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
         )
         | set(_tts_unsafe_scene_indexes(scenes))
+        | set(_professional_repair_scene_indexes(final_story_metrics))
     )
     protagonist_present_no_voice = bool(
         final_story_metrics.get("protagonist_present")
@@ -17497,12 +18150,21 @@ def _rewrite_prompt(
         "ကိုယ့်အမည်ကို subject လို ထပ်ခါမသုံးရ။ အခြားဇာတ်ကောင်စကားရဲ့ ကိုယ်ပိုင် "
         "«ကျွန်တော်/ကျွန်မ» ကို တိုက်ရိုက်သုံးရင် speaker ကိုအရင်အမည်တပ်ပြီး quotation marks အတွင်းထည့်ပါ။"
     )
-    if protagonist:
+    if protagonist and not _tts_unsafe_script_chars(protagonist):
         cast_lock_line = (
             f"အဓိကဇာတ်ကောင်ရဲ့ full spoken_name က «{protagonist}» ဖြစ်သည်။ "
             "Story အစမှာ locked pronoun နဲ့ ကိုယ်တိုင်တစ်ခါမိတ်ဆက်ပြီး နောက်ပိုင်း "
             "ကိုယ့်အတွက် pronoun ကိုသာ သုံးပါ။ အခြားလူတွေအတွက်တော့ card ထဲ approved "
             "short_name ရှိမှသာ introduction ပြီးနောက် routine အဖြစ် သုံးပါ။"
+        )
+    elif protagonist:
+        cast_lock_line = (
+            f"အဓိကဇာတ်ကောင်၏ မူရင်းအထောက်အထားစာလုံးမှာ «{protagonist}» ဖြစ်သည်။ "
+            "၎င်းကို narration မှာ လုံးဝမသုံးဘဲ မြန်မာအသံထွက် transliteration "
+            "အသစ်တစ်ခု lock လုပ်ပြီး Story အစမှာ locked pronoun နဲ့ "
+            "ကိုယ်တိုင်မိတ်ဆက်ပါ။ နောက်ပိုင်း ကိုယ့်အတွက် pronoun ကိုသာသုံးပြီး "
+            "အခြားလူတွေအတွက်တော့ card ထဲက TTS-safe Burmese spoken_name/"
+            "approved short_name ကိုသာ သုံးပါ။"
         )
     else:
         cast_lock_line = (
@@ -17543,7 +18205,7 @@ def _rewrite_prompt(
         task_line = (
             "FIRST-PERSON PROTAGONIST NARRATOR REPAIR — existing_burmese ၏ အကြောင်းအရာအားလုံးကို မလျော့ဘဲ "
             "အဓိကဇာတ်ကောင် ကိုယ်တိုင်က locked pronoun နဲ့ သူ့ကိုယ်တွေ့ကို ပြန်ပြောနေသလို scene အပြည့်အစုံ ပြန်ရေးပါ။ "
-            "TTS မဖတ်နိုင်တဲ့ နိုင်ငံခြားစာလုံးကျန်နေရင် context ထဲက locked Burmese spoken_name/spoken_term နဲ့ အစားထိုးပြီး locked form မရှိမှသာ မြန်မာအသံထွက်အတိုင်း ရေးပါ။"
+            "TTS မဖတ်နိုင်တဲ့ နိုင်ငံခြားစာလုံးကျန်နေရင် context ထဲက TTS-safe Burmese spoken_name/spoken_term နဲ့ အစားထိုးပါ။ Card ထဲက spoken_name/spoken_term ကိုယ်တိုင်က နိုင်ငံခြားစာလုံးဆိုလျှင် locked form မဟုတ် — evidence သာဖြစ်၍ Burmese transliteration/အဓိပ္ပာယ်အသစ်တစ္ခုကို lock လုပ်ပါ။ Scene အစနဲ့ စကားပြောဝါကျမှာ လုပ်ဆောင်သူ/ပြောသူမရှင်းလျှင်လည်း protagonist ဆိုလျှင် locked pronoun၊ အခြားသူဆိုလျှင် TTS-safe အမည်/approved short_name/unique label ကို ပြန်တပ်ပါ။"
         )
     elif adjust_mode == "shorten":
         task_line = (
@@ -17610,6 +18272,7 @@ Cast Lock: {cast_lock_line}
 
 လိုက်နာရမည်များ:
 - Output သည် Burmese သာ ဖြစ်ရမည်။ မူရင်းဘာသာစကားကို ဘာသာပြန်ပါ။
+- Context/story_map field တစ်ခုမှာ `spoken_name` သို့မဟုတ် `spoken_term` ကိုယ်တိုင်က နိုင်ငံခြားစာလုံးဖြစ်နေလျှင် ၎င်းကို locked spoken form အဖြစ်မသုံးပါနှင့် — evidence သာဖြစ်ပြီး Burmese transliteration သို့မဟုတ် မြန်မာအဓိပ္ပာယ်ပုံစံအသစ်တစ်ခုကို lock လုပ်၍ narration နဲ့ story_map နှစ်ခုစလုံးမှာ အဲ့ဒီတစ်ခုကိုသာ သုံးပါ။
 - အကျဉ်းချုပ် မဟုတ်ပါ။ Group တစ်ခုစီရှိ အကြောင်းအရာအားလုံးနီးပါးကို အပြည့်အဝ ပြန်ပြောပါ။ နောက်ဆုံး final video ၏ အမှန်တကယ်ကြာချိန်သည် မူရင်း video ၏ {st.get('coverage')}% ဖြစ်ရမည်။
 - Input group တစ်ခုအတွက် output scene တစ်ခုတည်းသာ ထုတ်ပါ။ group_id ကို အတိအကျ ကူးထည့်ပါ။ Group များကို မပေါင်းပါနှင့်၊ မခွဲပါနှင့်၊ အစဉ်မပြောင်းပါနှင့်။
 - start/end သို့မဟုတ် source_segment_ids ကို ကိုယ်တိုင် မဖန်တီးပါနှင့်။ ၎င်းတို့ကို worker က ထည့်ပေးမည်။
@@ -17821,6 +18484,7 @@ async def _repair_worker_narrator_scenes(
     state: dict = None,
     tracker=None,
     rounds: int = NARRATOR_REPAIR_ROUNDS,
+    story_map: dict = None,
 ) -> tuple:
     """Rewrite worker scenes whose protagonist narrator voice drifts.
 
@@ -17831,7 +18495,7 @@ async def _repair_worker_narrator_scenes(
     if isinstance(story_context, dict):
         story_context.update(_normalize_story_context(story_context))
         story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
-    repair_story_map = {}
+    repair_story_map = story_map if isinstance(story_map, dict) else {}
     initial_pass = _worker_first_person_pass_by_group(
         groups,
         scenes_by_group,
@@ -17848,8 +18512,10 @@ async def _repair_worker_narrator_scenes(
             group_by_id[int(group.get("group_id") or 0)] = group
         except (TypeError, ValueError, AttributeError):
             continue
+    tts_token_repair_attempts = {}
+    professional_repair_attempted = set()
 
-    def bad_group_ids():
+    def bad_group_ids(*, for_repair: bool = False):
         scene_list = _worker_scenes_from_groups(groups, scenes_by_group)
         forms = _protagonist_name_forms(
             str(story_context.get("protagonist") or ""),
@@ -17874,6 +18540,22 @@ async def _repair_worker_narrator_scenes(
             for index in indexes
             if 0 <= index < len(scene_list)
         }
+        story_metrics = _story_clarity_metrics(
+            scene_list,
+            repair_story_map,
+            story_context,
+            is_final_window=False,
+            protagonist=str(story_context.get("protagonist") or ""),
+            is_opening_window=True,
+        )
+        professional_bad = {
+            int(scene_list[index].get("group_id") or 0)
+            for index in _professional_repair_scene_indexes(story_metrics)
+            if 0 <= index < len(scene_list)
+        }
+        if for_repair:
+            professional_bad -= professional_repair_attempted
+        bad |= professional_bad
         if scene_list and story_context.get("protagonist"):
             metrics = _first_person_metrics(
                 scene_list,
@@ -17891,10 +18573,91 @@ async def _repair_worker_narrator_scenes(
                 bad.add(int(scene_list[0].get("group_id") or 0))
         return sorted(gid for gid in bad if gid > 0)
 
+    def sync_worker_scenes(scene_list):
+        for scene in scene_list or []:
+            try:
+                gid = int(scene.get("group_id") or 0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if gid > 0:
+                scenes_by_group[gid] = str(scene.get("burmese") or "")
+
     for repair_round in range(max(0, int(rounds or 0))):
-        bad_ids = bad_group_ids()
+        token_repair_progress = False
+        # Same token-first rescue as the direct path: ledger-known
+        # forms deterministically, then a mapping-only model call
+        # for ledger entries that are themselves foreign script.
+        # Whole-group rewriting remains only as the final fallback.
+        scene_list = _worker_scenes_from_groups(groups, scenes_by_group)
+        sanitize_stats = _sanitize_tts_unsafe_scenes(
+            scene_list,
+            story_map=repair_story_map,
+            story_context=story_context,
+        )
+        if int(sanitize_stats.get("replacements") or 0):
+            sync_worker_scenes(scene_list)
+            scene_list = _worker_scenes_from_groups(groups, scenes_by_group)
+        token_contexts = _tts_unsafe_token_contexts(scene_list)
+        pending_tokens = [
+            str(item.get("source") or "")
+            for item in token_contexts
+            if item.get("source")
+            and int(tts_token_repair_attempts.get(str(item["source"]), 0)) < 2
+        ]
+        if pending_tokens:
+            for token in pending_tokens:
+                tts_token_repair_attempts[token] = (
+                    int(tts_token_repair_attempts.get(token, 0)) + 1
+                )
+            if state is not None:
+                await _worker_progress(
+                    state,
+                    "🔤 အသံမဖတ်နိုင်တဲ့ နာမည်/အခေါ်တွေကို မြန်မာအသံထွက်"
+                    "ပုံစံသို့ ပြောင်းနေပါသည်... "
+                    f"({repair_round + 1}/{rounds})",
+                    tracker,
+                )
+            token_prompt = _tts_token_repair_prompt(
+                scene_list,
+                repair_story_map,
+                story_context,
+                protagonist=str(story_context.get("protagonist") or ""),
+                tokens=pending_tokens,
+            )
+            try:
+                token_data = await _worker_gemini_json(token_prompt, client)
+            except Exception as e:
+                logger.warning(f"Worker TTS token repair failed: {e}")
+            else:
+                token_replacements = _parse_tts_token_replacements(
+                    token_data,
+                    pending_tokens,
+                )
+                token_stats = _apply_tts_token_replacements(
+                    scene_list,
+                    token_replacements,
+                    story_map=repair_story_map,
+                    story_context=story_context,
+                )
+                token_repair_progress = bool(
+                    int(token_stats.get("replacements") or 0)
+                )
+                if token_repair_progress:
+                    sync_worker_scenes(scene_list)
+                    pass_stats = _worker_first_person_pass_by_group(
+                        groups,
+                        scenes_by_group,
+                        repair_story_map,
+                        story_context,
+                        is_opening=True,
+                    )
+                    cast_lock_replacements += int(
+                        pass_stats.get("cast_lock_replacements") or 0
+                    )
+        bad_ids = bad_group_ids(for_repair=True)
         if not bad_ids:
             break
+        professional_repair_attempted.update(bad_ids)
         if state is not None:
             await _worker_progress(
                 state,
@@ -17991,8 +18754,11 @@ async def _repair_worker_narrator_scenes(
             cast_lock_replacements += int(
                 pass_stats.get("cast_lock_replacements") or 0
             )
-        if accepted <= 0:
+        if accepted <= 0 and not token_repair_progress:
             break
+    if isinstance(story_map, dict) and story_map is not repair_story_map:
+        story_map.clear()
+        story_map.update(repair_story_map)
     return NARRATOR_PERSPECTIVE, bad_group_ids(), int(cast_lock_replacements)
 
 
@@ -18221,6 +18987,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         client,
         state=state,
         tracker=tracker,
+        story_map=story_map,
     )
     cast_lock_replacements += repair_cast_replacements
     cast_lock_replacements += _worker_cast_lock_scenes_by_group(
@@ -18352,6 +19119,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             state=state,
             tracker=tracker,
             rounds=2,
+            story_map=story_map,
         )
     )
     cast_lock_replacements += repair_cast_replacements
@@ -25159,7 +25927,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.38-tts-safe-repair"
+BUILD_VERSION = "v5.39-foreign-name-token-lock"
 BUILD_FEATURES = len(FEATURES)
 
 
@@ -25899,7 +26667,7 @@ def _update_notice_text(version: str) -> str:
         "• ဇာတ်လမ်းအစမှာ အဓိကဇာတ်ကောင်ကိုယ်တိုင်က အမည်+ဘယ်သူလဲနဲ့ မိတ်ဆက်ပြီး နောက်ပိုင်း မှန်ကန်တဲ့ <b>ကျွန်တော်/ကျွန်မ</b> တစ်ခုတည်းနဲ့ ဆက်ပြောပါမယ်။ စာအုပ်ဖတ်ဟန်ကို အပြောဟန်ပြောင်းပြီး ဝါကျအတိအကျ/အနီးစပ် ထပ်နေတာတွေကိုလည်း ဖယ်ပါမယ်\n"
         "• <b>အသံနဲ့ Footage ကိုက်ညီမှု</b>ကို အပိုင်းအစမှအဆုံးထိ စစ်ပါမယ် — scene အချိန်တွေ အလယ်လောက်မှစပြီး နောက် footage ပဲ ထပ်ပြနေတာမျိုး မဖြစ်အောင် timeline ကို ပြန်ညှိပါမယ်\n"
         "• ကပ်လျက် ဝါကျတွေမှာ အဖြစ်တစ်ခုတည်းကို စကားလုံးပြောင်းပြီး <b>နှစ်ခါပြန်ပြောတာ</b>၊ clause ထပ်တာတွေကို ဖယ်ပြီး အမည်တိုပေါ်လာရင် အမည်အပြည့်နဲ့ မိတ်ဆက်စကားကို တကယ် အသံထွက်ပြောပါမယ်။ ထပ်နေမှု/အမည်မရှင်းမှုပြင်းတဲ့ script ကို အရည်အသွေးနိမ့်နိမ့်နဲ့ မပို့ပါဘူး\n"
-        "• တရုတ်/အင်္ဂလိပ်/ကိုရီးယားစာလုံးလို <b>အသံဖတ်မရတဲ့ နာမည်/term</b> ကျန်နေရင် script တစ်ခုလုံးကို တန်းမဖျက်ဘဲ Cast Lock/glossary ထဲက မြန်မာအခေါ်နဲ့ အရင်အစားထိုးပြီး မသိသေးတာကိုပါ scene အလိုက် မြန်မာအသံထွက်/အဓိပ္ပာယ်နဲ့ ပြန်ပြင်ပါမယ်\n"
+        "• တရုတ်/အင်္ဂလိပ်/ကိုရီးယားစာလုံးလို <b>အသံဖတ်မရတဲ့ နာမည်/term</b> ကျန်နေရင် script တစ်ခုလုံးကို တန်းမဖျက်ဘဲ Cast Lock/glossary ထဲက မြန်မာအခေါ်နဲ့ အရင်အစားထိုးပါမယ်။ နာမည်ကတ်ထဲကပုံစံကိုယ်တိုင်က နိုင်ငံခြားစာလုံးဖြစ်နေရင်လည်း token တစ်ခုစီကို မြန်မာအသံထွက်/အဓိပ္ပာယ်အဖြစ် lock လုပ်ပြီး Simplified/Traditional ပုံစံကွဲတွေအပါအဝင် တစ်ပြိုင်တည်း ပြန်ပြင်ပါမယ်။ Scene အစနဲ့ စကားပြောတွေမှာ ဘယ်သူလုပ်ဆောင်/ပြောမှန်း မရှင်းတာပြင်းရင်လည်း အဲဒီ scene တွေကို သီးခြားပစ်မှတ်ထား ပြင်ပါမယ်\n"
         "• <b>System, အဆင့်/အရည်အသွေး, Mortal</b> လို ဇာတ်လမ်းစည်းမျဉ်းစကားလုံးတွေကို ပထမဆုံးအကြိမ် မြန်မာလို ရိုးရိုးရှင်းရှင်း ရှင်းပြပြီး နောက်ပိုင်း အခေါ်တစ်မျိုးတည်း ဆက်သုံးပါမယ်\n"
         "• အမည်ကတ်, system/status Panel, စာရွက်, ဆိုင်းဘုတ်နဲ့ title card လို <b>ဖန်သားပြင်ပေါ်က အရေးကြီးစာ</b>ကို မူရင်းစကား/subtitle နဲ့ တိုက်စစ်ပြီး မြန်မာအဓိပ္ပာယ်ကို ဆိုင်ရာ footage ပေါ်မှာတင် ပြောပါမယ်\n"
         "• Script က အကျဉ်းချုပ်မဟုတ်ဘဲ မူရင်းရဲ့ <b>90%</b> အပြည့်နီးပါး ပြန်ပြောပြီး Final က မူရင်းထက် <b>မရှည်ပါ</b>\n"
