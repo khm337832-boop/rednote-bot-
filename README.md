@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.31-story-clarity-dialogue` is a **one-shot automatic flow**: the user
+Version `v5.32-delivery-integrity` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -14,13 +14,18 @@ the complete source, processes it internally in fixed chronological
 the finished final video — **no per-part clicking**. Transient failures
 are retried automatically at every stage (source download, script, TTS,
 per-window render, join, and final upload), and a job is only reported
-as done after every final piece has actually been delivered. The final
-video is split only when Telegram's upload size requires it. Splitting
-uses stream-copy at keyframe-snapped ~2-minute boundaries (accepted
-when the parts cover the full source and none exceeds 1.5× the window;
-only sparse-keyframe sources fall back to a bounded 720p/ultrafast
-accurate extraction), so the split stage takes seconds instead of
-re-encoding the whole source. While any job runs, the service also
+as done after every final piece has actually been delivered. The
+announced source-window plan and the processed window count are kept
+identical: stream-copy may use keyframe-snapped boundaries only when
+it returns exactly the planned count, covers the full source, and no
+window exceeds 1.5× the target; otherwise the bounded 720p/ultrafast
+accurate extraction builds the planned windows. The joined final is
+split only when Telegram's upload size requires it, and that separate
+size-based delivery set is validated before the first upload (every
+file fits, probes as video, and the file durations together still
+equal the joined final), so an internal 11-window job can be sent as
+9 larger Telegram files without losing two windows—and the captions
+now label those as Telegram delivery files rather than source parts. While any job runs, the service also
 self-pings its public `/healthz` URL every few minutes so Render's
 free-plan 15-minute idle spin-down cannot kill a long job mid-render.
 Every Gemini call (script, TTS, upload) is hard time-boxed
@@ -230,9 +235,14 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
    range, and percent for both phases.
 4. Join all window recaps in order (join retried once on failure),
    re-check the whole-source duration target, split only for Telegram
-   size delivery, and send the final video. Every final piece is
-   retried up to 3 times; if any piece cannot be delivered the job is
-   reported as failed — never as a partially delivered success.
+   size delivery, validate that every delivery file fits/probes and
+   that their durations sum to the joined final, and only then send
+   the final video. Progress and captions distinguish internal
+   windows (`x/y` windows joined) from size-based Telegram delivery
+   files (`x/y` files sent). Uploads are streamed from disk and honour
+   Telegram `retry_after`; every final piece is retried up to 3 times,
+   and if any piece cannot be delivered the job is reported as failed
+   — never as a partially delivered success.
 
 ### Legacy manual per-part flow (explicit opt-in only)
 
@@ -635,6 +645,32 @@ v5.19 makes the job registry survive that:
   still-unresolved question. The final-window flag is threaded through
   automatic, legacy combined, manual, and worker rewrite paths.
 
+## v5.32 — Exact window counts and delivery integrity
+
+- **Announced source windows now equal processed source windows.**
+  The one-pass stream-copy split is accepted only when it covers the
+  full source, no window exceeds 1.5× the target, and its file count
+  exactly matches the announced 2-minute plan. A sparse-keyframe
+  result such as “11 planned, 9 returned” now falls back to accurate
+  planned extraction instead of silently processing longer windows.
+- **Telegram delivery is validated before upload 1.** Internal
+  windows are joined and then split only by the 45MB Telegram cap;
+  those delivery files need not equal the internal window count.
+  Before sending, every file must exist, fit, and probe as video,
+  and their durations together must match the joined final. A bad
+  split fails before any piece is uploaded instead of stopping after
+  a partial prefix.
+- **Sparse-keyframe final splits have an accurate fallback.** If a
+  stream-copy split cannot divide an oversized delivery part (or its
+  children do not cover the parent), planned-range extraction creates
+  standalone children; stale segment files are cleared and numeric
+  ordering is enforced.
+- **Large uploads are streamed and flood-aware.** Telegram media is
+  no longer copied whole into RAM for each attempt, and 429
+  `retry_after` waits are honoured. Direct delivery progress/captions
+  show both counts separately: internal windows joined and Telegram
+  files sent.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -666,7 +702,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.31-story-clarity-dialogue"`,
+URLs must show `"version":"v5.32-delivery-integrity"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -682,6 +718,7 @@ URLs must show `"version":"v5.31-story-clarity-dialogue"`,
 `"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected"`,
 `"script_qa":"cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate"`,
 `"story_clarity_contract":"who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending"`,
+`"delivery_integrity":"exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after"`,
 `"video_geometry":"display_sar_rotation_square_pixel_output"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
@@ -699,7 +736,7 @@ on a fresh process, `"clamp":[1.2,24.0]`,
 `"recap_flow":"auto_concat"`, `"manual_parts_enabled":false`,
 `"telegram_pipeline":"direct_auto"`, `"n8n_telegram_handoff_enabled":false`,
 `"source_segment_seconds":120`,
-`"source_split_acceptance":"stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback"`,
+`"source_split_acceptance":"stream_copy_exact_plan_count_max_1p5x_window_then_720p_ultrafast_fallback"`,
 `"render_keepalive":"self_ping_public_healthz_while_jobs_active"`,
 `"segment_pipeline":"download_split_120s_script_all_dedupe_then_voice_edit_concat_send"`,
 `"telegram_buttons":"inline_persistent_menu_auto_one_shot_manual_opt_in"`,

@@ -102,7 +102,7 @@
 - [x] **Audio** — V1 တွင် မူရင်းအသံ/BGM ကို မထားဘဲ Edge Thiha narration (လိုမှ Gemini Charon fallback) တစ်ခုတည်း ထည့်ပါမည်။
 - [x] **Subtitles** — V1 တွင် subtitle/caption burn-in မပါပါ။
 - [x] **Video alignment** — narration ကို speed ပြောင်း/stretch/pad မလုပ်ပါ။ Scene အစကိုသာ align လုပ်ပြီး narration တိုလျှင် video အစိတ်အပိုင်းကိုဖြတ်ကာ, ရှည်လျှင် နောက် scene မစမီကြားထဲက footage ကိုသာ ချေးယူပါမည်။ Planned freeze မသုံးပါ။ Footage ပြန်သုံးရန် မဖြစ်မနေလိုမှသာ စုစုပေါင်း အများဆုံး ၂ ကြိမ်သာ ပြန်ပြပါမည်။
-- [x] **ကြီးမားသော final video** — Telegram မပို့ခင် အပိုင်းတိုင်းသည် worker limit (45MB) အောက်တွင် ရှိ/မရှိ စစ်ပြီး လိုပါက ထပ်ခွဲပါမည်။
+- [x] **ကြီးမားသော final video** — Telegram မပို့ခင် အပိုင်းတိုင်းသည် worker limit (45MB) အောက်တွင် ရှိ/မရှိနှင့် ခွဲထားသောဖိုင်များ၏ ကြာချိန်ပေါင်းက joined final နှင့် ကိုက်/မကိုက် စစ်ပြီး လိုပါက ထပ်ခွဲပါမည်။ Telegram delivery file အရေအတွက်သည် size အရသာ ဖြစ်ပြီး transcript group/source window အရေအတွက်နှင့် တူရန် မလိုပါ။
 
 ### V1 ကန့်သတ်ချက်
 
