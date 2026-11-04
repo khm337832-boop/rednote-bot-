@@ -2924,8 +2924,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bot._duration_within_limits(50.0, 100.0, {}))
 
     def test_polish_splits_runaway_sentence_at_clause_commas(self):
-        clause = HERO_NAME + " လမ်းလျှောက်သွားတယ်"
-        runaway = "၊ ".join([clause] * 12) + "။"
+        clauses = [
+            unique_first_person_sentence(index).rstrip("။")
+            for index in range(12)
+        ]
+        runaway = "၊ ".join(clauses) + "။"
         self.assertGreater(len(runaway), bot._SPEECH_MAX_SENTENCE_CHARS)
         polished = bot._polish_text_for_speech(runaway)
         sentences = bot._split_sentences(polished)
@@ -3255,6 +3258,346 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             [(10.0, 1.0, 10.0), (6.0, 1.0, 6.0)],
         )
         self.assertEqual(replay_tail[0]["freeze_seconds"], 0.0)
+
+    def test_scene_timeline_renormalizes_late_chunk_and_respects_ground_truth(self):
+        # The rejected v5.36 final: an 113.4s window whose model
+        # scenes all sat in the last ~51s, so alignment replayed late
+        # footage under narration that was still at the beginning.
+        starts = [
+            62.74, 68.16, 72.96, 77.68, 83.67, 86.45,
+            91.43, 95.7, 100.53, 106.57, 109.27,
+        ]
+        scenes = [
+            {
+                "start": start,
+                "end": starts[index + 1] if index + 1 < len(starts) else 113.4,
+            }
+            for index, start in enumerate(starts)
+        ]
+        metrics = bot._scene_timeline_metrics(
+            scenes, 113.4, desired_total_seconds=101.316
+        )
+        self.assertTrue(metrics["unreliable"])
+        self.assertIn("first_scene_starts_too_late", metrics["reasons"])
+
+        repaired = bot._renormalize_scene_timeline(scenes, 113.4)
+        self.assertEqual(repaired[0]["start"], 0.0)
+        self.assertEqual(repaired[-1]["end"], 113.4)
+        self.assertEqual(
+            [scene["start"] for scene in repaired],
+            sorted(scene["start"] for scene in repaired),
+        )
+        self.assertFalse(
+            bot._scene_timeline_metrics(repaired, 113.4)["unreliable"]
+        )
+
+        plan = bot._build_alignment_plan(scenes, [9.21] * 11, 113.4)
+        self.assertEqual(plan[0]["source_start"], 0.0)
+        self.assertTrue(plan[0]["timeline_anchor_renormalized"])
+        self.assertTrue(all(item["freeze_seconds"] == 0.0 for item in plan))
+        self.assertTrue(all(item["repeat_count"] == 1 for item in plan))
+
+        # Worker transcript timestamps are speech ground truth: the
+        # same late anchors must not be shifted onto silent footage.
+        ground_truth = bot._build_alignment_plan(
+            scenes,
+            [9.21] * 11,
+            113.4,
+            timeline_is_ground_truth=True,
+        )
+        self.assertEqual(ground_truth[0]["source_start"], 62.74)
+        self.assertFalse(ground_truth[0]["timeline_anchor_renormalized"])
+
+    def test_normalize_direct_payload_shifts_absolute_timestamps(self):
+        payload = {
+            "scenes": [
+                {
+                    "start": 120 + index * 10,
+                    "end": 130 + index * 10,
+                    "burmese": f"{MALE_PRONOUN} ဆက်သွားတယ်။",
+                }
+                for index in range(5)
+            ]
+        }
+        normalized = bot._normalize_direct_script_payload(
+            payload, chunk_duration=93.0
+        )
+        self.assertEqual(
+            [(scene["start"], scene["end"]) for scene in normalized["scenes"]],
+            [(0.0, 10.0), (10.0, 20.0), (20.0, 30.0), (30.0, 40.0), (40.0, 50.0)],
+        )
+
+    def test_dedupe_removes_adjacent_echo_but_keeps_explicit_repeat(self):
+        first = (
+            f"{MALE_PRONOUN} ဈေးတန်းမှာ မီနာကို "
+            "စာအိတ်အကြောင်း မေးခဲ့တယ်။"
+        )
+        echo = (
+            f"ဈေးတန်းရောက်တော့ {MALE_PRONOUN}က မီနာကို "
+            "စာအိတ်အကြောင်းပဲ မေးခဲ့တယ်။"
+        )
+        scenes = [
+            {"start": 0, "end": 10, "burmese": first},
+            {
+                "start": 10,
+                "end": 20,
+                "burmese": echo + f" နောက်ဆုံး {MALE_PRONOUN}တို့ ဆက်ထွက်လာခဲ့တယ်။",
+            },
+        ]
+        deduped, stats = bot._dedupe_scenes_in_order(
+            scenes, known_name_forms=["မီနာ"]
+        )
+        self.assertEqual(stats["removed_near_duplicate_sentences"], 1)
+        self.assertNotIn(echo, deduped[1]["burmese"])
+
+        # A genuinely repeated source action says so; the wider
+        # adjacent-echo test must not erase it.
+        explicit = (
+            f"ဈေးတန်းရောက်တော့ {MALE_PRONOUN}က မီနာကို "
+            "စာအိတ်အကြောင်း နောက်တစ်ကြိမ် မေးခဲ့တယ်။"
+        )
+        self.assertFalse(
+            bot._sentences_are_adjacent_echoes(
+                bot._sentence_record(first, ["မီနာ"]),
+                bot._sentence_record(explicit, ["မီနာ"]),
+            )
+        )
+
+        polished = bot._polish_text_for_speech(
+            f"{MALE_PRONOUN}က လမ်းလျှောက်သွားနေတယ်၊ "
+            f"{MALE_PRONOUN}က လမ်းပဲ လျှောက်သွားနေတယ်၊ "
+            "မီနာကို ရှာနေတယ်။"
+        )
+        self.assertEqual(polished.count("လမ်းလျှောက်သွားနေတယ်"), 1)
+
+    def test_character_introductions_and_actor_repair_speak_supported_names(self):
+        story_map = {
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "character_cards": [
+                {
+                    "spoken_name": HERO_NAME,
+                    "source_name": "Hero",
+                    "gender": "male",
+                    "role": "စာပေးသမား",
+                    "introduction": f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။",
+                },
+                {
+                    "spoken_name": "မီနာအောင်မြင်",
+                    "short_name": "မီနာ",
+                    "source_name": "Mina",
+                    "role": "ညီမ",
+                    "relation": f"{HERO_NAME}ရဲ့ ညီမ",
+                    "introduction": (
+                        f"မီနာအောင်မြင်က {MALE_PRONOUN}ရဲ့ ညီမဖြစ်တယ်။"
+                    ),
+                },
+                {
+                    # A foreign-script spoken form is evidence only;
+                    # the deterministic pass must never insert it
+                    # into Burmese TTS text.
+                    "spoken_name": "Li Wei",
+                    "source_name": "Li Wei",
+                    "role": "ရဲအရာရှိ",
+                    "introduction": "Li Wei က ရဲအရာရှိဖြစ်တယ်။",
+                },
+            ],
+            "beats": [
+                {
+                    "start": 0,
+                    "end": 30,
+                    "beat": "Mina gave Hero the key",
+                    "dialogue": "Mina told Hero to open it",
+                }
+            ],
+        }
+        story_context = {
+            "protagonist": HERO_NAME,
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "narrator_perspective": "first_person_protagonist",
+            "characters": [HERO_NAME],
+        }
+        scenes = [
+            {
+                "start": 0,
+                "end": 10,
+                "burmese": (
+                    f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။ "
+                    "မီနာက သော့ကို ပေးခဲ့တယ်။"
+                ),
+            },
+            {
+                "start": 10,
+                "end": 20,
+                "burmese": "သူက တံခါးကို ဖွင့်ကြည့်လိုက်တယ်။",
+            },
+            {
+                "start": 20,
+                "end": 30,
+                "burmese": (
+                    f"{MALE_PRONOUN}က \"သူက သော့ကို ပေးတာပါ\" "
+                    "လို့ ပြောခဲ့တယ်။"
+                ),
+            },
+            {
+                "start": 30,
+                "end": 40,
+                "burmese": "Li Wei က အမှုကို စစ်ဆေးခဲ့တယ်။",
+            },
+        ]
+        introduced, intro_stats = bot._ensure_character_introductions(
+            scenes,
+            story_map,
+            story_context,
+            protagonist=HERO_NAME,
+        )
+        self.assertEqual(intro_stats["full_name_first_mentions"], 1)
+        self.assertEqual(intro_stats["introductions_inserted"], 1)
+        self.assertEqual(intro_stats["introduced_scene_indexes"], [0])
+        self.assertNotIn("Li Wei", intro_stats["introduced_identities"])
+        # The protagonist still opens; Mina's identity follows, then
+        # her short first mention is promoted to the full name.
+        self.assertTrue(
+            introduced[0]["burmese"].startswith(
+                f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။"
+            )
+        )
+        self.assertIn("မီနာအောင်မြင်က သော့ကို ပေးခဲ့တယ်", introduced[0]["burmese"])
+
+        repaired, actor_stats = bot._repair_ambiguous_sentence_actors(
+            introduced,
+            story_map,
+            story_context,
+            protagonist=HERO_NAME,
+        )
+        self.assertEqual(actor_stats["sentence_pronoun_replacements"], 1)
+        self.assertTrue(repaired[1]["burmese"].startswith("မီနာက တံခါးကို"))
+        # Quoted speech is never rewritten by the actor repair.
+        self.assertIn("\"သူက သော့ကို ပေးတာပါ\"", repaired[2]["burmese"])
+
+        # Worker analysis context knows the whole cast before any of
+        # it has been voiced; that knowledge must not suppress the
+        # first spoken introduction in the full script.
+        worker_context = {
+            **story_context,
+            "characters": [HERO_NAME, "မီနာအောင်မြင်"],
+            "character_cards": story_map["character_cards"],
+        }
+        _worker_style, worker_intro_stats = (
+            bot._ensure_character_introductions(
+                scenes,
+                story_map,
+                worker_context,
+                protagonist=HERO_NAME,
+                treat_context_as_introduced=False,
+            )
+        )
+        self.assertEqual(worker_intro_stats["introductions_inserted"], 1)
+
+        # An inserted card introduction is protagonist narration, so
+        # an opposite-gender pronoun copied into the card relation is
+        # normalized to the locked narrator pronoun before voicing.
+        female_map = {
+            "protagonist_gender": "female",
+            "protagonist_pronoun": FEMALE_PRONOUN,
+            "character_cards": [
+                {
+                    "spoken_name": "မေရီ",
+                    "source_name": "Mary",
+                    "gender": "female",
+                },
+                {
+                    "spoken_name": "မီနာအောင်မြင်",
+                    "short_name": "မီနာ",
+                    "source_name": "Mina",
+                    "introduction": (
+                        f"မီနာအောင်မြင်က {MALE_PRONOUN}ရဲ့ ညီမဖြစ်တယ်။"
+                    ),
+                },
+            ],
+        }
+        female_scenes = [
+            {
+                "start": 0,
+                "end": 10,
+                "burmese": (
+                    f"{FEMALE_PRONOUN}အမည်က မေရီဖြစ်တယ်။ "
+                    "မီနာက သော့ကို ပေးခဲ့တယ်။"
+                ),
+            }
+        ]
+        female_out, _female_stats = bot._ensure_character_introductions(
+            female_scenes,
+            female_map,
+            {
+                "protagonist": "မေရီ",
+                "protagonist_gender": "female",
+                "protagonist_pronoun": FEMALE_PRONOUN,
+            },
+            protagonist="မေရီ",
+        )
+        self.assertIn(f"{FEMALE_PRONOUN}ရဲ့ ညီမဖြစ်တယ်", female_out[0]["burmese"])
+        self.assertNotIn(f"{MALE_PRONOUN}ရဲ့", female_out[0]["burmese"])
+
+    def test_metrics_count_cardless_protagonist_and_gate_blocks_severe_defects(self):
+        scenes = [
+            {
+                "start": index * 10,
+                "end": index * 10 + 10,
+                "burmese": text,
+            }
+            for index, text in enumerate(
+                [
+                    f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။ {MALE_PRONOUN}က အိမ်ကနေ ထွက်လာခဲ့တယ်။",
+                    f"{MALE_PRONOUN}က ဈေးမှာ စာအိတ်ကို ရှာနေခဲ့တယ်။",
+                    f"{MALE_PRONOUN}က မြစ်ကမ်းနားမှာ ခဏနားခဲ့တယ်။",
+                    f"{MALE_PRONOUN}က အိမ်ပြန်လာခဲ့တယ်။",
+                ]
+            )
+        ]
+        metrics = bot._story_clarity_metrics(
+            scenes,
+            {},
+            {
+                "protagonist": HERO_NAME,
+                "protagonist_pronoun": MALE_PRONOUN,
+                "protagonist_gender": "male",
+            },
+            is_opening_window=True,
+            protagonist=HERO_NAME,
+            source_duration=40,
+        )
+        # No character card is required for the locked protagonist
+        # pronoun/name to count as a clear actor identity, and the
+        # dedicated self-introduction is not double-judged as a
+        # missing third-person introduction.
+        self.assertEqual(metrics["identity_clear_scene_count"], 4)
+        self.assertEqual(metrics["actor_unclear_scene_openings"], 0)
+        self.assertEqual(metrics["missing_character_introductions"], [])
+        self.assertEqual(bot._professional_script_quality_failures(metrics), [])
+
+        severe = dict(metrics)
+        severe.update(
+            {
+                "tts_unsafe_script_chars": 2,
+                "duplicate_sentence_count": 2,
+                "duplicate_scenes": 1,
+                "scene_timeline": {
+                    "unreliable": True,
+                    "first_start": 30.0,
+                    "coverage_ratio": 0.25,
+                },
+                "missing_character_introductions": ["မီနာ"],
+                "issues": ["cast_lock_weak"],
+            }
+        )
+        failures = bot._professional_script_quality_failures(severe)
+        self.assertTrue(any("tts_unsafe" in item for item in failures))
+        self.assertTrue(any("repeated_narration" in item for item in failures))
+        self.assertIn("cast_lock_weak", failures)
+        self.assertTrue(any("missing_character_introductions" in item for item in failures))
+        self.assertTrue(any("scene_timeline_unreliable" in item for item in failures))
 
     def test_story_context_merge_keeps_cards_beats_and_threads(self):
         first = {
@@ -5541,6 +5884,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("last_script_raw_preview", health.json())
             self.assertIn("last_script_error_by_model", health.json())
             self.assertEqual(health.json()["last_script_recovery"], "")
+            self.assertIn("last_script_quality", health.json())
             self.assertIn("last_duration_calibration", health.json())
             self.assertEqual(
                 health.json()["job_registry"],
