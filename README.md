@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.28-pro-recap-script` is a **one-shot automatic flow**: the user
+Version `v5.29-third-person-cast-lock` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -50,7 +50,7 @@ slow/queued request cannot stall the cascade. The script stage is also leaner:
 the first prompt asks for ~15% more text than the target (models
 undershoot counts; overshoot is trimmed locally for free), the
 second full-script retry is skipped when the first call itself
-failed on every model, first-person repairs are text-only (no video
+failed on every model, third-person narrator repairs are text-only (no video
 re-processing), and two TTS batches run concurrently. The default TTS
 voice is the original **Charon** with the Deep pitch-shift filter off
 by default and a neutral reading style (no "deep/slow" instructions).
@@ -87,9 +87,10 @@ per-clip loudnorm made the speech stop-start with jumping
 loudness. Final part joins re-encode audio so AAC priming
 cannot leave a gap at each seam. Scripts are prompted in
 spoken Burmese register (စကားပြောဟန်, short sentences -- written
-"book" Burmese made the narration sound read-aloud; key dialogue
-lines are embedded as direct speech inside the first-person
-retelling, closer to popular recap-channel storytelling), and Gemini
+"book" Burmese made the narration sound read-aloud; an outside
+third-person narrator names the speaker and listener for reported
+dialogue, and any short direct quote stays clearly quoted, closer
+to popular recap-channel storytelling), and Gemini
 Charon is the fallback if Edge ever fails. (In production
 the free-tier key's Gemini TTS plan quota was exhausted, which is
 what put Edge first.) Set `TTS_PROVIDER_ORDER=gemini,edge` to put
@@ -150,7 +151,7 @@ exposed on `/healthz` as `script_length_rate`. Trimming is now
 whole trailing sentences are removed (scenes whose only sentence cannot
 be split are dropped whole rather than chopped), so the TTS never reads
 half a clause. The 90%-of-source final-duration gates and the
-per-scene first-person gates are unchanged: the target is reached by
+per-scene third-person narrator gates remain in force: the target is reached by
 writing the right amount of text, not by shredding it.
 
 It
@@ -197,11 +198,13 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
 2. Split the source internally into fixed 2-minute windows in
    chronological order (1:30 → 45 windows, 3:00 → 90; only the last may
    be shorter). The full original is then deleted to save disk.
-3. **Script everything first**: write every window's first-person
+3. **Script everything first**: write every window's third-person
    full-retelling script in order *before any audio exists*. Each
    window first builds a `story_map`, and a cumulative **story
-   bible** is carried forward — character names plus role/relation/
-   aliases, protagonist/pronoun, ordered cause→action→consequence
+   bible** is carried forward — a Cast Lock with one spoken name or
+   stable descriptive label per character, plus source/name-evidence,
+   role, relation, visual cue and aliases; protagonist identity;
+   ordered cause→action→consequence
    beats, current goal/conflict, setting, unresolved threads,
    important facts, summary, and last scene. The joined script is
    then checked as a whole (sentences repeated across parts are
@@ -210,7 +213,8 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
    transitions/causal links, or duplicated scenes), a bounded
    text-only **story-editor** pass may rewrite that window without
    moving events across scene boundaries; it is accepted only if
-   scene count/order, first person, length, and clarity hold up. Only then voice
+   scene count/order, third-person narration, Cast Lock identities,
+   length, and clarity hold up. Only then voice
    and edit each window from its finished script: speech-shaped
    polish (breath points for runaway sentences), a pre-TTS cap so a
    script cannot predict past its window, measured TTS with error
@@ -263,7 +267,7 @@ opt-in `N8N_TELEGRAM_HANDOFF=1` (see below), so a stale
 `PIPELINE_MODE=n8n` cannot reroute or stall ordinary Telegram recaps;
 the worker API remains available to n8n independently.
 
-## Final-duration and first-person guarantees
+## Final-duration and third-person Cast Lock guarantees
 
 The percentage setting means the **actual final video duration**, not merely
 an estimated number of script characters. At the default 90%, a 10-minute
@@ -333,13 +337,14 @@ still passed — the root cause of two releases of "the video froze
 but the audio kept going" reports.
 
 The script also follows professional movie-recap structure: an
-opening hook that fixes time, place, who the narrator is and the
+opening hook that fixes time, place, who the protagonist is and the
 immediate situation within the first sentences; beats told as
 situation -> intention/plan -> action -> result -> new problem (so
 schemes and decisions are understood *while* they happen, not
 explained afterwards); explicitly named place/time/flashback and
-parallel-storyline transitions; characters introduced by
-name-plus-role on first appearance; and scene endings that land on
+parallel-storyline transitions; characters introduced by one locked
+Burmese spoken name or stable descriptive label plus role/relation on
+first appearance; and scene endings that land on
 the visible result or new danger without inventing future events.
 
 Narration text is written to be *spoken and followed by ear alone*:
@@ -355,11 +360,29 @@ stumbles over unreadable tokens and a listener who never sees the
 picture can still retell who did/said what to whom, why, and what
 happened next.
 
-Every narration scene must visibly speak in the protagonist's first person
-with one consistent pronoun (`ကျွန်တော်` or `ကျွန်မ`) in the Burmese text
-itself. A JSON `pronoun` field alone does not pass. Third-person scenes are
-sent back for first-person repair, and the job fails rather than delivering
-a third-person summary if repair does not succeed.
+An outside narrator tells every scene in third person: the protagonist
+and other characters are identified by their Cast Lock name or label,
+never as the narrator. Unquoted narrator text may not use the
+first-person forms `ကျွန်တော်` or `ကျွန်မ` (including possessive variants);
+first-person wording is allowed only inside a short, clearly quoted line
+of character dialogue. Scenes that leak first-person narration go through
+bounded text-only repair, and every direct, worker, rewrite, top-up,
+render, and delivery path refuses the job rather than shipping the wrong
+narrator perspective.
+
+Cast Lock name evidence is ranked so aliases stop drifting between
+windows. A readable burned-in subtitle, caption, or on-screen name card
+is strongest; a clearly confirmed name in dialogue comes next; weaker
+or conflicting later guesses become non-spoken aliases instead of
+replacing the established identity. If no reliable exact name exists,
+one unique role/visual descriptive label is locked for the whole video.
+Each card carries the canonical Burmese `spoken_name`, the original
+`source_name`, role, relation, visual cue, aliases, `name_source`, and
+`confidence`. Narration uses only the locked spoken form; speaker and
+listener are named for dialogue beats, and a returning or newly acting
+character is re-identified instead of being left in an ambiguous
+`သူ`/`သူမ` chain. Exact names still cannot be guaranteed when the source
+contains no readable name evidence, but identity remains stable.
 
 ## Direct script-generation recovery
 
@@ -372,7 +395,8 @@ no usable scenes—requests a complete replacement script with a shorter,
 strict prompt instead of trying to “fill gaps” in an empty list. If every
 attempt still returns no usable scenes, the part fails with that specific
 Gemini reason rather than a misleading `0/<target> chars` duration error.
-The measured 90%-duration and per-scene first-person gates remain unchanged.
+The measured 90%-duration and quote-aware per-scene third-person gates
+remain hard requirements.
 
 ## The 20 features (⚙️ ဆက်တင်များ)
 
@@ -389,7 +413,7 @@ The measured 90%-duration and per-scene first-person gates remain unchanged.
 11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
 12. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
 13. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 5.5 / 7.5 is an explicit manual override
-14. 👤 ပြောပြသူ ရှုထောင့် — protagonist first-person (ကျွန်တော်/ကျွန်မ) always; every scene is validated/repaired and the script retells the whole video in order, scene by scene, no summarizing
+14. 👤 ပြောပြသူ ရှုထောင့် — outside third-person recap narrator always; Cast Lock fixes one Burmese name or stable label per character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
 15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 16. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
 17. 💬 Video Caption on/off
@@ -560,7 +584,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.28-pro-recap-script"`,
+URLs must show `"version":"v5.29-third-person-cast-lock"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -571,7 +595,9 @@ URLs must show `"version":"v5.28-pro-recap-script"`,
 `"edit_sync":"proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze"`,
 `"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
-`"script_style":"pro_recap_opening_hook_intention_first_named_transitions_first_person"`,
+`"script_style":"pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock"`,
+`"narrator_enforcement":"third_person_quote_aware_per_scene_validated"`,
+`"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
 `"active_jobs":{}`, `"last_job_results":{}`,
@@ -603,8 +629,8 @@ and the configured `direct_script_models` list, an `auto_retry` object
 `"manual_session_recovery":"telegram_message_payload_v1_with_legacy_caption_fallback"`.
 A healthy endpoint proves deployment only — full acceptance still
 requires one real Telegram send judged story-comprehensible by ear,
-narration matched to the footage, no frozen stretches, any scene
-replay limited to two total, and a finished final no longer than
+consistent character names/labels, narration matched to the footage,
+no frozen stretches, any scene replay limited to two total, and a finished final no longer than
 the original.
 If `/health` returns `{"detail":"Not Found"}` or `/` shows another app, the
 URL belongs to a different/older service or that service is not deploying

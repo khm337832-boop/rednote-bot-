@@ -490,7 +490,7 @@ _LAST_SCRIPT_ANSWERED = False
 _LAST_DURATION_CALIBRATION: dict = {}
 
 # Plain-text script fallback: when Gemini's JSON answers carry no usable
-# scenes, one more call asks for a plain spoken first-person retelling
+# scenes, one more call asks for a plain spoken third-person retelling
 # (no JSON), which is split into scenes locally.  A model that mangles
 # JSON -- or spends its whole output budget on a truncated object --
 # usually answers prose normally, and the recap must not die on that.
@@ -595,7 +595,7 @@ WORKER_STAGES = ("download", "transcribe", "rewrite", "tts", "render", "deliver"
 WORKER_STAGE_LABELS = {
     "download": "📥 မူရင်းဗီဒီယို ဒေါင်းနေပါသည်...",
     "transcribe": "📝 Whisper ဖြင့် transcript ထုတ်နေပါသည်...",
-    "rewrite": "🧠 Gemini ဖြင့် ပထမလူ script ပြန်ရေးနေပါသည်...",
+    "rewrite": "🧠 Gemini ဖြင့် တတိယလူ recap script ပြန်ရေးနေပါသည်...",
     "tts": "🎙️ Gemini TTS ဖြင့် အသံသွင်းနေပါသည်...",
     "render": "🎬 အသံကို မထိဘဲ video ကို အချိန်ကိုက် ဖြတ်ဆက်နေပါသည်...",
     "deliver": "📤 Final video ကို ပို့နေပါသည်...",
@@ -646,7 +646,7 @@ SCRIPT_MIN_GROUP_CHAR_RATIO = 0.75  # one-liners do not count as covered
 SCRIPT_MIN_NARRATION_RATIO = 0.90  # legacy metric name; final gates use window below
 TRANSCRIPT_MIN_SPAN_RATIO = 0.75  # transcript must span most of the source
 DURATION_CALIBRATION_ROUNDS = 4  # measured TTS -> expand/trim -> TTS again
-FIRST_PERSON_REPAIR_ROUNDS = 3   # rewrite scenes missing ကျွန်တော်/ကျွန်မ
+NARRATOR_REPAIR_ROUNDS = 3   # rewrite scenes leaking first-person narrator voice
 # ±3% of the source window.  Text-driven trimming can only move in
 # whole words (~1-3s of speech), so a ±2% window (2.3s here) was
 # tighter than the control we actually have and made calibration
@@ -901,7 +901,7 @@ DEFAULT_SETTINGS = {
     "cut": 8,              # 11 ✂️ ဖြတ်ထုတ်ခွင့် %
     "chunk": SOURCE_SEGMENT_SECONDS,  # 12 📦 မူရင်းကို ၂ မိနစ်စီခွဲ (fixed)
     "rate": 6.5,           # 13 🗣 Script အလျင် (စာလုံး/စက္ကန့်)
-    "pov": "first",        # 14 👤 ပြောပြသူ ရှုထောင့်
+    "pov": "third",        # 14 👤 ပြောပြသူ ရှုထောင့်
     "tone": "natural",     # 15 🎭 ဇာတ်ကြောင်း လေသံ
     "split_tg": True,      # 16 📤 Telegram အတွက် ခွဲပို့ခြင်း
     "caption": True,       # 17 💬 Video caption ထည့်ခြင်း
@@ -949,8 +949,8 @@ FEATURES = [
      "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — «6.5 ⭐» သည် အလိုအလျောက် (အသံအမှန်ကို တိုင်းပြီး ချိန်သည်၊ Edge မြန်မာအသံ ~2.3)။ 5.5/7.5 ကို ကိုယ်တိုင် ရွေးမှသာ အတင်းသတ်မှတ်မည်",
      "options": [(5.5, "5.5 နှေး"), (6.5, "6.5 ⭐ အလိုအလျောက်"), (7.5, "7.5 မြန်")]},
     {"key": "pov", "icon": "👤", "label": "ပြောပြသူ ရှုထောင့်", "kind": "cycle",
-     "desc": "အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောပြသလို ပထမလူ — အမြဲတမ်း",
-     "options": [("first", "ပထမလူ (ကျွန်တော်/ကျွန်မ) ⭐")]},
+     "desc": "ရုပ်ရှင် recap ပြောပြသူက အပြင်ကနေ တတိယလူအဖြစ် ပြောပြမည် — အမြဲတမ်း",
+     "options": [("third", "တတိယလူ recap narrator ⭐")]},
     {"key": "tone", "icon": "🎭", "label": "ဇာတ်ကြောင်း လေသံ", "kind": "cycle",
      "desc": "Script ရဲ့ ခံစားချက်အရောင်",
      "options": [("natural", "သဘာဝ ⭐"), ("dramatic", "ဒရာမာ ဆန်ဆန်"), ("emotional", "စိတ်လှုပ်ရှားဖွယ်"), ("calm", "အေးအေးဆေးဆေး")]},
@@ -1265,9 +1265,9 @@ def get_user_settings(chat_id) -> dict:
     saved = _PERSISTED_USERS.get(str(chat_id), {})
     if isinstance(saved, dict):
         s.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
-    # 👤 ရေးဟန် = ပထမလူ အမြဲတမ်း — အရင် သိမ်းထားသော ဆက်တင်ဟောင်း ရှိလျှင် ပြန်ညှိသည်။
-    if s.get("pov") != "first":
-        s["pov"] = "first"
+    # 👤 ရေးဟန် = တတိယလူ recap narrator အမြဲတမ်း — အရင် သိမ်းထားသော ဆက်တင်ဟောင်း ရှိလျှင် ပြန်ညှိသည်။
+    if s.get("pov") != "third":
+        s["pov"] = "third"
     # Every job/link targets at least 90%, even if a stale user setting
     # saved by an older version contains a lower coverage value.
     return _with_required_coverage(s)
@@ -1479,10 +1479,9 @@ def start_features_text(chat_id=None) -> str:
             "<b>အပိုင်းအားလုံးကို ကြိုမခွဲ၊ Script ကိုလည်း ကြိုမရေးပါ။</b>\n"
             "3️⃣ <b>ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲထုတ်ပြီး</b> မူရင်းအပိုင်းအောက်မှာ "
             "<b>🎬 Recap လုပ်မယ်</b> ခလုတ်နဲ့ ပြန်ပို့မယ်။ Auto မ Run ဘူး။\n"
-            f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် ပထမလူ Script ရေးပြီး recap လုပ်မယ်။ "
-            "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
-            "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Story bible</b> က ဇာတ်ကောင်တွေရဲ့ အမည်/ဆက်နွယ်ပုံ၊ "
+            f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် တတိယလူ Recap Script ရေးပြီး recap လုပ်မယ်။ "
+            "အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က recap narrator က ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Cast Lock/Story bible</b> က subtitle/အမည်ကတ်က အတည်ပြုထားတဲ့ အမည်ကိုသာ တစ်မျိုးတည်းသုံးပြီး၊ အမည်မသေချာရင် မရောနိုင်တဲ့ အညွှန်းတစ်ခုကို lock လုပ်၊ ဆက်နွယ်ပုံ၊ "
             "ဖြစ်ရပ်အစဉ်၊ လက်ရှိပြဿနာနဲ့ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
             "ဇာတ်လမ်းဆက်စပ်မှု အားနည်းရင် Story editor နဲ့ ထပ်စစ်ပြီးမှ အသံသွင်းမယ်။\n"
             f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
@@ -1497,10 +1496,9 @@ def start_features_text(chat_id=None) -> str:
             "2️⃣ ဘယ်လောက်ရှည်ရှည် အတွင်းမှာ <b>၂ မိနစ်စီ အစဉ်အတိုင်း</b> ခွဲ၍ လုပ်သွားမယ်။ "
             "ဥပမာ ၁ နာရီခွဲ (၁:၃၀) = ၄၅ ပိုင်း၊ ၃ နာရီ = ၉၀ ပိုင်း။ "
             "<b>အပိုင်းခလုတ်တွေ တစ်ခုချင်း နှိပ်စရာ လုံးဝမလိုပါ — တစ်ခါပို့ရင် အဆုံးထိ အလိုအလျောက် လုပ်မယ်။</b>\n"
-            "3️⃣ <b>အရင် Script အကုန်လုံးကို အစဉ်အတိုင်း ရေးမယ်</b> — အပိုင်းတစ်ခုချင်းစီအတွက် ပထမလူ Script ရေး၊ "
-            "အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် <b>«ကျွန်တော်/ကျွန်မ»</b> အဖြစ် "
-            "ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Story bible</b> က ဇာတ်ကောင်တွေရဲ့ အမည်/ဆက်နွယ်ပုံ၊ "
+            "3️⃣ <b>အရင် Script အကုန်လုံးကို အစဉ်အတိုင်း ရေးမယ်</b> — အပိုင်းတစ်ခုချင်းစီအတွက် တတိယလူ Recap Script ရေး၊ "
+            "အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က recap narrator က ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Cast Lock/Story bible</b> က subtitle/အမည်ကတ်က အတည်ပြုထားတဲ့ အမည်ကိုသာ တစ်မျိုးတည်းသုံးပြီး၊ အမည်မသေချာရင် မရောနိုင်တဲ့ အညွှန်းတစ်ခုကို lock လုပ်၊ ဆက်နွယ်ပုံ၊ "
             "ဖြစ်ရပ်အစဉ်၊ လက်ရှိပြဿနာနဲ့ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
             "ဇာတ်လမ်းဆက်စပ်မှု အားနည်းရင် Story editor နဲ့ ထပ်စစ်မယ်။ "
             "Script အကုန်ပြီးရင် <b>ထပ်နေတဲ့ ဝါကျတွေ တစ်ခေါက် စစ်ဖယ်</b>မယ်။\n"
@@ -1545,16 +1543,16 @@ _HELP_FLOW_STEPS = (
         "2️⃣ Bot က source အပြည့်ဒေါင်း → ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက် → "
         "ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပြီး 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပြန်ပို့ပါမယ်\n"
         "3️⃣ လက်ရှိအပိုင်းအောက်က ခလုတ်ကို နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် "
-        "ပထမလူ Script ရေးပြီး Recap လုပ်ပါမယ်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်\n"
+        "တတိယလူ Recap Script ရေးပြီး Recap လုပ်ပါမယ်။ ပြီးမှသာ နောက်တစ်ပိုင်းကို ခွဲပို့ပါမယ်\n"
         "4️⃣ အပိုင်းတိုင်း ပြီးရင် 🔗 Recap အားလုံး ပြန်ဆက်မယ် ကို နှိပ်၍ Final ရယူနိုင်ပါတယ်\n\n"
     )
     if MANUAL_PARTS_ENABLED
     else (
         "2️⃣ Bot က source အပြည့်ဒေါင်း → အတွင်းမှာ ၂ မိနစ်စီ အစဉ်အတိုင်း "
-        "ပထမလူ Script ရေးပြီး Recap လုပ် → အားလုံးပြန်ဆက်ပြီး "
+        "တတိယလူ Recap Script ရေးပြီး Recap လုပ် → အားလုံးပြန်ဆက်ပြီး "
         "<b>Final video ကို အလိုအလျောက် ပို့ပေးမယ်</b>\n"
         "3️⃣ အပိုင်းခလုတ်တွေ နှိပ်စရာ မလိုပါ။ ၁ နာရီခွဲ (၁:၃၀) လောက်ရှည်တဲ့ video လည်း ရပါတယ်။ "
-        "ဇာတ်လမ်းဆက်စပ်မှုကို Story bible/Story editor နဲ့ စစ်ပြီး freeze လျော့ဖို့ လိုလျှင် မြင်ကွင်းတစ်ခုကို အများဆုံး ၂ ကြိမ်ပဲ ပြန်ပြပါမယ်။ "
+        "ဇာတ်လမ်းဆက်စပ်မှုနဲ့ ဇာတ်ကောင်အမည်တွေကို Cast Lock/Story bible/Story editor နဲ့ စစ်ပြီး freeze လျော့ဖို့ လိုလျှင် မြင်ကွင်းတစ်ခုကို အများဆုံး ၂ ကြိမ်ပဲ ပြန်ပြပါမယ်။ "
         "ယာယီအမှားဖြစ်ရင် auto-retry လုပ်မယ်\n\n"
     )
 )
@@ -4086,6 +4084,27 @@ async def synthesize_tts(scenes: list, work_dir: str, settings: dict = None) -> 
 FIRST_PERSON_MALE = "ကျွန်တော်"
 FIRST_PERSON_FEMALE = "ကျွန်မ"
 FIRST_PERSON_PRONOUNS = (FIRST_PERSON_MALE, FIRST_PERSON_FEMALE)
+FIRST_PERSON_POSSESSIVE_VARIANTS = {
+    FIRST_PERSON_MALE: ("ကျွန်တော့်", "ကျွန်တော့်"),
+    FIRST_PERSON_FEMALE: ("ကျွန်မ့်",),
+}
+NARRATOR_PERSPECTIVE = "third_person"
+_QUOTE_PAIRS = (
+    ("“", "”"),
+    ("‘", "’"),
+    ('"', '"'),
+    ("'", "'"),
+    ("«", "»"),
+    ("‹", "›"),
+    ("「", "」"),
+    ("『", "』"),
+    ("〈", "〉"),
+    ("《", "》"),
+)
+_QUOTED_SPEECH_PATTERNS = tuple(
+    re.compile(re.escape(opening) + r"(.*?)" + re.escape(closing), re.DOTALL)
+    for opening, closing in _QUOTE_PAIRS
+)
 
 
 def _normalize_burmese_text(text: str) -> str:
@@ -4095,80 +4114,60 @@ def _normalize_burmese_text(text: str) -> str:
         .replace("\u200b", "")
         .replace("\u200c", "")
         .replace("\u200d", "")
-        # Possessive ကျွန်တော့် must count as the same first-person pronoun.
-        .replace("ကျွန်တော့်", FIRST_PERSON_MALE)
     )
 
 
-def _first_person_counts(text: str) -> dict:
+def _quoted_speech_segments(text: str) -> list:
+    """Return the contents of quoted direct-speech spans in ``text``."""
+    value = str(text or "")
+    segments = []
+    for pattern in _QUOTED_SPEECH_PATTERNS:
+        segments.extend(match.group(1) for match in pattern.finditer(value))
+    return segments
+
+
+def _strip_quoted_speech(text: str) -> str:
+    """Remove quoted character dialogue, leaving only narrator text."""
+    value = str(text or "")
+    for pattern in _QUOTED_SPEECH_PATTERNS:
+        value = pattern.sub(" ", value)
+    return value
+
+
+def _first_person_token_counts(text: str) -> dict:
     normalized = _normalize_burmese_text(text)
-    return {
-        FIRST_PERSON_MALE: normalized.count(FIRST_PERSON_MALE),
-        FIRST_PERSON_FEMALE: normalized.count(FIRST_PERSON_FEMALE),
-    }
+    counts = {}
+    for pronoun in FIRST_PERSON_PRONOUNS:
+        total = normalized.count(pronoun)
+        for variant in FIRST_PERSON_POSSESSIVE_VARIANTS.get(pronoun, ()):
+            total += normalized.count(variant)
+        counts[pronoun] = int(total)
+    return counts
 
 
-def _other_first_person_pronoun(pronoun: str) -> str:
-    return FIRST_PERSON_FEMALE if pronoun == FIRST_PERSON_MALE else FIRST_PERSON_MALE
+def _first_person_narrator_counts(text: str) -> dict:
+    """Count first-person words spoken by the narrator, not in quotes."""
+    return _first_person_token_counts(_strip_quoted_speech(text))
 
 
-def _detect_pronoun(text: str) -> str:
-    """Return the dominant first-person pronoun in text, or "" if absent."""
-    counts = _first_person_counts(text)
-    male = counts[FIRST_PERSON_MALE]
-    female = counts[FIRST_PERSON_FEMALE]
-    if male > female:
-        return FIRST_PERSON_MALE
-    if female > male:
-        return FIRST_PERSON_FEMALE
-    return ""
+def _quoted_first_person_counts(text: str) -> dict:
+    return _first_person_token_counts(" ".join(_quoted_speech_segments(text)))
 
 
-def _voice_first_person_pronoun(settings: dict = None) -> str:
-    voice = str((settings or {}).get("voice") or "")
-    return FIRST_PERSON_FEMALE if voice in ("Kore", "Aoede") else FIRST_PERSON_MALE
+def _scene_uses_third_person_narrator(text: str) -> bool:
+    """True when no unquoted narrator text speaks as ``ကျွန်တော်/ကျွန်မ``.
 
-
-def _choose_first_person_pronoun(
-    texts=None,
-    preferred: str = "",
-    response_pronoun: str = "",
-    settings: dict = None,
-) -> str:
-    if preferred in FIRST_PERSON_PRONOUNS:
-        return preferred
-    joined = " ".join(str(t or "") for t in (texts or []))
-    detected = _detect_pronoun(joined)
-    if detected:
-        return detected
-    if response_pronoun in FIRST_PERSON_PRONOUNS:
-        return response_pronoun
-    return _voice_first_person_pronoun(settings)
-
-
-def _scene_is_first_person(text: str, pronoun: str = "") -> bool:
-    """A scene passes only if the narrator visibly speaks as ``I``.
-
-    The JSON ``pronoun`` field is not enough: the actual Burmese narration
-    must contain the selected pronoun and must not also use the opposite
-    pronoun for the narrator.  This is intentionally strict because the
-    previous prompt-only approach silently delivered third-person scripts.
+    A character may still say ``ကျွန်တော်`` inside clearly quoted direct
+    speech; the external recap narrator may not adopt a character's
+    first-person voice outside those quotation marks.
     """
     value = str(text or "").strip()
     if not value:
         return False
-    counts = _first_person_counts(value)
-    if pronoun in FIRST_PERSON_PRONOUNS:
-        other = _other_first_person_pronoun(pronoun)
-        return counts.get(pronoun, 0) > 0 and counts.get(other, 0) == 0
-    detected = _detect_pronoun(value)
-    if not detected:
-        return False
-    other = _other_first_person_pronoun(detected)
-    return counts.get(other, 0) == 0
+    return sum(_first_person_narrator_counts(value).values()) == 0
 
 
-def _first_person_bad_scene_indexes(scenes: list, pronoun: str = "") -> list:
+def _third_person_bad_scene_indexes(scenes: list) -> list:
     bad = []
     for index, scene in enumerate(scenes or []):
         text = ""
@@ -4176,29 +4175,35 @@ def _first_person_bad_scene_indexes(scenes: list, pronoun: str = "") -> list:
             text = str(scene.get("burmese") or scene.get("text") or "")
         elif isinstance(scene, str):
             text = scene
-        if not _scene_is_first_person(text, pronoun):
+        if not _scene_uses_third_person_narrator(text):
             bad.append(index)
     return bad
 
 
-def _first_person_metrics(texts: list, pronoun: str = "") -> dict:
-    counts = {FIRST_PERSON_MALE: 0, FIRST_PERSON_FEMALE: 0}
+def _third_person_metrics(texts: list) -> dict:
+    narrator_counts = {FIRST_PERSON_MALE: 0, FIRST_PERSON_FEMALE: 0}
+    quoted_counts = {FIRST_PERSON_MALE: 0, FIRST_PERSON_FEMALE: 0}
     bad_indexes = []
     for index, text in enumerate(texts or []):
         value = str(text or "")
-        item_counts = _first_person_counts(value)
-        for key in counts:
-            counts[key] += int(item_counts.get(key) or 0)
-        if not _scene_is_first_person(value, pronoun):
+        item_narrator_counts = _first_person_narrator_counts(value)
+        item_quoted_counts = _quoted_first_person_counts(value)
+        for key in narrator_counts:
+            narrator_counts[key] += int(item_narrator_counts.get(key) or 0)
+            quoted_counts[key] += int(item_quoted_counts.get(key) or 0)
+        if not _scene_uses_third_person_narrator(value):
             bad_indexes.append(index)
     return {
-        "pronoun": pronoun or _detect_pronoun(" ".join(str(t or "") for t in (texts or []))),
-        "male_pronoun_count": int(counts[FIRST_PERSON_MALE]),
-        "female_pronoun_count": int(counts[FIRST_PERSON_FEMALE]),
+        "perspective": NARRATOR_PERSPECTIVE,
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
+        "male_narrator_count": int(narrator_counts[FIRST_PERSON_MALE]),
+        "female_narrator_count": int(narrator_counts[FIRST_PERSON_FEMALE]),
+        "first_person_narrator_count": int(sum(narrator_counts.values())),
+        "quoted_first_person_count": int(sum(quoted_counts.values())),
         "scene_count": len(texts or []),
-        "first_person_scene_count": len(texts or []) - len(bad_indexes),
+        "third_person_scene_count": len(texts or []) - len(bad_indexes),
         "bad_scene_indexes": bad_indexes,
-        "all_scenes_first_person": bool(texts) and not bad_indexes,
+        "all_scenes_third_person": bool(texts) and not bad_indexes,
     }
 
 
@@ -4995,66 +5000,365 @@ def _clean_story_string_list(
     return cleaned[: max(0, int(limit or 0))]
 
 
-def _normalize_character_cards(value, character_names=None) -> list:
-    """Character identities/roles the next script call must remember.
+def _normalize_cast_name_source(value) -> str:
+    raw = str(value or "").strip()
+    lowered = raw.lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return "unknown"
+    if (
+        "subtitle" in lowered
+        or "caption" in lowered
+        or lowered in {"cc", "burned_in", "burnedin"}
+        or "စာတန်း" in raw
+    ):
+        return "subtitle"
+    if (
+        any(
+            token in lowered
+            for token in (
+                "on_screen",
+                "onscreen",
+                "name_card",
+                "namecard",
+                "title_card",
+                "lower_third",
+                "screen_text",
+                "overlay",
+            )
+        )
+        or "အမည်ကတ်" in raw
+        or "ဖန်သားပြင်" in raw
+    ):
+        return "on_screen"
+    if (
+        any(
+            token in lowered
+            for token in (
+                "dialogue",
+                "dialog",
+                "spoken",
+                "audio",
+                "heard",
+                "introduction",
+                "address",
+                "voice",
+            )
+        )
+        or "စကားပြော" in raw
+    ):
+        return "dialogue"
+    if (
+        any(
+            token in lowered
+            for token in ("visual", "descriptive", "label", "appearance", "look")
+        )
+        or "ဖော်ပြချက်" in raw
+    ):
+        return "visual_label"
+    return "unknown"
 
-    A bare list of names is not enough for a listener to follow a
-    long story: who each person is, how they relate to the speaker,
-    and which aliases belong to the same person have to survive the
-    two-minute window boundary.  ``characters`` in a story context
-    stays a backwards-compatible list of names; these cards carry
-    the explainable detail beside it.
+
+def _normalize_cast_confidence(value, name_source: str = "unknown") -> str:
+    raw = str(value or "").strip()
+    lowered = raw.lower().replace("-", "_").replace(" ", "_")
+    if name_source == "visual_label" or any(
+        token in lowered for token in ("descriptive", "label_only")
+    ):
+        return "descriptive"
+    if any(
+        token in lowered
+        for token in ("uncertain", "unconfirmed", "low", "guess", "inferred")
+    ):
+        return "uncertain"
+    if any(
+        token in lowered
+        for token in ("confirmed", "exact", "verified", "certain", "high", "known")
+    ):
+        return "confirmed"
+    if name_source in ("subtitle", "on_screen"):
+        return "confirmed"
+    return "uncertain"
+
+
+def _cast_evidence_rank(name_source: str, confidence: str) -> int:
+    source = _normalize_cast_name_source(name_source)
+    status = _normalize_cast_confidence(confidence, source)
+    if status == "descriptive" or source == "visual_label":
+        return 0
+    if source in ("subtitle", "on_screen"):
+        return 40
+    if source == "dialogue" and status == "confirmed":
+        return 30
+    if source == "dialogue":
+        return 20
+    if status == "confirmed":
+        return 20
+    return 10
+
+
+def _character_card_spoken_name(card) -> str:
+    if isinstance(card, dict):
+        return _clean_story_text(
+            card.get("spoken_name")
+            or card.get("canonical_name")
+            or card.get("display_name")
+            or card.get("name")
+            or card.get("character")
+            or card.get("title")
+            or card.get("label")
+            or "",
+            80,
+        )
+    return _clean_story_text(card, 80)
+
+
+def _clean_protagonist_name(value) -> str:
+    if isinstance(value, dict):
+        value = (
+            value.get("spoken_name")
+            or value.get("canonical_name")
+            or value.get("display_name")
+            or value.get("name")
+            or value.get("protagonist")
+            or ""
+        )
+    return _clean_story_text(value, 100)
+
+
+def _normalize_character_cards(value, character_names=None) -> list:
+    """Canonical cast registry shared across every narration window.
+
+    ``spoken_name`` is the one Burmese form the narrator may say for a
+    person.  A readable subtitle/name-card name is the strongest
+    evidence; unsure later guesses never replace an established form.
+    If no reliable name exists, the stable descriptive label itself is
+    the spoken form.  Original names and spelling variants are kept
+    only as non-spoken aliases so later windows can recognise that
+    they refer to the same person instead of inventing a new identity.
     """
     raw_values = value if isinstance(value, list) else []
     cards = []
-    by_name = {}
 
-    def add_card(name, role="", relation="", aliases=None):
-        clean_name = _clean_story_text(name, 80)
-        if not clean_name:
-            return
-        key = _normalize_burmese_text(clean_name)
-        existing = by_name.get(key)
-        if existing is None:
-            existing = {
-                "name": clean_name,
+    def first_value(item, keys):
+        for key in keys:
+            candidate = item.get(key)
+            if candidate not in (None, "", []):
+                return candidate
+        return ""
+
+    def first_text(item, keys, limit):
+        return _clean_story_text(first_value(item, keys), limit)
+
+    def alias_values(item, spoken_name, source_name=""):
+        aliases = []
+        for key in (
+            "aliases",
+            "nicknames",
+            "variants",
+            "variant_spellings",
+            "also_called",
+            "other_names",
+        ):
+            aliases.extend(
+                _clean_story_string_list(
+                    item.get(key) or [], limit=8, item_limit=60
+                )
+            )
+        if source_name:
+            aliases.append(source_name)
+        spoken_key = _normalize_burmese_text(spoken_name)
+        return [
+            alias
+            for alias in _clean_story_string_list(
+                aliases, limit=8, item_limit=60
+            )
+            if _normalize_burmese_text(alias) != spoken_key
+        ]
+
+    def candidate_from_item(item):
+        if not isinstance(item, dict):
+            spoken_name = _clean_story_text(item, 80)
+            if not spoken_name:
+                return None
+            return {
+                "name": spoken_name,
+                "spoken_name": spoken_name,
+                "source_name": "",
                 "role": "",
                 "relation": "",
                 "aliases": [],
+                "name_source": "unknown",
+                "confidence": "uncertain",
+                "visual_cue": "",
             }
-            by_name[key] = existing
-            cards.append(existing)
-        if role and not existing.get("role"):
-            existing["role"] = _clean_story_text(role, 140)
-        if relation and not existing.get("relation"):
-            existing["relation"] = _clean_story_text(relation, 180)
-        for alias in _clean_story_string_list(
-            aliases or [], limit=6, item_limit=60
+        spoken_name = _character_card_spoken_name(item)
+        if not spoken_name:
+            return None
+        source_name = first_text(
+            item,
+            (
+                "source_name",
+                "original_name",
+                "name_in_source",
+                "subtitle_name",
+                "original",
+                "source_text",
+            ),
+            100,
+        )
+        name_source = _normalize_cast_name_source(
+            first_value(
+                item,
+                ("name_source", "source", "evidence_source", "name_evidence"),
+            )
+        )
+        confidence = _normalize_cast_confidence(
+            first_value(
+                item,
+                ("confidence", "name_confidence", "certainty", "status"),
+            ),
+            name_source,
+        )
+        return {
+            "name": spoken_name,
+            "spoken_name": spoken_name,
+            "source_name": source_name,
+            "role": first_text(item, ("role", "identity"), 140),
+            "relation": first_text(
+                item,
+                (
+                    "relation",
+                    "relationship",
+                    "relation_to_protagonist",
+                    "relationship_to_protagonist",
+                ),
+                180,
+            ),
+            "aliases": alias_values(item, spoken_name, source_name),
+            "name_source": name_source,
+            "confidence": confidence,
+            "visual_cue": first_text(
+                item,
+                ("visual_cue", "appearance", "visual_identity", "description"),
+                180,
+            ),
+        }
+
+    def identity_keys(card):
+        keys = set()
+        for item in (
+            [_character_card_spoken_name(card), card.get("source_name") or ""]
+            + list(card.get("aliases") or [])
         ):
-            if _normalize_burmese_text(alias) == key:
-                continue
-            if alias not in existing["aliases"]:
-                existing["aliases"].append(alias)
+            key = _normalize_burmese_text(item)
+            if key:
+                keys.add(key)
+        return keys
+
+    def add_alias(card, alias):
+        clean_alias = _clean_story_text(alias, 60)
+        if not clean_alias:
+            return
+        spoken_key = _normalize_burmese_text(_character_card_spoken_name(card))
+        alias_key = _normalize_burmese_text(clean_alias)
+        if not alias_key or alias_key == spoken_key:
+            return
+        existing_keys = {
+            _normalize_burmese_text(item) for item in (card.get("aliases") or [])
+        }
+        if alias_key not in existing_keys and len(card.get("aliases") or []) < 8:
+            card.setdefault("aliases", []).append(clean_alias)
+
+    def find_match(candidate):
+        candidate_keys = identity_keys(candidate)
+        for existing in cards:
+            if candidate_keys & identity_keys(existing):
+                return existing
+        candidate_visual = _normalize_burmese_text(candidate.get("visual_cue") or "")
+        candidate_role = _normalize_burmese_text(candidate.get("role") or "")
+        if candidate_visual:
+            for existing in cards:
+                existing_visual = _normalize_burmese_text(
+                    existing.get("visual_cue") or ""
+                )
+                existing_role = _normalize_burmese_text(existing.get("role") or "")
+                if existing_visual == candidate_visual and (
+                    not candidate_role
+                    or not existing_role
+                    or existing_role == candidate_role
+                ):
+                    return existing
+        return None
+
+    def merge_candidate(candidate):
+        existing = find_match(candidate)
+        if existing is None:
+            cards.append(candidate)
+            return
+        old_spoken_name = _character_card_spoken_name(existing)
+        candidate_spoken_name = _character_card_spoken_name(candidate)
+        existing_rank = _cast_evidence_rank(
+            existing.get("name_source") or "unknown",
+            existing.get("confidence") or "uncertain",
+        )
+        candidate_rank = _cast_evidence_rank(
+            candidate.get("name_source") or "unknown",
+            candidate.get("confidence") or "uncertain",
+        )
+        upgraded = False
+        if _normalize_burmese_text(candidate_spoken_name) != _normalize_burmese_text(
+            old_spoken_name
+        ):
+            if candidate_rank > existing_rank and candidate_rank >= 30:
+                existing["name"] = candidate_spoken_name
+                existing["spoken_name"] = candidate_spoken_name
+                existing["name_source"] = candidate.get("name_source") or "unknown"
+                existing["confidence"] = candidate.get("confidence") or "uncertain"
+                if candidate.get("source_name"):
+                    existing["source_name"] = candidate["source_name"]
+                existing["aliases"] = [
+                    alias
+                    for alias in (existing.get("aliases") or [])
+                    if _normalize_burmese_text(alias)
+                    != _normalize_burmese_text(candidate_spoken_name)
+                ]
+                add_alias(existing, old_spoken_name)
+                upgraded = True
+            else:
+                add_alias(existing, candidate_spoken_name)
+        if not upgraded and candidate_rank > existing_rank:
+            existing["name_source"] = candidate.get("name_source") or "unknown"
+            existing["confidence"] = candidate.get("confidence") or "uncertain"
+            if candidate.get("source_name"):
+                existing["source_name"] = candidate["source_name"]
+        elif not existing.get("source_name") and candidate.get("source_name"):
+            existing["source_name"] = candidate["source_name"]
+        for key in ("role", "relation", "visual_cue"):
+            if candidate.get(key) and not existing.get(key):
+                existing[key] = candidate[key]
+        if candidate.get("source_name"):
+            add_alias(existing, candidate["source_name"])
+        for alias in candidate.get("aliases") or []:
+            add_alias(existing, alias)
+        current_key = _normalize_burmese_text(_character_card_spoken_name(existing))
+        existing["aliases"] = [
+            alias
+            for alias in _clean_story_string_list(
+                existing.get("aliases") or [], limit=8, item_limit=60
+            )
+            if _normalize_burmese_text(alias) != current_key
+        ][:8]
 
     for item in raw_values:
-        if isinstance(item, dict):
-            add_card(
-                item.get("name") or item.get("character") or item.get("title"),
-                role=item.get("role") or item.get("identity") or "",
-                relation=(
-                    item.get("relation")
-                    or item.get("relationship")
-                    or item.get("relation_to_protagonist")
-                    or ""
-                ),
-                aliases=item.get("aliases") or item.get("nicknames") or [],
-            )
-        else:
-            add_card(item)
+        candidate = candidate_from_item(item)
+        if candidate is not None:
+            merge_candidate(candidate)
     for name in _clean_story_string_list(
         character_names or [], limit=16, item_limit=80
     ):
-        add_card(name)
+        candidate = candidate_from_item(name)
+        if candidate is not None:
+            merge_candidate(candidate)
     return cards[:16]
 
 
@@ -5221,22 +5525,17 @@ def _story_context_from_story_map(
     *,
     last_scene: str = "",
     protagonist: str = "",
-    pronoun: str = "",
+    narrator_perspective: str = NARRATOR_PERSPECTIVE,
 ) -> dict:
     normalized_map = _normalize_story_map(story_map)
-    clean_protagonist = _clean_story_text(
+    clean_protagonist = _clean_protagonist_name(
         protagonist
-        or (story_map.get("protagonist") if isinstance(story_map, dict) else ""),
-        100,
+        or (story_map.get("protagonist") if isinstance(story_map, dict) else "")
     )
-    clean_pronoun = str(
-        pronoun
-        or (story_map.get("pronoun") if isinstance(story_map, dict) else "")
-        or ""
-    ).strip()
-    if clean_pronoun not in FIRST_PERSON_PRONOUNS:
-        clean_pronoun = ""
-    if not normalized_map and not last_scene and not clean_protagonist and not clean_pronoun:
+    # The recap narrator is always external/third-person.  A legacy
+    # first-person value in an old artifact is deliberately ignored.
+    clean_perspective = NARRATOR_PERSPECTIVE
+    if not normalized_map and not last_scene and not clean_protagonist:
         return {}
     cards = normalized_map.get("character_cards") or []
     beats = [
@@ -5245,7 +5544,11 @@ def _story_context_from_story_map(
         if isinstance(item, dict)
     ]
     return {
-        "characters": [str(card.get("name") or "") for card in cards if card.get("name")],
+        "characters": [
+            _character_card_spoken_name(card)
+            for card in cards
+            if _character_card_spoken_name(card)
+        ],
         "character_cards": cards,
         "summary": "",
         "story_beats": _clean_story_string_list(beats, limit=24, item_limit=320),
@@ -5256,7 +5559,7 @@ def _story_context_from_story_map(
         "important_facts": normalized_map.get("important_facts") or [],
         "last_scene": _clean_story_text(last_scene, 600),
         "protagonist": clean_protagonist,
-        "pronoun": clean_pronoun,
+        "narrator_perspective": clean_perspective,
     }
 
 
@@ -5274,7 +5577,7 @@ def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) 
         for item in raw_characters:
             if isinstance(item, dict):
                 raw_cards.append(item)
-                name = _clean_story_text(item.get("name") or item.get("character"), 80)
+                name = _character_card_spoken_name(item)
             else:
                 name = _clean_story_text(item, 80)
             if name:
@@ -5288,6 +5591,12 @@ def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) 
         raw_cards + (map_context.get("character_cards") or []),
         character_names=character_names,
     )
+    if cards:
+        character_names = _clean_story_string_list(
+            [_character_card_spoken_name(card) for card in cards],
+            limit=16,
+            item_limit=80,
+        )
     beats = []
     for key in ("story_beats", "beats", "previous_beats", "events"):
         beats.extend(
@@ -5306,17 +5615,11 @@ def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) 
                 derived.append(text)
         beats = _clean_story_string_list(derived, limit=16, item_limit=220)
 
-    protagonist_raw = raw.get("protagonist")
-    if isinstance(protagonist_raw, dict):
-        protagonist = _clean_story_text(
-            protagonist_raw.get("name") or protagonist_raw.get("protagonist"),
-            100,
-        )
-    else:
-        protagonist = _clean_story_text(protagonist_raw, 100)
-    pronoun = str(raw.get("pronoun") or "").strip()
-    if pronoun not in FIRST_PERSON_PRONOUNS:
-        pronoun = ""
+    protagonist = _clean_protagonist_name(
+        raw.get("protagonist") or raw.get("main_character") or ""
+    )
+    # Legacy ``pronoun`` fields are ignored: narration perspective is
+    # no longer state that can drift between windows.
 
     def first_text(*keys, fallback="", limit=260):
         for key in keys:
@@ -5355,7 +5658,7 @@ def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) 
         ),
         "last_scene": _clean_story_text(raw.get("last_scene"), 800),
         "protagonist": protagonist,
-        "pronoun": pronoun,
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
     }
 
 
@@ -5407,6 +5710,12 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
         [card for item in normalized for card in (item.get("character_cards") or [])],
         character_names=character_names,
     )
+    if cards:
+        character_names = _clean_story_string_list(
+            [_character_card_spoken_name(card) for card in cards],
+            limit=16,
+            item_limit=80,
+        )
     summary_pieces = []
     seen_summaries = set()
     for item in normalized:
@@ -5455,7 +5764,7 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
         )[-32:],
         "last_scene": latest_value("last_scene"),
         "protagonist": first_value("protagonist"),
-        "pronoun": first_value("pronoun"),
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
     }
     if fallback_texts:
         if not merged.get("story_beats"):
@@ -5472,20 +5781,36 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
 def _story_context_prompt_lines(story_context: dict) -> str:
     context = _normalize_story_context(story_context or {})
     lines = []
-    if context["characters"]:
-        lines.append("- ဇာတ်ကောင်များ: " + ", ".join(context["characters"][:10]))
     card_lines = []
     for card in context["character_cards"][:8]:
-        bits = [str(card.get("name") or "")]
+        spoken_name = _character_card_spoken_name(card)
+        if not spoken_name:
+            continue
+        bits = [spoken_name]
+        source_name = str(card.get("source_name") or "").strip()
+        if source_name and _normalize_burmese_text(source_name) != _normalize_burmese_text(
+            spoken_name
+        ):
+            bits.append(f"မူရင်းအမည်: {source_name}")
         if card.get("role"):
             bits.append(str(card["role"]))
         if card.get("relation"):
             bits.append(str(card["relation"]))
+        if card.get("visual_cue"):
+            bits.append("မြင်မှတ်ချက်: " + str(card["visual_cue"]))
+        name_source = str(card.get("name_source") or "unknown")
+        confidence = str(card.get("confidence") or "uncertain")
+        bits.append(f"အမည်အထောက်အထား: {name_source}/{confidence}")
         if card.get("aliases"):
-            bits.append("အခြားအမည်: " + ", ".join(card["aliases"][:3]))
+            bits.append("မသုံးရန် variant: " + ", ".join(card["aliases"][:3]))
         card_lines.append(" — ".join(bit for bit in bits if bit))
     if card_lines:
-        lines.append("- ဇာတ်ကောင်ကတ်များ: " + "; ".join(card_lines))
+        lines.append(
+            "- Cast Lock (ဇာတ်ကောင်တစ်ဦးချင်းအတွက် ပထမပြောရမည့်အမည်ကိုသာ "
+            "တိတိကျကျသုံး၊ variant မသုံးရ): " + "; ".join(card_lines)
+        )
+    elif context["characters"]:
+        lines.append("- ဇာတ်ကောင်များ: " + ", ".join(context["characters"][:10]))
     if context["story_beats"]:
         beats = context["story_beats"][-10:]
         lines.append(
@@ -5507,6 +5832,112 @@ def _story_context_prompt_lines(story_context: dict) -> str:
     if context["last_scene"]:
         lines.append("- နောက်ဆုံးအခြေအနေ: " + context["last_scene"][-800:])
     return "\n".join(lines)
+
+
+_CAST_GENERIC_ALIASES = {
+    _normalize_burmese_text(value)
+    for value in (
+        "သူ",
+        "သူမ",
+        "ဒီလူ",
+        "အဲ့ဒီလူ",
+        "လူ",
+        "အဖေ",
+        "အမေ",
+        "အစ်ကို",
+        "အစ်မ",
+        "ညီ",
+        "ညီမလေး",
+        "သား",
+        "သမီး",
+    )
+}
+
+
+def _apply_cast_lock_to_scenes(
+    scenes: list,
+    story_map: dict = None,
+    story_context: dict = None,
+) -> int:
+    """Replace known non-canonical name variants with locked spoken forms.
+
+    Character cards may retain an original foreign name or an older
+    descriptive label for recognition, but narration should use one
+    form only.  Generic kinship/pronoun words and aliases claimed by
+    more than one person are deliberately left alone.
+    """
+    if not scenes:
+        return 0
+    context_cards = []
+    if story_context:
+        context_cards = (
+            _normalize_story_context(story_context).get("character_cards") or []
+        )
+    map_cards = _normalize_story_map(story_map).get("character_cards") or []
+    cards = _normalize_character_cards(list(context_cards) + list(map_cards))
+    if not cards:
+        return 0
+
+    canonical_keys = {
+        _normalize_burmese_text(_character_card_spoken_name(card))
+        for card in cards
+        if _character_card_spoken_name(card)
+    }
+    alias_replacements = {}
+    conflicting_alias_keys = set()
+    for card in cards:
+        spoken_name = _character_card_spoken_name(card)
+        if not spoken_name:
+            continue
+        raw_aliases = []
+        if card.get("source_name"):
+            raw_aliases.append(card["source_name"])
+        raw_aliases.extend(card.get("aliases") or [])
+        for raw_alias in raw_aliases:
+            alias = _clean_story_text(raw_alias, 80)
+            alias_key = _normalize_burmese_text(alias)
+            if (
+                len(alias) < 2
+                or not alias_key
+                or alias_key in canonical_keys
+                or alias_key in _CAST_GENERIC_ALIASES
+            ):
+                continue
+            if any(
+                alias_key != canonical_key
+                and (alias_key in canonical_key or canonical_key in alias_key)
+                for canonical_key in canonical_keys
+            ):
+                continue
+            previous = alias_replacements.get(alias_key)
+            if previous is not None and previous[1] != spoken_name:
+                conflicting_alias_keys.add(alias_key)
+            else:
+                alias_replacements[alias_key] = (alias, spoken_name)
+    for alias_key in conflicting_alias_keys:
+        alias_replacements.pop(alias_key, None)
+    if not alias_replacements:
+        return 0
+
+    replacements = sorted(
+        alias_replacements.values(), key=lambda item: len(item[0]), reverse=True
+    )
+    replacement_count = 0
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        original_text = str(scene.get("burmese") or "")
+        if not original_text:
+            continue
+        new_text = original_text
+        for alias, spoken_name in replacements:
+            occurrences = new_text.count(alias)
+            if occurrences:
+                replacement_count += int(occurrences)
+                new_text = new_text.replace(alias, spoken_name)
+        if new_text != original_text:
+            scene["burmese"] = new_text
+    return int(replacement_count)
 
 
 def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> dict:
@@ -5617,17 +6048,7 @@ def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> di
     protagonist_value = _find_direct_payload_value(
         data, ("protagonist", "main_character", "hero", "heroine")
     )
-    if isinstance(protagonist_value, dict):
-        protagonist = str(
-            protagonist_value.get("name")
-            or protagonist_value.get("protagonist")
-            or ""
-        ).strip()
-    else:
-        protagonist = str(protagonist_value or "").strip()
-    pronoun_value = str(
-        _find_direct_payload_value(data, ("pronoun", "first_person_pronoun")) or ""
-    ).strip()
+    protagonist = _clean_protagonist_name(protagonist_value)
     story_map = _normalize_story_map(
         _find_direct_payload_value(
             data,
@@ -5639,7 +6060,7 @@ def _normalize_direct_script_payload(data, *, chunk_duration: float = 0.0) -> di
         "scenes": scenes,
         "cuts": cuts,
         "protagonist": protagonist,
-        "pronoun": pronoun_value if pronoun_value in FIRST_PERSON_PRONOUNS else "",
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
         "story_map": story_map,
     }
 
@@ -5666,15 +6087,14 @@ async def extract_story_summary(
     if not scene_texts:
         return _normalize_story_context({})
     all_text = "\n".join(scene_texts)
-    detected_pronoun = _detect_pronoun(all_text)
     normalized_map = _normalize_story_map(story_map)
     map_json = json.dumps(normalized_map, ensure_ascii=False) if normalized_map else "{}"
     prompt = f"""
 အောက်ပါ မြန်မာဇာတ်လမ်းအပိုင်းကို ဖတ်ပြီး နောက်အပိုင်းရေးရာတွင် မှတ်ထားရမည့် continuity bible ထုတ်ပေးပါ။
-မှတ်ချက် — ဇာတ်ကြောင်းကို အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ (ကျွန်တော်/ကျွန်မ) ဖြင့် ပြောနေခြင်းဖြစ်သည်။
-ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်ပင် ဖြစ်သည်။
-မသေချာသော ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်နှင့် အမည်ကို မတီထွင်ပါနှင့်။ အမည်များကို မြန်မာအသံထွက်ဖြင့်သာ ရေးပါ။
-ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ ပြောနေသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ အခြားနာမည်ရှိလျှင် ဘာလဲဆိုတာ ရှင်းပါ။
+မှတ်ချက် — Narrator သည် ဇာတ်ကောင်မဟုတ်ဘဲ အပြင်က တတိယလူ recap ပြောပြသူဖြစ်သည်။
+Cast Lock ကို မပြောင်းပါနှင့် — ဇာတ်ကောင်တစ်ဦးစီအတွက် script/story_map မှာ သုံးထားပြီးသား spoken_name တစ်မျိုးကိုသာ ဆက်သုံးပါ။ မူရင်းအမည် သို့မဟုတ် variant ကို aliases မှာသာ ထားပါ။
+မသေချာသော ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်နှင့် အမည်ကို မတီထွင်ပါနှင့်။ Narration မှာ ပြောရမည့်အမည်များကို မြန်မာအသံထွက်ဖြင့်သာ ရေးပါ။
+ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ အမည်ကို subtitle/name-card/dialogue/visual label ဘယ်ကရလဲနှင့် မြင်မှတ်ချက်ကို ရှင်းပါ။
 Story beats များကို အစဉ်အတိုင်း၊ ဖြစ်ရပ်အကြောင်းရင်း → ဆုံးဖြတ်ချက်/လုပ်ဆောင်ချက် → အကျိုးဆက် ပုံစံရအောင် တိုတိုရေးပါ။
 ယခု script မှ အတည်ပြုထားပြီး story_map (ရှိလျှင်) — အမှားမပါအောင် အခြေခံပြီး ခိုင်မာသောအချက်များကိုသာ ဆက်ထိန်းပါ:
 {map_json}
@@ -5683,7 +6103,7 @@ Script:
 {all_text}
 
 Return JSON:
-{{"characters": ["အမည်များ"], "character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ပြောနေသူ/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "aliases": []}}], "protagonist": "အဓိကဇာတ်ကောင် (ပြောနေသူ ကိုယ်တိုင်)", "pronoun": "ပြောနေသူ သုံးထားသည့် နာမ်စား — ကျွန်တော် သို့မဟုတ် ကျွန်မ", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
+{{"characters": ["spoken_name များ"], "character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "aliases": ["မူရင်း/variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "protagonist": "အဓိကဇာတ်ကောင်၏ spoken_name", "narrator_perspective": "third_person", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
     """.strip()
     try:
         data = await _generate_direct_gemini_json(
@@ -5695,16 +6115,11 @@ Return JSON:
         if not isinstance(data, dict):
             raise ValueError("summary JSON is not an object")
         summary_context = _normalize_story_context(data)
-        # စာသားထဲမှ တိုက်ရိုက် ရှာတွေ့သည့် နာမ်စား ကို model အဖြေထက် ပို ယုံကြည်သည်။
-        if detected_pronoun:
-            summary_context["pronoun"] = detected_pronoun
         map_context = _story_context_from_story_map(
             normalized_map,
             last_scene=scene_texts[-1],
         )
         merged = _merge_story_contexts(map_context, summary_context)
-        if detected_pronoun:
-            merged["pronoun"] = detected_pronoun
         return merged
     except Exception as e:
         logger.warning(f"Summary error: {e}")
@@ -5712,7 +6127,7 @@ Return JSON:
             {
                 "characters": [],
                 "protagonist": "",
-                "pronoun": detected_pronoun,
+                "narrator_perspective": NARRATOR_PERSPECTIVE,
                 "summary": all_text[-1200:],
                 "last_scene": scene_texts[-1],
             },
@@ -5726,8 +6141,6 @@ Return JSON:
             ),
             fallback,
         )
-        if detected_pronoun:
-            merged["pronoun"] = detected_pronoun
         return merged
 
 
@@ -5747,7 +6160,7 @@ def _with_required_coverage(settings: dict = None) -> dict:
     coverage = max(float(MINIMUM_SCRIPT_COVERAGE_PERCENT), min(100.0, coverage))
     s["coverage"] = int(coverage) if coverage.is_integer() else coverage
     s["chunk"] = SOURCE_SEGMENT_SECONDS
-    s["pov"] = "first"
+    s["pov"] = "third"
     return s
 
 
@@ -6588,30 +7001,41 @@ _SPOKEN_STYLE_GUIDE = """
 - နေ့တိုင်း အသုံးများ စကားဆက် (storyteller connectors) တွေနဲ့ ချိတ်ဆက်ရေးပါ — အလှည့်ကျ သုံးပါ၊ တစ်မျိုးတည်းကို ထပ်ခါတလဲလဲ မသုံးပါနှင့်: "အဲ့ဒီမှာ…" "ဒါပေမဲ့…" "ဒါနဲ့…" "နောက်တော့…" "ဒီလိုနဲ့…" "ဒီအချိန်မှာ…" "တကယ့်ပြဿနာက ဘာလဲဆိုတော့…" "ဒီမှာ အရေးကြီးတဲ့အချက်က…" "အံ့ဩစရာကောင်းတာက…" "တကယ်တော့…" "နောက်ဆုံး…" စကားဆက်တိုင်းဟာ အချိန်အစဉ်၊ အကြောင်းရင်း၊ ဆန့်ကျင်ဘက် သို့မဟုတ် ရလဒ်ကို တကယ် ပြရမည်။ အဓိပ္ပာယ်မရှိဘဲ အလှဆင်ရုံ မထည့်ပါနှင့်။
 - စည်း (rhythm): စာကြောင်း တိုတို ရိုက်နှက်ချက် ပြင်းပြင်းနဲ့ အလတ်စား ရှင်းပြကြောင်းကို ရောရေးပါ။ မေးခွန်းပုံစံကို သုံးလျှင် နောက်ဝါကျတွင် အဖြေ/အချက်ကို ချက်ချင်းပြောပါ။ မေးခွန်းက ဘယ်သူဘာလုပ်တယ်ဆိုတဲ့ အချက်ကို မဖုံးကွယ်စေနှင့်၊ နေရာတိုင်းလည်း မလုပ်နှင့်။
 - လှုပ်ရှားမှု ပြ ကြိယာတွေ ပြတ်ပြတ်သားသား သုံးပါ: "ရုတ်တရက်" "တက်တက်စင်" "ချက်ချင်း" "တစ်ချက်တည်း" "အားရပါးရ" "ညင်ညင်သာသာ" "တုန်လှုပ်သွား" "စိတ်လှုပ်ရှား" "ရယ်ရတာ အသား" လို ခံစားချက်ပါ စကားလုံးတွေ နေရာကျရာ ထည့်ပါ။ ဒါပေမဲ့ ဖန်တီးတာ မလုပ်ရဘူး — video မှာ တကယ် ပြထားတဲ့ အရာကိုပဲ ရေးပါ။
-- ဥပမာ ❌: "ကျွန်တော် အိမ်သို့ ပြန်လာခဲ့ပါသည်။ အမေ့ကို မြင်လိုက်ရသောအခါ အံ့သြခဲ့သည်။"
-- ဥပမာ ✅: "ကျွန်တော် အိမ်ပြန်ရောက်လာခဲ့တယ်။ အမေ့ကို မြင်လိုက်ရတော့ ကျွန်တော် အံ့သြသွားတယ်။"
-- ဥပမာ ✅ (storyteller ဟန်): "အဲ့ဒီမှာ တကယ့်ပြဿနာ စတယ်။ ကျွန်တော်က ဒီသူကို အထင်သေးခဲ့မိတယ်။ ဒါပေမဲ့ သူက ကျွန်တော်ထင်သလို မဟုတ်ဘူး။ နောက်ပြီး သူ ဘာလုပ်သွားလဲဆိုတော့…"
+- ဥပမာ ❌: "အေဒင် အိမ်သို့ ပြန်လာခဲ့ပါသည်။ အမေဖြစ်သူ မေရီကို မြင်လိုက်ရသောအခါ အံ့သြခဲ့သည်။"
+- ဥပမာ ✅: "အေဒင် အိမ်ပြန်ရောက်လာခဲ့တယ်။ အမေဖြစ်သူ မေရီကို မြင်လိုက်ရတော့ အေဒင် အံ့သြသွားတယ်။"
+- ဥပမာ ✅ (storyteller ဟန်): "အဲ့ဒီမှာ တကယ့်ပြဿနာ စတယ်။ အေဒင်က ကျောင်းအုပ်ဆရာကြီးကို အထင်သေးခဲ့မိတယ်။ ဒါပေမဲ့ ကျောင်းအုပ်ဆရာကြီးက အေဒင်ထင်သလို မဟုတ်ဘူးဆိုတာ ချက်ချင်းပေါ်လာတယ်။"
 - ဝါကျစီးဆင်းပုံ: တစ်ကြောင်းမှာ အဓိကလုပ်ဆောင်ချက် တစ်ခု + သူ့အကြောင်းရင်း သို့မဟုတ် ရလဒ် တစ်ခုသာ ထားပါ။ တိုပြင်းတဲ့ ကြောင်း («အဲဒီမှာ ပြဿနာ စတာပဲ။») နဲ့ အလတ်စား ရှင်းပြကြောင်းကို အလှည့်ကျ ရောသုံးပြီး professional recap channel တွေလို စီးစီးဆင်းဆင်း ဆက်တိုက် ပြောနေသလို ဖြစ်ရမည်။ လုပ်ဆောင်သူ/လုပ်ဆောင်ချက် ပြောင်းတိုင်း ကြောင်းသစ်စပါ၊ clause သုံးခုကျော် ဆင့်ထားတဲ့ အရှည်ကြီးလည်း မရေးပါနှင့်။
 - သူငယ်ချင်းတစ်ယောက်ကို ဇာတ်လမ်းပြန်ပြောပြနေသလို ရေးပါ။ ဒါပေမဲ့ slang အလွန်အကျွံ (ဗျာ၊ ရှင်၊ ဟဲဟဲ စသည်) မသုံးပါနှင့်။
 - အမည်ကို ချွေတာမသုံးပါနှင့်။ လူအများကြီးပါလာရင် သို့မဟုတ် လုပ်ဆောင်သူ ပြောင်းသွားရင် «သူ/သူမ/အဲ့ဒီလူ» ပဲ ဆက်မပြောဘဲ အမည် သို့မဟုတ် ရာထူး/ဆက်နွယ်ပုံကို ပြန်ပြောပါ။ စာကြောင်းတိုင်းမှာ လုပ်ဆောင်သူ၊ လုပ်ဆောင်ချက်၊ ရလဒ် ရှင်းရမည်။
 - Scene တစ်ခုနဲ့တစ်ခု သီးခြား caption လို မလုပ်ပါနှင့်။ နောက် scene အစပိုင်းဟာ အရင် scene အဆုံးရလဒ်ကနေ ဆက်စပ်နေရမည်။ အချိန် သို့မဟုတ် နေရာ ပြောင်းလျှင် တစ်ချက်ထဲ ခုန်မသွားဘဲ တိုတဲ့ bridge ထည့်ပါ။
 - ⛔ အင်္ဂလိပ်အက္ခရာ (A-Z)၊ တရုတ်/နိုင်ငံခြား စာလုံး၊ ဂဏန်း (123 / ၁၂၃) ကို narration စာသားမှာ လုံးဝ မထည့်ရဘူး — အသံက အဲ့ဒါတွေကို မဖတ်နိုင်ဘူး၊ အသံထွက် ပျက်တယ်။ နိုင်ငံခြားစကားလုံးတွေကို မြန်မာအသံထွက်အတိုင်း ရေးပါ (ဥပမာ: Level → လယ်ဗယ်၊ Game → ဂိမ်း၊ Boss → ဗောစ်၊ Skill → စကေး)။ နိုင်ငံခြားစကားပြောတွေကိုတော့ အဓိပ္ပါယ်အတိုင်း မြန်မာလို ဘာသာပြန်ရေးပါ။ ဂဏန်းတွေကိုလည်း မြန်မာစာလုံးနဲ့ ရေးပါ (ဥပမာ: 50 → ငါးဆယ်၊ 1000 → တစ်ထောင်၊ 90% → ကိုးဆယ်ရာခိုင်နှုန်း)။
-- အရေးကြီးတဲ့ စကားပြောခန်းတွေမှာ ဇာတ်ကောင်တွေ ပြောတဲ့စကားကို တိုက်ရိုက်ပုံစံနဲ့ ထည့်ပြောပါ (ဥပမာ: အဖေက \"ဒီနေ့ ငါးအကြီးကြီး ရခဲ့တယ်\" လို့ ပြောတယ်)။ နားထောင်သူက ဇာတ်လမ်းထဲမှာ ကိုယ်တိုင် ပါနေသလို ခံစားရဖို့ ဖြစ်ပါတယ်။ ဒါပေမဲ့ စာသားတစ်ခုလုံးက ကျွန်တော်/ကျွန်မ ပြန်ပြောပြနေတဲ့ ပထမလူပုံစံကနေ မလွဲစေပါနှင့်။
+- စကားပြောခန်းတိုင်းကို ပြောသူနဲ့ နားထောင်သူကို အမည်ဖြင့်ရှင်းပြီး reported speech နဲ့ ပြောပါ (ဥပမာ: အေဒင်က မေရီကို တံခါးဖွင့်ပေးဖို့ ပြောတော့ မေရီက မဖွင့်ပေးနိုင်ဘူးလို့ ပြန်ပြောတယ်)။ တိုက်ရိုက်စကားကို တကယ်လိုအပ်မှသာ quotation marks ထဲထည့်ပြီး ပြောသူကို အရင်အမည်တပ်ပါ။ Narrator ကိုယ်တိုင်အနေနဲ့ «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးရ။
+
 
 ## Pro recap ဖွဲ့စည်းပုံ (နားထောင်သူကို အစကနေ ဆွဲခေါ်ပုံ — professional recap channel ပုံစံ)
-- **အဖွင့် hook** — ဗီဒီယိုရဲ့ ပထမအပိုင်းရဲ့ ပထမ scene မှာ ပထမ နှစ်ကြောင်း-သုံးကြောင်းအတွင်း: (၁) အချိန်+နေရာ («ဒီဇာတ်လမ်းက ...မှာ စတယ်» သို့မဟုတ် «အဲဒီတုန်းက ကျွန်တော် ...မှာ ရောက်နေတယ်»)၊ (၂) ကျွန်တော်က ဘယ်သူလဲ (အမည်သိလျှင် အမည်+အခန်းကဏ္ဍ၊ မသိလျှင် လုပ်နေတဲ့ အလုပ်/အခြေအနေ)၊ (၃) အခု ဘာဖြစ်နေလဲ သို့မဟုတ် ကျွန်တော် ဘာလုပ်တော့မှာလဲ ဆိုတဲ့ လက်ရှိအခြေအနေကို ရှင်းပါ။ နောက်ခံအခြေအနေ မပေးဘဲ လှုပ်ရှားမှုအလယ်ကနေ တန်းမစရ။ «မင်္ဂလာပါ»၊ «ဇာတ်လမ်းလေး ပြောပြပါမယ်» လို meta အဖွင့် လုံးဝ မသုံးရ။ နောက်အပိုင်းတွေရဲ့ ပထမ scene မှာတော့ အကျဉ်းပြန်မပြောဘဲ အရင်အခြေအနေကနေ bridge တိုတိုနဲ့ တန်းဆက်ပါ။
+- **အဖွင့် hook** — ဗီဒီယိုရဲ့ ပထမအပိုင်းရဲ့ ပထမ scene မှာ ပထမ နှစ်ကြောင်း-သုံးကြောင်းအတွင်း: (၁) အချိန်+နေရာ («ဒီဇာတ်လမ်းက ...မှာ စတယ်» သို့မဟုတ် «အဲဒီတုန်းက အေဒင် ...မှာ ရောက်နေတယ်»)၊ (၂) အဓိကဇာတ်ကောင်ရဲ့ Cast Lock အမည် သို့မဟုတ် stable label နဲ့ ဘယ်သူလဲ/အခန်းကဏ္ဍ၊ (၃) အခု ဘာဖြစ်နေလဲ သို့မဟုတ် အဓိကဇာတ်ကောင် ဘာလုပ်တော့မှာလဲ ဆိုတဲ့ လက်ရှိအခြေအနေကို ရှင်းပါ။ နောက်ခံအခြေအနေ မပေးဘဲ လှုပ်ရှားမှုအလယ်ကနေ တန်းမစရ။ «မင်္ဂလာပါ»၊ «ဇာတ်လမ်းလေး ပြောပြပါမယ်» လို meta အဖွင့် လုံးဝ မသုံးရ။ နောက်အပိုင်းတွေရဲ့ ပထမ scene မှာတော့ အကျဉ်းပြန်မပြောဘဲ အရင်အခြေအနေကနေ bridge တိုတိုနဲ့ တန်းဆက်ပါ။
+
 - **Beat တိုင်းရဲ့ ပုံသေ**: အခြေအနေ → ရည်ရွယ်ချက်/အစီအစဉ် → လုပ်ဆောင်ချက် → ရလဒ် → ပြဿနာအသစ်။ လှည့်ကွက်၊ လျှို့ဝှက်အစီအစဉ်၊ အရေးကြီး ဆုံးဖြတ်ချက် ပါလာတိုင်း လုပ်ဆောင်ချက်ချည်း အရင်မပြောဘဲ **ဘာကြောင့်/ဘာဖြစ်စေချင်လို့ လုပ်တာလဲ** ဆိုတာကို အရင် သို့မဟုတ် အတူ ဖော်ပါ — နားထောင်သူက လှည့်ကွက်ကို မြင်နေရတဲ့အချိန်မှာပဲ နားလည်နေရမည်၊ ရလဒ်ထွက်ပြီးမှ ပြန်ရှင်းတာ မလုပ်ရ။
 - **မြင်ကွင်းပြောင်း bridge ကို အမည်တပ်ပါ**: နေရာပြောင်း = «အဲဒီနောက်မှာတော့ မြင်ကွင်းက ...ဆီ ပြောင်းသွားတယ်»၊ အပြိုင်ဇာတ်ကြောင်း = «တစ်ဖက်မှာတော့ ...»၊ အတိတ်ပြန် = «အတိတ်ကို ပြန်သွားရရင် ...»၊ လက်ရှိပြန် = «လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့ ...»၊ အချိန်ကျော် = «နောက်နေ့မနက် ရောက်လာတော့ ...» / «ရက်အနည်းငယ် ကြာပြီးနောက် ...»။ Bridge မပါဘဲ အချိန်/နေရာ ရုတ်တရက် ခုန်သွားတာ မလုပ်ရ။
 - **Scene အဆုံးသတ် ဆွဲဆောင်**: scene အများစုကို အဲ့ဒီ footage ထဲမှာပဲ မြင်ရတဲ့ ရလဒ် သို့မဟုတ် ပေါ်လာတဲ့ အန္တရာယ်/ပြဿနာနဲ့ အဆုံးသတ်ပါ — နားထောင်သူ နောက် scene ဆက်နားထောင်ချင်စိတ် ရှိရမည်။ ဒါပေမဲ့ မဖြစ်သေးတဲ့ နောက်ဖြစ်ရပ်ကို suspense အတွက် ကြိုခန့်မှန်း/ကြိုပြော လုံးဝ မလုပ်ရ။
 - **အမည် မိတ်ဆက်ပုံသေ**: လူသစ် ပထမဆုံးပါလာတိုင်း «...လို့ခေါ်တဲ့ + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ» နဲ့ မိတ်ဆက်ပြီးမှ နောက်ပိုင်း အမည်ချည်းသုံးပါ။ (ဥပမာ: «အေဒင်လို့ခေါ်တဲ့ ကျောင်းဆရာ» → နောက်ပိုင်း «အေဒင်»)
+
+## Cast Lock (ဘယ်သူက ဘယ်သူလဲ မရောအောင်)
+- Narration မရေးခင် cast registry အရင်လုပ်ပါ။ အမည်အထောက်အထားကို ဒီအစဉ်နဲ့ စစ်ပါ — (၁) ဗီဒီယိုထဲ ဖတ်လို့ရတဲ့ burned-in subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်/title၊ (၂) ဇာတ်ကောင်တွေ အချင်းချင်း ရှင်းရှင်းခေါ်တာ/မိတ်ဆက်တာ၊ (၃) အထက်နှစ်ချက်လုံး မသေချာရင် အခန်းကဏ္ဍ+မြင်သာတဲ့အချက်ပါတဲ့ unique descriptive label။ မရှင်းတဲ့ နိုင်ငံခြားစကားသံကနေ အမည်မှန်းမထည့်ရ။
+- လူတစ်ဦးချင်းစီအတွက် narration မှာ ပြောရမည့် `spoken_name` တစ်မျိုးတည်းကိုသာ Burmese အသံထွက်အတိအကျသုံးပါ။ မူရင်းအမည်၊ စာလုံးပေါင်းအမျိုးမျိုး၊ nickname နဲ့ အရင်သုံးခဲ့တဲ့ label ကို `aliases` မှာသာထားပြီး narration မှာ အလှည့်ပြောင်း မသုံးရ။
+- အရင် descriptive label သုံးထားပြီးမှ subtitle/အမည်ကတ်က အမည်အစစ်ကို အတည်ပြုနိုင်ရင် «အရင် label … ရဲ့ အမည်က … ဖြစ်တယ်» လို့ တစ်ခါတည်းသာ bridge လုပ်ပြီး နောက်ပိုင်း အမည်အစစ်တစ်မျိုးတည်းသုံးပါ။ အရင် label ကို alias ထဲထည့်ပါ။
+- လူသစ်ပထမဆုံးပါလာရင် spoken_name/label + အခန်းကဏ္ဍ + အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံကို တစ်ခါတည်း ရှင်းပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာရင် spoken_name + ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါ။
+- လူတစ်ဦး လုပ်ဆောင်/ပြောတဲ့ scene တိုင်းရဲ့ ပထမဝါကျမှာ အဓိကလုပ်ဆောင်သူကို spoken_name/label နဲ့ အရင်ရှင်းပါ။ «သူ/သူမ» ကို အမည်ကို အဲ့ဒီဝါကျ သို့မဟုတ် အနားကပ်ဝါကျမှာ ရှင်းပြီးသားဖြစ်ပြီး အခြားလူနဲ့ လုံးဝမရောနိုင်မှသာ သုံးပါ။ လူနှစ်ယောက်ထက်ပိုရင် အမည်ကိုပဲ ပြန်သုံးပါ။
+- စကားပြောတိုင်း ပြောသူနဲ့ နားထောင်သူ နှစ်ယောက်စလုံးကို အမည်တပ်ပါ။ ဘယ်သူ့ကိုပြောမှန်း မရှင်းတဲ့ quote သို့မဟုတ် «သူကပြောတယ်» ချည်း မထားရ။
 """.strip()
 
 
-def _direct_first_person_repair_prompt(
+def _direct_narrator_repair_prompt(
     scenes: list,
     bad_indexes: list,
-    pronoun: str,
     protagonist: str = "",
+    story_map: dict = None,
+    story_context: dict = None,
 ) -> str:
     payload = []
     for index in bad_indexes or []:
@@ -6626,15 +7050,27 @@ def _direct_first_person_repair_prompt(
             "burmese": str(scene.get("burmese") or ""),
         })
     payload_json = json.dumps(payload, ensure_ascii=False)
-    other = _other_first_person_pronoun(pronoun)
+    repair_context = _merge_story_contexts(
+        story_context or {},
+        _story_context_from_story_map(
+            story_map or {},
+            protagonist=protagonist,
+        ),
+    )
+    context_lines = _story_context_prompt_lines(repair_context)
+    map_json = json.dumps(_normalize_story_map(story_map), ensure_ascii=False)
     return f"""
-FIRST-PERSON REPAIR ONLY — အောက်ပါ scenes များသည် ပထမလူပုံစံ မဖြစ်သေးပါ။
-အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောနေသလို ပြန်ရေးပါ။
+THIRD-PERSON NARRATOR REPAIR ONLY — အောက်ပါ scenes များတွင် narrator က ဇာတ်ကောင်တစ်ဦးလို «ကျွန်တော်/ကျွန်မ» ဖြင့် ဝင်ပြောထားသည်။
+အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ အပြင်က professional movie-recap narrator က တတိယလူအဖြစ် ပြန်ပြောနေသလို ပြန်ရေးပါ။
 ဇာတ်လမ်းအဆက်အစပ်ကိုပါ ထိန်းပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းအောင် လုပ်ပါ။ အချက်အသစ် မတီထွင်ပါနှင့်၊ ဖြစ်ရပ်ကို scene အချင်းချင်း မရွှေ့ပါနှင့်။
-ပြောနေသူ၏ နာမ်စားမှာ «{pronoun}» တစ်မျိုးတည်းသာ ဖြစ်ရမည်။ «{other}» ကို ပြောနေသူအဖြစ် လုံးဝမသုံးပါနှင့်။
-Scene တိုင်းတွင် «{pronoun}» ကို ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် အနည်းဆုံးတစ်ကြိမ် ထည့်ပါ။
-ကိုယ်တိုင်မရှိသော မြင်ကွင်းဆိုလျှင် «အဲဒီတုန်းက {pronoun} မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှ {pronoun} သိလိုက်ရတာက…» ဟုစပါ။
-အဓိကဇာတ်ကောင်အမည်: {protagonist or "မသိရသေး"}
+Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ/ကျွန်တော့်» လုံးဝ မထားရ။ အဲ့ဒီစကားက အဓိကဇာတ်ကောင်ကို ဆိုလိုလျှင် သူ၏ Cast Lock spoken_name/label ကိုသုံးပါ။ အခြားဇာတ်ကောင်ကို ဆိုလိုလျှင် သက်ဆိုင်သူ၏ spoken_name/label ကိုသုံးပါ။
+တိုက်ရိုက်စကားကို quotation marks အတွင်းမှာသာ ဇာတ်ကောင်၏ကိုယ်ပိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် ထားနိုင်သည်။ Quote မတိုင်ခင် ပြောသူကို အမည်ဖြင့် အရင်ရှင်းပါ။ မဟုတ်လျှင် reported speech အဖြစ် ပြောင်းပါ။
+Scene တစ်ခု၏ ပထမဝါကျတွင် အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို အမည်ဖြင့် အရင်ရှင်းပါ။ Cast Lock aliases/variant တွေကို narration မှာ မသုံးပါနှင့်။
+အဓိကဇာတ်ကောင် canonical spoken_name: {protagonist or "မသိရသေး"}
+Cast Lock / ယခင်ဇာတ်လမ်းအခြေအနေ:
+{context_lines or "- မရှိသေးပါ"}
+ယခုအပိုင်း story_map:
+{map_json}
 ပြန်ရေးပြီးစာသားအရှည်သည် current_burmese_chars ထက် မနည်းရပါ။
 ပြန်ရေးရာတွင် စကားပြောဟန် (အပြောမြန်မာ) ကိုပါ ထိန်းပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးပါနှင့်၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 
@@ -6642,8 +7078,9 @@ Scenes:
 {payload_json}
 
 JSON ကိုသာ ပြန်ပေးပါ:
-{{"pronoun": "{pronoun}", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "ပြန်ရေးပြီး ပထမလူစာသား"}}]}}
+{{"narrator_perspective": "third_person", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "ပြန်ရေးပြီး တတိယလူ recap စာသား"}}]}}
 """.strip()
+
 
 
 _STORY_TRANSITION_MARKERS = (
@@ -6703,10 +7140,11 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
     This cannot judge literary quality; it only detects failure
     shapes users actually hear as "I cannot follow the story":
     repeated scene text, no ordered beat plan, almost no scene
-    transitions/cause links, or a crowd of unnamed ``သူ`` references.
-    The story-editor pass runs only when at least two such signals
-    fire (or text is duplicated), so a clear draft pays no extra
-    model call.
+    transitions/cause links, a crowd of unnamed ``သူ`` references,
+    or scenes whose actor is never identified by the locked cast
+    name/label.  The story-editor pass runs when two such signals
+    fire, when text is duplicated, or when cast identification is
+    itself weak, so a clear draft still pays no extra model call.
     """
     texts = [
         str(scene.get("burmese") or "").strip()
@@ -6733,7 +7171,53 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         for marker in _STORY_AMBIGUOUS_REFERENCES
     )
     beat_count = len(normalized_map.get("beats") or [])
-    card_count = len(normalized_map.get("character_cards") or [])
+    cards = normalized_map.get("character_cards") or []
+    card_count = len(cards)
+    canonical_identities = []
+    for card in cards:
+        spoken_name = _character_card_spoken_name(card)
+        if spoken_name and spoken_name not in canonical_identities:
+            canonical_identities.append(spoken_name)
+    canonical_keys = {
+        _normalize_burmese_text(name) for name in canonical_identities if name
+    }
+    named_scene_count = sum(
+        1
+        for text in texts
+        if any(name in text for name in canonical_identities)
+    )
+    unnamed_actor_scene_indexes = []
+    for index, text in enumerate(texts):
+        has_ambiguous_reference = any(
+            marker in text for marker in _STORY_AMBIGUOUS_REFERENCES
+        )
+        has_canonical_identity = any(
+            name in text for name in canonical_identities
+        )
+        if has_ambiguous_reference and not has_canonical_identity:
+            unnamed_actor_scene_indexes.append(index)
+    alias_variant_count = 0
+    for card in cards:
+        for alias in card.get("aliases") or []:
+            clean_alias = str(alias or "").strip()
+            alias_key = _normalize_burmese_text(clean_alias)
+            if not clean_alias or not alias_key or alias_key in canonical_keys:
+                continue
+            if any(
+                alias_key in canonical_key or canonical_key in alias_key
+                for canonical_key in canonical_keys
+            ):
+                continue
+            alias_variant_count += sum(text.count(clean_alias) for text in texts)
+    cast_lock_weak = bool(
+        len(texts) >= 4
+        and (
+            (not cards and ambiguous_references >= 4)
+            or len(unnamed_actor_scene_indexes)
+            >= max(2, math.ceil(len(texts) / 3))
+            or alias_variant_count >= 3
+        )
+    )
     issues = []
     score = 100
     if duplicate_count:
@@ -6755,12 +7239,15 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
     ):
         issues.append("ambiguous_references")
         score -= 15
+    if cast_lock_weak:
+        issues.append("cast_lock_weak")
+        score -= 15
     return {
         "scene_count": len(texts),
         "score": max(0, int(score)),
         "issues": issues,
         "needs_editor": bool(
-            duplicate_count or len(issues) >= 2
+            duplicate_count or len(issues) >= 2 or "cast_lock_weak" in issues
         ),
         "duplicate_scenes": int(duplicate_count),
         "story_beats": int(beat_count),
@@ -6768,14 +7255,19 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         "transition_scene_ratio": round(float(transition_ratio), 3),
         "causal_markers": int(causal_occurrences),
         "ambiguous_references": int(ambiguous_references),
+        "cast_identities": canonical_identities,
+        "named_scene_count": int(named_scene_count),
+        "unnamed_actor_scenes": int(len(unnamed_actor_scene_indexes)),
+        "unnamed_actor_scene_indexes": unnamed_actor_scene_indexes,
+        "alias_variant_count": int(alias_variant_count),
     }
+
 
 
 def _direct_story_editor_prompt(
     scenes: list,
     story_context: dict,
     story_map: dict,
-    pronoun: str,
     protagonist: str = "",
 ) -> str:
     payload = []
@@ -6801,10 +7293,12 @@ STORY EDITOR PASS — သင်က professional story editor ပါ။
 - Scene တစ်ခုစီကို သီးခြား caption လို မရေးဘဲ ဇာတ်လမ်းတစ်ခုလုံး ဆက်တိုက်စီးဆင်းအောင် ရေးပါ။ နောက် scene အစဟာ အရင် scene ရဲ့ ရလဒ်ကနေ သဘာဝကျကျ ဆက်ရမယ်။
 - ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ၊ ဘယ်သူက ဘာလုပ်လဲ၊ ဘာကြောင့်လုပ်လဲ၊ ဘာဆက်ဖြစ်လဲဆိုတာ ရှင်းပါ။
 - လူနှစ်ယောက်ထက်ပိုပါလာရင် သို့မဟုတ် subject ပြောင်းသွားရင် «သူ/သူမ» ပဲ မထားဘဲ အမည် သို့မဟုတ် အခန်းကဏ္ဍကို ပြန်ပြောပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာသူဆိုလျှင် အမည်+ဆက်နွယ်ပုံကို တိုတိုပြန်အမှတ်ရစေပါ။
+- Story map/context ရှိ `spoken_name` တစ်မျိုးတည်းကိုသာ သုံးပါ။ Aliases၊ source_name နဲ့ variant တွေကို narration မှာ မသုံးပါနဲ့။ အမည်အသစ်ကို မတီထွင်ပါနဲ့ — map က အမည်မသေချာသေးလျှင် ရှိပြီးသား stable descriptive label သို့မဟုတ် အခန်းကဏ္ဍကိုသာ ဆက်သုံးပါ။
+- လူကို ပထမဆုံးမိတ်ဆက်တိုင်း spoken_name/label + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ ရှင်းပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာရင် spoken_name + ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါ။
 - အကြောင်းရင်းကို တုံ့ပြန်မှု/ရလဒ်ထက် အရင် သို့မဟုတ် အတူဖော်ပြပါ။ Dialogue မှာ speaker နဲ့ listener ကို ရှင်းပါ။
-- လှည့်ကွက်၊ လျှို့ဝှက်အစီအစဉ်၊ အရေးကြီးဆုံးဖြတ်ချက်တွေမှာ ရည်ရွယ်ချက်ကို လုပ်ဆောင်ချက်ထက် အရင် သို့မဟုတ် အတူဖော်ပါ — ရလဒ်ထွက်ပြီးမှ ပြန်ရှင်းထားတဲ့ နေရာတွေကို အစဉ်ပြန်စီပါ (ဖြစ်ရပ်ကို scene ပြောင်း မရွှေ့ရ)။ ပထမ scene က ဇာတ်လမ်းအဖွင့်ဖြစ်ပြီး အချိန်/နေရာ/ပြောနေသူက ဘယ်သူလဲ မရှင်းသေးလျှင် ရှိပြီးသားစာသား/story_map ထဲက အချက်ကိုသာ ယူပြီး အဖွင့် setup ကို ဖြည့်ရှင်းပါ (အချက်သစ် မတီထွင်ရ)။
+- လှည့်ကွက်၊ လျှို့ဝှက်အစီအစဉ်၊ အရေးကြီးဆုံးဖြတ်ချက်တွေမှာ ရည်ရွယ်ချက်ကို လုပ်ဆောင်ချက်ထက် အရင် သို့မဟုတ် အတူဖော်ပါ — ရလဒ်ထွက်ပြီးမှ ပြန်ရှင်းထားတဲ့ နေရာတွေကို အစဉ်ပြန်စီပါ (ဖြစ်ရပ်ကို scene ပြောင်း မရွှေ့ရ)။ ပထမ scene က ဇာတ်လမ်းအဖွင့်ဖြစ်ပြီး အချိန်/နေရာ/အဓိကဇာတ်ကောင်က ဘယ်သူလဲ မရှင်းသေးလျှင် ရှိပြီးသားစာသား/story_map ထဲက အချက်ကိုသာ ယူပြီး အဖွင့် setup ကို ဖြည့်ရှင်းပါ (အချက်သစ် မတီထွင်ရ)။
 - အချိန်/နေရာ ပြောင်းတိုင်း တိုတ့ bridge တစ်ခုထည့်ပြီး ဘယ်ကိုပြောင်းတာလဲ အမည်တပ်ပါ (နေရာ/အတိတ်/လက်ရှိ/နောက်နေ့)။ စကားဆက်တွေကို အလှဆင်ဖို့မဟုတ်ဘဲ အချိန်၊ အကြောင်းရင်း၊ ဆန့်ကျင်ဘက်၊ ရလဒ်ကို ပြဖို့သာ သုံးပါ။
-- ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{pronoun}» တစ်မျိုးတည်းသာ သုံးပါ။ Scene တိုင်းရဲ့ အစပိုင်းမှာ «{pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမယ်။
+- Narrator မှာ ဇာတ်လမ်းအပြင်က တတိယလူ recap ပြောပြသူဖြစ်သည်။ Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးရ။ တိုက်ရိုက်စကားကို quotation marks အတွင်းထည့်ပြီး speaker ကို အရင်အမည်တပ်မှသာ ဇာတ်ကောင်၏ကိုယ်ပိုင်စကားအဖြစ် သုံးနိုင်သည်။
 - Scene တစ်ခုစီရဲ့ စာသားအရှည်ကို current_burmese_chars ရဲ့ ၉၀%–၁၁၀% အတွင်း ထားပါ။
 - စကားပြောဟန် (အပြောမြန်မာ) နဲ့သာ ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး မသုံးရ — မြန်မာအသံထွက်နဲ့ မြန်မာဂဏန်းစာလုံးသာ သုံးပါ။
 
@@ -6818,8 +7312,9 @@ Scenes:
 {json.dumps(payload, ensure_ascii=False)}
 
 JSON ကိုသာ ပြန်ပေးပါ:
-{{"pronoun": "{pronoun}", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး ပထမလူစာသား"}}], "story_map": {{"character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": []}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}}}
+{{"narrator_perspective": "third_person", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး တတိယလူ recap စာသား"}}], "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": ["variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}}}
 """.strip()
+
 
 
 def _parse_direct_scene_replacements(data, allowed_indexes) -> dict:
@@ -6931,9 +7426,9 @@ async def build_chunk_recap(
     request_chars_per_scene = int(
         math.ceil(float(request_chars or 0) / max(1, scene_count))
     )
-    # 👤 ရေးဟန် = ပထမလူ အမြဲတမ်း (fixed) — အဓိကဇာတ်ကောင် ကိုယ်တိုင်
-    # «ကျွန်တော်/ကျွန်မ» အနေနှင့် ပြန်ပြောပြသလို ရေးသည်။ အရင်သိမ်းထားသော
-    # narrator ဆက်တင် အဟောင်းရှိလျှင်လည်း ပထမလူပင် ဖြစ်ရမည်။
+    # The narrator is always outside the story: a professional
+    # third-person Burmese movie-recap voice.  Legacy first-person
+    # state in an old story context is deliberately ignored.
     tone_line = {
         "natural": "သဘာဝကျသော လေသံဖြင့် ရေးပါ။",
         "dramatic": "ဒရာမာဆန်ဆန်၊ တင်းမာမှုရှိသော လေသံဖြင့် ရေးပါ။",
@@ -6941,75 +7436,79 @@ async def build_chunk_recap(
         "calm": "အေးအေးဆေးဆေး၊ တည်ငြိမ်သော လေသံဖြင့် ရေးပါ။",
     }.get(st.get("tone"), "သဘာဝကျသော လေသံဖြင့် ရေးပါ။")
     protagonist = story_context.get("protagonist", "") if chunk_index > 1 else ""
-    pronoun = story_context.get("pronoun", "") if chunk_index > 1 else ""
-    if pronoun not in ("ကျွန်တော်", "ကျွန်မ"):
-        pronoun = ""
-    voice_pronoun = "ကျွန်မ" if st.get("voice") in ("Kore", "Aoede") else "ကျွန်တော်"
-    if pronoun:
-        other_pronoun = "ကျွန်မ" if pronoun == "ကျွန်တော်" else "ကျွန်တော်"
-        pronoun_line = (
-            f"ရှေ့ပိုင်းမှာ သုံးပြီးသား နာမ်စား «{pronoun}» ကိုသာ ဆက်သုံးပါ။ "
-            f"«{other_pronoun}» သို့ လှည့် မသုံးပါနှင့်။"
+    narrator_perspective = NARRATOR_PERSPECTIVE
+    perspective_line = (
+        "အပြင်က တတိယလူ movie-recap narrator အဖြစ်သာ ပြောပါ။ "
+        "Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» ကို narrator အနေနဲ့ လုံးဝမသုံးရ။ "
+        "ဇာတ်ကောင်ပြောစကားကို တိုက်ရိုက်သုံးရင် speaker ကိုအရင်အမည်တပ်ပြီး quotation marks အတွင်းထည့်ပါ။"
+    )
+    if protagonist:
+        protagonist_cast_line = (
+            f"အဓိကဇာတ်ကောင်ကို narration တိုင်းမှာ «{protagonist}» ဆိုတဲ့ "
+            "spoken_name တစ်မျိုးတည်းဖြင့်သာ ညွှန်းပါ။"
         )
     else:
-        pronoun_line = (
-            "အဓိကဇာတ်ကောင်က အမျိုးသားဖြစ်လျှင် «ကျွန်တော်»၊ အမျိုးသမီးဖြစ်လျှင် «ကျွန်မ» သုံးပါ။ "
-            f"ဗီဒီယိုမှ ကျား/မကို အတိအကျ မသိနိုင်လျှင် «{voice_pronoun}» သုံးပါ။ "
-            "ရွေးပြီးနောက် ဤအပိုင်း တစ်လျှောက် လုံးဝ မပြောင်းပါနှင့်။"
+        protagonist_cast_line = (
+            "ဒီအပိုင်းမှာ အဓိကဇာတ်ကောင်ကို subtitle/အမည်ကတ်က "
+            "အတည်ပြုနိုင်တဲ့ spoken_name သို့မဟုတ် မရောနိုင်တဲ့ stable label "
+            "တစ်ခုတည်းနဲ့ သတ်မှတ်ပြီး မပြောင်းပါနှင့်။"
         )
+
 
     if chunk_index == 1:
         context_section = (
-            "🔵 ဤသည်မှာ ဇာတ်လမ်း၏ အစဖြစ်သည်။ ပထမဆုံး ဝါကျကစပြီး အဓိကဇာတ်ကောင် "
-            "ကိုယ်တိုင် «ကျွန်တော်/ကျွန်မ» အနေနှင့် ပြန်ပြောနေသလို ရေးပါ။ "
-            "«ဇာတ်လမ်းအကျဉ်း» ပုံစံ မိတ်ဆက်မထည့်ဘဲ ဇာတ်လမ်းထဲသို့ တိုက်ရိုက် ဝင်ပါ။"
+            "🔵 ဤသည်မှာ ဇာတ်လမ်း၏ အစဖြစ်သည်။ ပထမဝါကျကစပြီး အချိန်၊ နေရာနဲ့ "
+            "အဓိကဇာတ်ကောင်ရဲ့ spoken_name/label ကို ရှင်းပြီး အပြင်က တတိယလူ recap narrator အဖြစ် ပြောပါ။ "
+            "Cast Lock registry ကို အရင်တည်ဆောက်ပြီး လူတစ်ဦးစီအတွက် spoken_name တစ်မျိုးတည်းသုံးပါ။ "
+            "«မင်္ဂလာပါ» သို့မဟုတ် «ဇာတ်လမ်းလေး ပြောပြပါမယ်» လို meta အဖွင့် မထည့်ပါနှင့်။"
         )
     else:
         context_lines = _story_context_prompt_lines(story_context)
-        protag_line = f"- အဓိကဇာတ်ကောင် = ပြောနေသူ ကိုယ်တိုင် (မပြောင်းရ): {protagonist}\n" if protagonist else ""
-        speaker_line = (
-            f"- ပြောနေသူ ကိုယ့်ကိုယ်ကို သုံးသည့် နာမ်စား (မပြောင်းရ): «{pronoun}»\n"
-            if pronoun else ""
+        protag_line = f"- အဓိကဇာတ်ကောင် spoken_name (မပြောင်းရ): {protagonist}\n" if protagonist else ""
+        perspective_context_line = (
+            "- Narrator: အပြင်က တတိယလူ recap narrator "
+            "(quotation ပြင်ပ ကျွန်တော်/ကျွန်မ မသုံးရ)\n"
         )
         context_section = f"""
 🔵 ယခင်ဇာတ်လမ်း continuity bible (အချက်အလက်သိရုံသာ — ပြန် မရေးရ) —
-{protag_line}{speaker_line}{context_lines}
+{protag_line}{perspective_context_line}{context_lines}
 
 🔵 ယခင်အပိုင်းကို အကျဉ်းချုပ် ပြန် မပြောပါနှင့် — အထက်ပါ နောက်ဆုံးအခြေအနေကနေ
-အဓိကဇာတ်ကောင် တစ်ယောက်တည်းကပင် ဆက်ပြောနေသလို တန်းဆက်ရေးပါ။
+တူညီတဲ့ တတိယလူ narrator ကပဲ ဆက်ပြောနေသလို တန်းဆက်ရေးပါ။
 ပထမ scene ရဲ့ ပထမ clause မှာ နောက်ဆုံးအခြေအနေကနေ အခု မြင်ကွင်းဆီ သဘာဝကျကျ ဆက်တဲ့ တိုတဲ့ bridge တစ်ခု ပါရမည်။
-ပြောနေသူ၊ နာမ်စား («ကျွန်တော်/ကျွန်မ») နှင့် အဓိကဇာတ်ကောင် လုံးဝ မပြောင်းပါနှင့်။
+Cast Lock spoken_name/label တွေကို လုံးဝမပြောင်းပါနှင့်။ အရင် label သုံးထားသူကို အမည်အစစ်ကို subtitle/အမည်ကတ်က အတည်ပြုနိုင်မှသာ တစ်ခါတည်း bridge လုပ်ပါ။
 """
 
+
     prompt = f"""
-သင်သည် ဗီဒီယိုထဲရှိ ဇာတ်လမ်းကို အဓိကဇာတ်ကောင် ကိုယ်တိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် ကိုယ်တိုင်ကြုံခဲ့ရသမျှကို အပြည့်အဝ ပြန်ပြောပြနေသလိုမျိုး မြန်မာဘာသာဖြင့် ရေးပေးရမည့် professional story editor နှင့် ဇာတ်ကြောင်းရေးသူ ဖြစ်သည်။ အဓိကရည်မှန်းချက်မှာ ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူကတောင် ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာကို အစဉ်လိုက် အပြည့်အဝ နားလည်နိုင်ရေးဖြစ်သည်။
+သင်သည် ဗီဒီယိုထဲရှိ ဇာတ်လမ်းကို အပြင်က professional Burmese movie-recap narrator တစ်ယောက်အဖြစ် တတိယလူအမြင်နဲ့ အပြည့်အဝ ပြန်ပြောပေးရမည့် professional story editor နှင့် ဇာတ်ကြောင်းရေးသူ ဖြစ်သည်။ အဓိကရည်မှန်းချက်မှာ ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူကတောင် ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာကို အစဉ်လိုက် အပြည့်အဝ နားလည်နိုင်ရေးဖြစ်သည်။
 
 ဤဗီဒီယိုသည် မူရင်းဗီဒီယို၏ {start_fmt} မှ {end_fmt} အထိ ဖြစ်သည်။ ဤအပိုင်းကိုသာ ကြည့်ပြီး အောက်ပါ ညွှန်ကြားချက်များအတိုင်း ဇာတ်ကြောင်းရေးပါ။
 
 {context_section}
-- ရှုထောင့်: ပထမလူ (First person) အမြဲတမ်း — အောက်ပါ စည်းကမ်းများကို အတိအကျလိုက်နာပါ။
-- နာမ်စား: {pronoun_line}
+- ရှုထောင့်: တတိယလူ (Third person) အမြဲတမ်း — narrator က ဇာတ်ကောင်တစ်ဦးအလား မဝင်ပြောရ။
+- Narrator စည်းကမ်း: {perspective_line}
+- အဓိကဇာတ်ကောင် Cast Lock: {protagonist_cast_line}
 - လေသံ: {tone_line}
 
-## ပထမလူ အမြင်ဖြင့် ပြောပုံ (ခန်းတိုင်း အမြဲလိုက်နာရန်)
-- ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်သာ ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို ညွှန်းတိုင်း «ကျွန်တော်» (အမျိုးသားဆိုလျှင်) သို့မဟုတ် «ကျွန်မ» (အမျိုးသမီးဆိုလျှင်) ဟုသာ သုံးပါ။ ဥပမာ — «အဲဒီအချိန်မှာ ကျွန်တော် ...»၊ «ကျွန်မတော့ ... လို့ ပြန်ဖြေလိုက်တယ်»။ **Scene တိုင်း၏ ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် ရွေးထားသော နာမ်စား အနည်းဆုံး တစ်ကြိမ် မဖြစ်မနေပါရမည်။** JSON ၏ pronoun field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
-- ကိုယ့်အကြောင်းကို ကိုယ့်အမည် သို့မဟုတ် «သူ/သူမ» သုံး၍ တတိယလူကဲ့သို့ လုံးဝ မရေးပါနှင့်။ အခြားဇာတ်ကောင်များကိုမူ ၎င်းတို့၏ အမည် သို့မဟုတ် «သူ/သူမ» ဖြင့် သုံးနိုင်သည်။
-- အဓိကဇာတ်ကောင်၏ အမည်ကို ဗီဒီယိုမှ မသိနိုင်ပါက မတီထွင်ပါနှင့်။ (ကျား/မ မသေချာလျှင် အထက်ပါ «နာမ်စား» စည်းကမ်းအတိုင်း ရွေးပြီး မပြောင်းပါနှင့်။)
-- ကိုယ် မရှိခဲ့၊ ကိုယ်တိုင် မမြင်ရသေးသည့် မြင်ကွင်းများကိုလည်း လုံးဝ မကျော်ပါနှင့် — «အဲဒီတုန်းက ကျွန်တော် မသိသေးပေမယ့် ...»၊ «နောက်မှသာ သိလိုက်ရတာက ...» ဟု ဆက်စပ်ပြောပြပါ။ သို့သော် ကိုယ်တိုင် မြင်ခဲ့သယောင် မပြောပါနှင့်။
-- ကိုယ့်အတွင်းစိတ် အတွေး၊ ခံစားချက်များကို ဗီဒီယိုထဲရှိ မျက်နှာအမူအရာ၊ အပြုအမူနှင့် စကားပြောချက်များပေါ် အခြေခံပြီးသာ ရေးပါ။ ဗီဒီယိုတွင် မပါသည်ကို မတီထွင်ပါနှင့်။
+## တတိယလူ recap narrator အမြင်ဖြင့် ပြောပုံ (ခန်းတိုင်း အမြဲလိုက်နာရန်)
+- Narrator က ဇာတ်လမ်းအပြင်ကသာ ပြောသူဖြစ်သည်။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို Cast Lock `spoken_name`/stable label နဲ့ ညွှန်းပါ။ Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» ကို narrator အသံအဖြစ် လုံးဝမသုံးရ။
+- အဓိကဇာတ်ကောင်ရဲ့ အမည်ကို subtitle/on-screen text ကနေ အတည်မပြုနိုင်ရင် မတီထွင်ပါနှင့် — ထူးခြားပြီး အခြားသူနဲ့ မရောနိုင်တဲ့ descriptive label တစ်ခုတည်းသုံးပါ။ **Scene တိုင်းရဲ့ ပထမဝါကျမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို အဲ့ဒီအမည်/label နဲ့ အရင်ရှင်းပါ။**
+- အဓိကဇာတ်ကောင် မပါတဲ့ မြင်ကွင်းတွေကိုလည်း မကျော်ပါနှင့် — «တစ်ဖက်မှာတော့ ...»၊ «အဲဒီအချိန်မှာပဲ ...မှာ» လို နေရာ/အချိန်အမည်တပ် bridge နဲ့ ပြောင်းပါ။ နောက်ဖြစ်မည့်အရာကို suspense အတွက် ကြိုမခန့်မှန်းပါနှင့်။
+- ဇာတ်ကောင်တစ်ဦးချင်းရဲ့ အတွေး၊ ရည်ရွယ်ချက်နဲ့ ခံစားချက်ကို မျက်နှာအမူအရာ၊ အပြုအမူနဲ့ စကားပြောချက်က အမှန်တကယ်ပြထားသလောက်သာ ပြောပါ။ ဗီဒီယိုမှာ မပါတာကို မတီထွင်ပါနှင့်။
 
 ## ဗီဒီယိုကို အပြည့်အဝ ပြန်ပြောပုံ (အကျဉ်းချုပ် မဟုတ်ပါ)
 - အတိုချုပ် (summary) မရေးပါနှင့်။ နားထောင်နေသူက မူရင်းဗီဒီယိုကို ပြန်ပင် ကြည့်နေရသလို ထင်ရအောင် အစက အဆုံးအထိ အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပြပါ။
-- **Narration မရေးခင် ဒီအပိုင်းရဲ့ story map ကို အတိအကျ တည်ဆောက်ပါ** — ဇာတ်ကောင်တစ်ဦးချင်းစီ၏ အမည်၊ ဘယ်သူလဲ၊ ပြောနေသူ/အခြားသူနှင့် ဆက်နွယ်ပုံ၊ အခြားအမည်များ၊ ပြီးတော့ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် ဘယ်သူက ဘာလုပ်တယ်/ဘာပြောတယ်၊ ဘာကြောင့်၊ ဘာဆက်ဖြစ်တယ် ဆိုတာတွေပါ။ အဲ့ဒီ map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း တိုတိုပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
-- အချက်အလက်ကို ဆုံးဖြတ်ရာမှာ ပြောစကား/စာတန်း/ဖန်သားပြင်ပေါ်ရှိ အမည်-စာသားတွေကို ပထမ ယုံကြည်ပါ၊ ပြီးမှ မြင်ရတဲ့ လုပ်ဆောင်ချက်နဲ့ အတည်ပြုပါ။ မသေချာလျှင် မြင်ရတဲ့လုပ်ဆောင်ချက်ကိုသာ ပြောပြီး ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်၊ လျှို့ဝှက်အကြောင်းရင်းကို မှန်းမရေးပါနှင့်။
+- **Narration မရေးခင် Cast Lock registry + story map ကို အတိအကျ တည်ဆောက်ပါ** — လူတစ်ဦးချင်းစီအတွက် narration မှာ အမြဲပြောရမည့် `spoken_name` တစ်ခု၊ သိလျှင် `source_name`၊ ဘယ်သူလဲ (`role`)၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ (`relation`)၊ variant အားလုံး (`aliases`)၊ အထောက်အထားအရင်းအမြစ် (`name_source`: subtitle/on_screen/dialogue/visual_label)၊ သေချာမှု (`confidence`: confirmed/descriptive/uncertain) နဲ့ မရောအောင် မှတ်လို့ရတဲ့ `visual_cue` ကို သတ်မှတ်ပါ။ ပြီးမှ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် ဘယ်သူက ဘာလုပ်တယ်/ဘာပြောတယ်၊ ဘာကြောင့်၊ ဘာဆက်ဖြစ်တယ် ရေးပါ။ အဲ့ဒီ registry/map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း ပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
+- အမည်ကို ဆုံးဖြတ်ရာမှာ (၁) ဖတ်လို့ရတဲ့ burned-in subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်/title၊ (၂) ဇာတ်ကောင်တွေ ရှင်းရှင်း အချင်းချင်းခေါ်တာ/မိတ်ဆက်တာ၊ (၃) အဲ့ဒါတွေ မသေချာရင် အခန်းကဏ္ဍ+မြင်သာတဲ့အချက်နဲ့ unique descriptive label ဆိုတဲ့ အစဉ်နဲ့ သွားပါ။ စာလုံးပေါင်းနှစ်မျိုး ရှိနေရင် subtitle/on-screen ပုံစံကို ဦးစားပေးပြီး Burmese spoken form တစ်မျိုးတည်း lock လုပ်ပါ။ မရှင်းတဲ့ အသံကို နာမည်မှန်းမထည့်ပါနှင့်။ အခြားအချက်အလက်တွေကိုလည်း ပြောစကား/စာတန်းနဲ့ မြင်ရတဲ့ လုပ်ဆောင်ချက်က အတည်ပြုနိုင်သလောက်သာ ပြောပါ။ မသေချာလျှင် မြင်ရတဲ့လုပ်ဆောင်ချက်ကိုသာ ပြောပြီး ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်၊ လျှို့ဝှက်အကြောင်းရင်းကို မှန်းမရေးပါနှင့်။
 - Scene အစမှာ အရင် scene ရဲ့ ရလဒ်ကနေ ဆက်စပ်တဲ့ anchor/bridge ကို ထားပြီး အဲ့ဒီ scene ရဲ့ key beat ကို အချိန်အစဉ်အတိုင်း စောစောဖော်ပြပါ။ အကြောင်းရင်း မသိရသေးဘဲ ရလဒ်ချည်း အရင်ပြော၍ နားထောင်သူကို လည်မနေစေပါနှင့်။
 - ခန်းတိုင်းတွင် ဘယ်သူတွေ ရှိနေလဲ၊ ဘယ်မှာလဲ၊ ဘာလုပ်နေလဲ၊ ဘာတွေ ပြောလဲ (အဓိပ္ပာယ်)၊ တစ်ဖက်က ဘယ်လို တုံ့ပြန်လဲ၊ ဘာကြောင့်လဲနှင့် ဘာဆက်ဖြစ်သည်ကို ရှင်းလင်းစွာ ဖော်ပြပါ။
 - ဖြစ်ရပ် များစွာကို ဝါကျတစ်ကြောင်းတည်းနှင့် ချုံ့ မပစ်ပါနှင့်။ အလယ်ပိုင်းကို ကျော်၍ အဆုံးသို့ တန်းမရောက်ပါနှင့် — နောက်ဆုံးခန်းသည် ဤအပိုင်း၏ နောက်ဆုံး မြင်ကွင်းအထိ ရောက်အောင် ရေးပါ။
 - အဓိက ဖြစ်ရပ်များအပြင် ဇာတ်လမ်းကို နားလည်ရန် လိုအပ်သည့် အသေးစိတ်များ — ဇာတ်ကောင်တို့၏ ဆက်နွယ်မှု၊ အငြင်းပွားမှု၊ လျှို့ဝှက်ချက်၊ အလှည့်အပြောင်းနှင့် နောင်ပိုင်း သက်ရောက်မည့် ပစ္စည်း၊ စာ၊ ဖုန်းခေါ်ဆိုမှု စသည်တို့ကို တစ်ခု မကျန် ထည့်ပါ။
-- စကားပြောချက်များကို စာလုံးချင်း ကူးစရာ မလိုသော်လည်း ဘယ်သူက ဘယ်သူ့ကို ဘာပြောခဲ့သည်ဟူသော အဓိပ္ပာယ်ကို အတိအကျ ထိန်းသိမ်းပြီး ပထမလူအပြောထဲ သဘာဝကျကျ ပေါင်းစည်း ရေးပါ။ ဥပမာ — «သူက ကျွန်တော့်ကို ... လို့ ပြောလာတော့ ကျွန်တော်လည်း ... လို့ ပြန်ပြောလိုက်တယ်»။
+- စကားပြောချက်များကို စာလုံးချင်း ကူးစရာ မလိုသော်လည်း ဘယ်သူက ဘယ်သူ့ကို ဘာပြောခဲ့သည်ဟူသော အဓိပ္ပာယ်ကို အတိအကျ ထိန်းသိမ်းပြီး တတိယလူ reported speech အဖြစ် သဘာဝကျကျ ရေးပါ။ ဥပမာ — «မေရီက အေဒင်ကို ... လို့ ပြောလာတော့ အေဒင်က ... လို့ ပြန်ပြောတယ်»။ တိုက်ရိုက်စကားကိုသာ quotation marks ထဲထည့်ပြီး speaker ကို အရင်အမည်တပ်ပါ။
 - ဖြစ်ရပ်တစ်ခုမှ နောက်တစ်ခုသို့ «အဲဒီအချိန်မှာတော့ ...»၊ «ဒါပေမယ့် ...»၊ «အဲဒီနောက်မှာတော့ ...» စသည့် စကားဆက်များကို လိုအပ်သလို အမျိုးမျိုး သုံးပါ။ တစ်မျိုးတည်းကို ထပ်ခါထပ်ခါ မသုံးပါနှင့်။
 - Scene ခွဲခြားမှုဆိုတာ edit အမှတ်အသားသာဖြစ်ပြီး ဇာတ်လမ်းအသစ် ပြန်စခြင်း မဟုတ်ပါ။ Scene အားလုံးပေါင်းဖတ်လျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ နောက် scene ရဲ့ ပထမ clause ဟာ အရင် scene ရလဒ်ကနေ ဆက်ပြီး အချိန်/နေရာ ပြောင်းလျှင် တိုတဲ့ bridge ပါရမည်။
-- လူတစ်ဦးကို ပထမဆုံးမိတ်ဆက်တိုင်း နာမည်ရှိလျှင် နာမည်နဲ့အတူ ဘယ်သူလဲ/ပြောနေသူနဲ့ ဘယ်လိုဆက်နွယ်လဲ တိုတိုပြောပါ။ အချိန်ကြာကြာ ပျောက်နေပြီးမှ ပြန်ပေါ်လာလျှင် နာမည်+ဆက်နွယ်ပုံကို ပြန်အမှတ်ရစေပါ။ လုပ်ဆောင်သူ ပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အစား အမည် သို့မဟုတ် အခန်းကဏ္ဍကို သုံးပါ။
+- လူတစ်ဦးကို ပထမဆုံးမိတ်ဆက်တိုင်း Cast Lock spoken_name/label နဲ့အတူ ဘယ်သူလဲ/အဓိကဇာတ်ကောင် သို့မဟုတ် အခြားသူနဲ့ ဘယ်လိုဆက်နွယ်လဲ တိုတိုပြောပါ။ နောက်ပိုင်း အဲ့ဒီပုံစံ တစ်မျိုးတည်းပဲ သုံးပါ။ အချိန်ကြာကြာ ပျောက်နေပြီးမှ ပြန်ပေါ်လာလျှင် spoken_name+ဆက်နွယ်ပုံကို ပြန်အမှတ်ရစေပါ။ လုပ်ဆောင်သူ ပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အစား spoken_name/label သို့မဟုတ် အခန်းကဏ္ဍကို သုံးပါ။
 - စကားပြောခန်းမှာ speaker နဲ့ listener ကို အမြဲရှင်းပါ။ Dialogue တစ်ခုရဲ့ အဓိပ္ပာယ်၊ ဘာလို့ပြောတယ်၊ တစ်ဖက်က ဘယ်လိုတုံ့ပြန်တယ်ဆိုတာပါ ပါရမည်။ ဘယ်သူမှန်း မရှင်းတဲ့ direct quote ချည်း မထည့်ပါနှင့်။
 - အပိုင်းရဲ့ ပထမ scene မှာ ဘယ်သူ/ဘယ်နေရာ/အခုဘာအခြေအနေလဲဆိုတာ ပထမ တစ်ကြောင်း-နှစ်ကြောင်းအတွင်း နားလည်နိုင်ရမည်။ ရှေ့အပိုင်းရှိလျှင် အကျဉ်းလုံး ပြန်မပြောဘဲ နောက်ဆုံးရလဒ်ကနေ တိုတဲ့ bridge နဲ့ ဆက်ပါ။
 - ဖယ်ပစ်နိုင်သည်မှာ ဇာတ်လမ်းနှင့် မသက်ဆိုင်သည့် ကြာညောင်းသော တိတ်ဆိတ်မှု၊ ထပ်နေသော မြင်ကွင်း/စကားနှင့် မလိုအပ်သော နားချိန်များသာ ဖြစ်သည်။ အဓိကကျသည့် မည်သည့်အရာမှ မကျန်စေရ။
@@ -7029,17 +7528,17 @@ async def build_chunk_recap(
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
-JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) စာသား တစ်လျှောက် နာမ်စား တစ်မျိုးတည်း («ကျွန်တော်» သို့မဟုတ် «ကျွန်မ») ပင် သုံးထားသလား၊ ကိုယ့်ကို «သူ/သူမ» ဟု မပြောင်းမိဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — `story_map.beats` နှင့် တစ်ခုချင်း ကိုက်ပြီး ဘာတစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ နောက်ဖြစ်ရပ်ကို ရှေ့ footage မှာ ကြိုပြောတာ သို့မဟုတ် ရှေ့ဖြစ်ရပ်ကို နောက်မှ ပြန်ပြောတာ မရှိဘူးလား။ (၇) **Audio-only test** — ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူတစ်ယောက်က scene တိုင်းမှာ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ပြောပြန်နိုင်ရဲ့လား။ မရသေးရင် အမည်ရှင်းလင်းချက်၊ အကြောင်းရင်းနဲ့ bridge တွေ ပြန်ဖြည့်ပါ။ (၈) «သူ/သူမ/အဲ့ဒီလူ» ဆိုတဲ့ မရှင်းတဲ့ အညွှန်းတွေ၊ အကြောင်းရင်းမပါတဲ့ ရုတ်တရက် တုံ့ပြန်မှုတွေ၊ အချိန်/နေရာ ရုတ်တရက် ခုန်သွားတာတွေ မရှိဘူးလား။ (၉) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
+JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) quotation marks ပြင်ပမှာ narrator က «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးထားဘူးလား၊ လူတိုင်းအတွက် spoken_name/label တစ်မျိုးတည်းပဲ သုံးထားသလား၊ alias/variant တွေ narration ထဲ မကျန်ဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — `story_map.beats` နှင့် တစ်ခုချင်း ကိုက်ပြီး ဘာတစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ နောက်ဖြစ်ရပ်ကို ရှေ့ footage မှာ ကြိုပြောတာ သို့မဟုတ် ရှေ့ဖြစ်ရပ်ကို နောက်မှ ပြန်ပြောတာ မရှိဘူးလား။ (၇) **Audio-only test** — ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူတစ်ယောက်က scene တိုင်းမှာ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ပြောပြန်နိုင်ရဲ့လား။ မရသေးရင် အမည်ရှင်းလင်းချက်၊ အကြောင်းရင်းနဲ့ bridge တွေ ပြန်ဖြည့်ပါ။ (၈) «သူ/သူမ/အဲ့ဒီလူ» ဆိုတဲ့ မရှင်းတဲ့ အညွှန်းတွေ၊ အကြောင်းရင်းမပါတဲ့ ရုတ်တရက် တုံ့ပြန်မှုတွေ၊ အချိန်/နေရာ ရုတ်တရက် ခုန်သွားတာတွေ မရှိဘူးလား။ (၉) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
 
 ## အဖြေထုတ်ပုံ
 အောက်ပါပုံစံအတိုင်း JSON ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် ရှင်းလင်းချက် သို့မဟုတ် အခြားစာသား မရေးပါနှင့်။
 
 {{
-  "protagonist": "အဓိကဇာတ်ကောင်နာမည် (မသိရင် ကွက်လပ်ထား)",
-  "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ (စာသားတွင် သုံးထားသည့်အတိုင်း)",
+  "protagonist": "အဓိကဇာတ်ကောင်ရဲ့ spoken_name သို့မဟုတ် stable label",
+  "narrator_perspective": "third_person",
   "story_map": {{
     "character_cards": [
-      {{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ပြောနေသူ/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "aliases": []}}
+      {{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}
     ],
     "beats": [
       {{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}
@@ -7053,7 +7552,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     {{
       "start": 0.0,
       "end": 12.0,
-      "burmese": "«ကျွန်တော်/ကျွန်မ» အဖြစ် ပထမလူဖြင့် ရေးထားသော မြန်မာဇာတ်ကြောင်း"
+      "burmese": "တတိယလူ recap narrator ဖြင့် ရေးထားသော မြန်မာဇာတ်ကြောင်း"
     }}
   ],
   "cuts": [
@@ -7072,7 +7571,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     story_map = {}
     story_editor_metrics = {}
     new_protagonist = protagonist
-    new_pronoun = pronoun
+    cast_lock_replacements = 0
     last_script_error = ""
     answer_payloads: list = []
     # Fresh diagnostics per window: /healthz must describe *this* job,
@@ -7106,13 +7605,6 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             or protagonist
             or ""
         )
-        prepared_pronoun = str(
-            prepared_payload.get("pronoun")
-            or prepared_script.get("pronoun")
-            or ""
-        )
-        if prepared_pronoun in ("ကျွန်တော်", "ကျွန်မ"):
-            new_pronoun = prepared_pronoun
         try:
             prepared_target_chars = int(
                 (prepared_script.get("metrics") or {}).get("target_chars") or 0
@@ -7148,8 +7640,6 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
             if not protagonist:
                 new_protagonist = payload.get("protagonist") or protagonist
-            if payload.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
-                new_pronoun = payload["pronoun"]
             if not scenes:
                 last_script_error = (
                     "initial Gemini response contained no usable Burmese scenes"
@@ -7181,21 +7671,21 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ယခင်ကြိုးစားမှုက သုံးနိုင်သော scene မရခဲ့ပါ။ ဤဗီဒီယိုအပိုင်း ({start_fmt} မှ {end_fmt}) ကို အစကအဆုံး ပြန်ကြည့်ပြီး မြန်မာ Script အသစ် ရေးပါ။
 
 {context_section}
-- နာမ်စား: {pronoun_line}
+- Narrator စည်းကမ်း: {perspective_line}
 - လေသံ: {tone_line}
 - "scenes" ကို ဘယ်တော့မှ ကွက်လပ်မထားရ။ အပိုင်းအစ၏ 0.0 မှ {chunk_dur:.1f} စက္ကန့်အထိကို ခန်း {scene_count} ခန်းခန့် ဆက်တိုက်ခွဲပါ။
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့် (ခန်းပျမ်းမျှ {request_chars_per_scene} လုံး) ရေးပါ။
-- အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် ရွေးထားသော နာမ်စား ပါရမည်။
+- အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က တတိယလူ recap narrator အဖြစ် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် အဓိကလုပ်ဆောင်သူကို spoken_name/label ဖြင့် ရှင်းပါ။
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
 - အရင် story map တည်ဆောက်ပြီး beat အစဉ်အတိုင်း ရေးပါ။ Scene အားလုံးပေါင်းရင် ဆက်တိုက်ဇာတ်လမ်းတစ်ခုဖြစ်ရမည်။ လူပြောင်းတိုင်း အမည်/အခန်းကဏ္ဍကို ရှင်းပါ၊ dialogue မှာ speaker/listener ရှင်းပါ၊ နောက်ဖြစ်ရပ်ကို ရှေ့ scene မှာ ကြိုမပြောရ။
-- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ ဝါကျတစ်ခုမှာ လုပ်ဆောင်ချက် တစ်ခုနဲ့ သူ့အကြောင်းရင်း/ရလဒ်သာ ထားပြီး စီးဆင်းညီအောင် ရေးပါ။ ဥပမာ ❌ "ကျွန်တော် ပြန်လာခဲ့ပါသည်။" ✅ "ကျွန်တော် ပြန်ချလာခဲ့တယ်။" အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
-- JSON key များမှာ "protagonist", "pronoun", "story_map", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
+- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ ဝါကျတစ်ခုမှာ လုပ်ဆောင်ချက် တစ်ခုနဲ့ သူ့အကြောင်းရင်း/ရလဒ်သာ ထားပြီး စီးဆင်းညီအောင် ရေးပါ။ ဥပမာ ❌ "အေဒင် ပြန်လာခဲ့ပါသည်။" ✅ "အေဒင် ပြန်ချလာခဲ့တယ်။" အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
+- JSON key များမှာ "protagonist", "narrator_perspective", "story_map", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
 
 {{
   "protagonist": "အဓိကဇာတ်ကောင်နာမည် သို့မဟုတ် ကွက်လပ်",
-  "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ",
-  "story_map": {{"character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": []}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
-  "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ပထမလူမြန်မာစာသား"}}],
+  "narrator_perspective": "third_person",
+  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
+  "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "တတိယလူ recap မြန်မာစာသား"}}],
   "cuts": []
 }}
 """.strip()
@@ -7220,8 +7710,6 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 )
                 if not protagonist:
                     new_protagonist = payload.get("protagonist") or protagonist
-                if payload.get("pronoun") in ("ကျွန်တော်", "ကျွန်မ"):
-                    new_pronoun = payload["pronoun"]
                 if scenes:
                     last_script_error = ""
                 else:
@@ -7280,10 +7768,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ဒီဗီဒီယိုအပိုင်း ({start_fmt} မှ {end_fmt}) ကို အစကအဆုံး ကြည့်ပြီး ပြန်ပြောပါ။
 
 {context_section}
-- နာမ်စား: {pronoun_line}
+- Narrator စည်းကမ်း: {perspective_line}
 - လေသံ: {tone_line}
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့်။
-- အကျဉ်းချုပ်မဟုတ်ဘဲ အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပထမလူ («ကျွန်တော်»/«ကျွန်မ») ဖြင့် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။
+- အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က တတိယလူ recap narrator အဖြစ် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။
 - ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူ နားလည်နိုင်အောင် တစ်ဆက်တည်း ဇာတ်လမ်းလိုရေးပါ။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ ရှင်းပါ။ လူပြောင်းတိုင်း အမည်/အခန်းကဏ္ဍကို ပြန်ပြောပါ၊ dialogue မှာ speaker/listener ရှင်းပါ၊ အကြောင်းရင်းမပါဘဲ ရုတ်တရက် မခုန်ပါနှင့်။
 - စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ၊ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 - JSON မလိုပါ။ မြန်မာစာသားချည်း တိုက်ရိုက် ရေးပါ။ ခေါင်းစဉ်၊ ရှင်းလင်းချက်၊ အင်္ဂလိပ်စာ မထည့်ပါနှင့်။
@@ -7354,11 +7842,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             )
 
     scenes = sort_scenes(scenes)
-    new_pronoun = _choose_first_person_pronoun(
-        [str(s.get("burmese") or "") for s in scenes],
-        preferred=pronoun,
-        response_pronoun=new_pronoun,
-        settings=st,
+    cast_lock_replacements += _apply_cast_lock_to_scenes(
+        scenes,
+        story_map,
+        story_context,
     )
     total_chars = script_total_chars(scenes)
     logger.info(
@@ -7385,8 +7872,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         extra_prompt = f"""
 မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ ကျန်ခဲ့သော သို့မဟုတ် အတိုချုပ်လွန်းသော အစိတ်အပိုင်းများကို အသေးစိတ် ဖြည့်စွက် ရေးပေးပါ။
 ယခင် ရေးပြီးသား အကြောင်းအရာများကို စကားလုံး ထပ်မရေးပါနှင့်။ ယခင် scenes များ၏ ကြားလပ်နေသော အချိန်များ၊ ကျန်ခဲ့သော ဖြစ်ရပ်များ၊ စကားပြောချက်များ၏ အဓိပ္ပာယ်၊ ဇာတ်ကောင်တို့၏ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို အစဉ်အတိုင်း ဖြည့်ရေးပါ။
-ပထမလူ အမြင် (First person) ကို ဆက်ထိန်းပါ — ပြောနေသူသည် အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်၍ နာမ်စား «{new_pronoun or pronoun or 'ယခင် script တွင် သုံးထားသော ကျွန်တော်/ကျွန်မ'}» ကိုသာ ဆက်သုံးပါ။ ကိုယ့်အကြောင်းကို «သူ/သူမ» ဟု မပြောင်းပါနှင့်။
-ကိုယ် မရှိခဲ့၊ မမြင်ရသေးသည့် မြင်ကွင်းဖြစ်လျှင် «အဲဒီတုန်းက ကျွန်တော် မသိသေးပေမယ့် ...» ဟု ဆက်စပ် ဖော်ပြပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
+တတိယလူ recap narrator အမြင်ကိုသာ ဆက်ထိန်းပါ — quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» မသုံးရ။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို ရှိပြီးသား script/story_map ထဲက spoken_name/label တစ်မျိုးတည်းနဲ့သာ ညွှန်းပါ။
+အဓိကဇာတ်ကောင် မပါတဲ့မြင်ကွင်းဆိုလျှင် «တစ်ဖက်မှာတော့ ...» လို နေရာ/အချိန် bridge နဲ့ ဆက်ပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 🎯 အသစ်စာသားကို {missing} လုံးမှ {int(missing * 1.2)} လုံးအတွင်းသာ ထပ်ဖြည့်ပါ (အဲဒီထက် မပိုရ)။ ပေါင်းလျှင် စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ဝန်းကျင် ဖြစ်ရပါမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဦးစားပေး ဖြည့်ပါ။
@@ -7396,7 +7883,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {json.dumps(scenes, ensure_ascii=False)}
 
 အောက်ပါပုံစံအတိုင်း JSON object ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် မည်သည့်စာသားမှ မရေးပါနှင့်။
-{{"pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
+{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
         """.strip()
         try:
             extra = await _generate_direct_gemini_json(
@@ -7436,11 +7923,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             cuts.extend(extra_payload.get("cuts") or [])
             if not new_protagonist:
                 new_protagonist = extra_payload.get("protagonist") or new_protagonist
-            if not new_pronoun and extra_payload.get("pronoun") in (
-                "ကျွန်တော်",
-                "ကျွန်မ",
-            ):
-                new_pronoun = extra_payload["pronoun"]
+
             if not accepted_extra_scenes:
                 last_script_error = (
                     f"script top-up {attempt + 1} returned no new usable scenes"
@@ -7473,20 +7956,24 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # Do not silently rewrite a stored manual script before measuring it.
     if not has_prepared_script:
         scenes = trim_scenes_to_target(scenes, target_chars)
-    new_pronoun = _choose_first_person_pronoun(
-        [str(s.get("burmese") or "") for s in scenes],
-        preferred=new_pronoun or pronoun,
-        settings=st,
+    scenes = sort_scenes(scenes)
+    cast_lock_replacements += _apply_cast_lock_to_scenes(
+        scenes,
+        story_map,
+        story_context,
     )
 
-    # Story-editor pass: a draft can satisfy length and first-person
-    # rules while still sounding like disconnected captions.  Only
-    # run the extra text-only edit when local clarity signals say
-    # the story is hard to follow; a candidate is accepted only if
-    # every scene is returned, first-person/length stay in bounds,
-    # and the clarity score does not get worse.
+
+    # Story-editor pass: a draft can satisfy length and narrator
+    # perspective rules while still sounding like disconnected
+    # captions or losing track of who is who.  Only run the extra
+    # text-only edit when local clarity signals say the story is
+    # hard to follow; a candidate is accepted only if every scene
+    # is returned, third-person/length stay in bounds, and the
+    # clarity score does not get worse.
     story_editor_metrics = _story_clarity_metrics(scenes, story_map)
     story_editor_metrics["editor_applied"] = False
+    story_editor_metrics["cast_lock_replacements"] = int(cast_lock_replacements)
     if not has_prepared_script and story_editor_metrics.get("needs_editor"):
         await tracker.update(
             "🧩 Story editor ဖြင့် ဇာတ်လမ်း အဆက်အစပ် စစ်ဆေးပြီး ပြင်နေပါသည်...",
@@ -7496,8 +7983,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             scenes,
             story_context,
             story_map,
-            new_pronoun,
-            new_protagonist,
+            protagonist=new_protagonist,
         )
         try:
             editor_data = await _generate_direct_gemini_json(
@@ -7546,7 +8032,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                         )
                     )
                     if (
-                        not _scene_is_first_person(new_text, new_pronoun)
+                        not _scene_uses_third_person_narrator(new_text)
                         or introduced_foreign
                         or (old_len and not (old_len * 0.75 <= new_len <= old_len * 1.25))
                     ):
@@ -7554,6 +8040,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                         break
                     candidate_scenes.append({**scene, "burmese": new_text})
             if valid_candidate:
+                candidate_cast_replacements = _apply_cast_lock_to_scenes(
+                    candidate_scenes,
+                    candidate_map,
+                    story_context,
+                )
                 candidate_metrics = _story_clarity_metrics(
                     candidate_scenes,
                     candidate_map,
@@ -7565,12 +8056,14 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                     <= len(story_editor_metrics.get("issues") or [])
                 ):
                     before_score = story_editor_metrics.get("score")
+                    cast_lock_replacements += candidate_cast_replacements
                     scenes = candidate_scenes
                     story_map = candidate_map
                     story_editor_metrics = {
                         **candidate_metrics,
                         "editor_applied": True,
                         "before_score": before_score,
+                        "cast_lock_replacements": int(cast_lock_replacements),
                     }
                     logger.info(
                         "Chunk %s story editor applied: clarity %s -> %s, issues=%s",
@@ -7584,23 +8077,28 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             else:
                 story_editor_metrics["editor_rejected"] = "invalid_or_incomplete_scenes"
 
-    # Prompt-only first-person instructions are not sufficient.  Validate
-    # every scene's actual Burmese text and ask Gemini to rewrite only the
-    # scenes that still sound like a third-person summary.
-    for repair_round in range(0 if has_prepared_script else FIRST_PERSON_REPAIR_ROUNDS):
-        bad_indexes = _first_person_bad_scene_indexes(scenes, new_pronoun)
+    # Prompt-only perspective instructions are not sufficient.
+    # Validate every scene's actual Burmese text and rewrite only
+    # scenes where the external recap narrator slipped into a
+    # character's first-person voice outside quoted dialogue.
+    for repair_round in range(0 if has_prepared_script else NARRATOR_REPAIR_ROUNDS):
+        bad_indexes = _third_person_bad_scene_indexes(scenes)
         if not bad_indexes:
             break
         await tracker.update(
-            "👤 ပထမလူအပြောပုံစံ မဖြစ်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
-            f"({repair_round + 1}/{FIRST_PERSON_REPAIR_ROUNDS})",
+            "🎙️ တတိယလူ recap ပုံစံ မဖြစ်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
+            f"({repair_round + 1}/{NARRATOR_REPAIR_ROUNDS})",
             force=True,
         )
         accepted = 0
         for start_index in range(0, len(bad_indexes), 5):
             batch_indexes = bad_indexes[start_index:start_index + 5]
-            repair_prompt = _direct_first_person_repair_prompt(
-                scenes, batch_indexes, new_pronoun, new_protagonist
+            repair_prompt = _direct_narrator_repair_prompt(
+                scenes,
+                batch_indexes,
+                protagonist=new_protagonist,
+                story_map=story_map,
+                story_context=story_context,
             )
             try:
                 # Text-only on purpose: the repair prompt already
@@ -7610,7 +8108,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 repair_data = await _generate_direct_gemini_json(
                     client,
                     [repair_prompt],
-                    purpose="first-person repair",
+                    purpose="third-person narrator repair",
                     tracker=tracker,
                     max_output_tokens=8192,
                 )
@@ -7619,7 +8117,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             except Exception as e:
                 last_script_error = _safe_error_text(e, 900)
                 logger.warning(
-                    f"Direct first-person repair failed: {last_script_error}"
+                    f"Direct third-person narrator repair failed: {last_script_error}"
                 )
                 continue
             replacements = _parse_direct_scene_replacements(
@@ -7628,7 +8126,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             for scene_index, new_text in replacements.items():
                 old_text = str(scenes[scene_index].get("burmese") or "")
                 if (
-                    _scene_is_first_person(new_text, new_pronoun)
+                    _scene_uses_third_person_narrator(new_text)
                     and len(new_text.strip()) >= max(1, int(len(old_text.strip()) * 0.9))
                 ):
                     scenes[scene_index] = {
@@ -7636,22 +8134,39 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                         "burmese": new_text.strip(),
                     }
                     accepted += 1
+        if accepted:
+            cast_lock_replacements += _apply_cast_lock_to_scenes(
+                scenes,
+                story_map,
+                story_context,
+            )
         if accepted <= 0:
             break
+
 
     scenes = sort_scenes(scenes)
     total_chars = script_total_chars(scenes)
     spoken_est = total_chars / chars_rate if chars_rate else 0.0
     coverage_pct = (spoken_est / chunk_dur * 100) if chunk_dur else 0
-    first_person_metrics = _first_person_metrics(
-        [str(s.get("burmese") or "") for s in scenes], new_pronoun
+    cast_lock_replacements += _apply_cast_lock_to_scenes(
+        scenes,
+        story_map,
+        story_context,
+    )
+    total_chars = script_total_chars(scenes)
+    spoken_est = total_chars / chars_rate if chars_rate else 0.0
+    coverage_pct = (spoken_est / chunk_dur * 100) if chunk_dur else 0
+    third_person_metrics = _third_person_metrics(
+        [str(s.get("burmese") or "") for s in scenes]
     )
     logger.info(
         f"Chunk {chunk_index} final script: {len(scenes)} scenes, {total_chars} chars, "
         f"~{spoken_est:.0f}s spoken = {coverage_pct:.0f}% of {chunk_dur:.0f}s input "
-        f"(target {st['coverage']}%), first-person="
-        f"{first_person_metrics.get('first_person_scene_count')}/{len(scenes)}"
+        f"(target {st['coverage']}%), third-person="
+        f"{third_person_metrics.get('third_person_scene_count')}/{len(scenes)}, "
+        f"cast-lock replacements={cast_lock_replacements}"
     )
+
 
     # A prepared (script-first / stored manual) script is validated
     # against the target it was *written* for, not today's freshly
@@ -7665,19 +8180,19 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         else target_chars
     )
     minimum_chars = _minimum_script_chars(validation_target_chars)
-    bad_first_person = first_person_metrics.get("bad_scene_indexes") or []
-    if not scenes or total_chars < minimum_chars or bad_first_person:
+    bad_third_person = third_person_metrics.get("bad_scene_indexes") or []
+    if not scenes or total_chars < minimum_chars or bad_third_person:
         await _delete_gemini_file(client, video_file)
         error_detail = (
             f"; last Gemini error: {last_script_error}" if last_script_error else ""
         )
         raise RuntimeError(
-            "Script failed duration/first-person validation after repairs: "
+            "Script failed duration/third-person narrator validation after repairs: "
             f"{total_chars}/{validation_target_chars} chars "
             f"(~{spoken_est:.1f}s of {chunk_dur:.1f}s input, "
             f"target {float(st.get('coverage') or 90):.0f}%), "
-            f"third-person scene indexes={bad_first_person}; "
-            "refusing to render a shortened or third-person recap"
+            f"first-person narrator scene indexes={bad_third_person}; "
+            "refusing to render a shortened or first-person recap"
             f"{error_detail}"
         )
 
@@ -7700,7 +8215,6 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 _story_context_from_story_map(
                     story_map,
                     protagonist=new_protagonist,
-                    pronoun=new_pronoun,
                 ),
                 fallback_from_scenes=scenes,
             )
@@ -7710,13 +8224,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             _story_context_from_story_map(
                 story_map,
                 protagonist=new_protagonist,
-                pronoun=new_pronoun,
             ),
         )
         if new_protagonist and not script_summary.get("protagonist"):
             script_summary["protagonist"] = new_protagonist
-        if new_pronoun and not script_summary.get("pronoun"):
-            script_summary["pronoun"] = new_pronoun
         script_payload = {
             "version": 1,
             "part_index": int(chunk_index),
@@ -7726,7 +8237,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             "scenes": json.loads(json.dumps(scenes, ensure_ascii=False)),
             "cuts": json.loads(json.dumps(cuts, ensure_ascii=False)),
             "protagonist": new_protagonist,
-            "pronoun": new_pronoun,
+            "narrator_perspective": narrator_perspective,
             "story_map": json.loads(json.dumps(story_map, ensure_ascii=False)),
             "story_context_before": json.loads(
                 json.dumps(story_context or {}, ensure_ascii=False)
@@ -7739,7 +8250,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 "estimated_spoken_seconds": round(float(spoken_est), 3),
                 "estimated_coverage_percent": round(float(coverage_pct), 2),
                 "target_final_seconds": round(float(target_seconds), 3),
-                "first_person": first_person_metrics,
+                "third_person": third_person_metrics,
+                "cast_lock": {"replacements": int(cast_lock_replacements)},
                 "story_editor": json.loads(
                     json.dumps(story_editor_metrics, ensure_ascii=False)
                 ),
@@ -7837,8 +8349,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ အတိုချုပ်လွန်းသော/ကျန်ခဲ့သော အပိုင်းများကို scene အသစ်များအဖြစ် ထပ်ဖြည့်ပါ။
 ယခင် scenes များကို ပြန်မပေးပါနှင့် — အသစ်ထပ်ထည့်ရမည့် scenes များကိုသာ ပေးပါ။
 အသစ်စာသား စုစုပေါင်းကို {missing_chars} လုံးမှ {int(missing_chars * 1.2)} လုံးအတွင်းသာ ရေးပါ (အဲဒီထက် လုံးဝ မပိုရ)။ ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ဝန်းကျင် ဖြစ်ရမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဖြည့်ပါ — ပြောပြီးသားကို ပုံစံပြောင်း ပြန်မရေးရ။
-ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်ပြီး နာမ်စား «{new_pronoun}» တစ်မျိုးတည်းကိုသာ သုံးရမည်။
-Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}» အနည်းဆုံးတစ်ကြိမ် ပါရမည်။
+Narrator မှာ ဇာတ်လမ်းအပြင်က တတိယလူ recap narrator ဖြစ်ပြီး quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးရ။ ရှိပြီးသား script/story_map ထဲက spoken_name/label တွေကိုသာ ဆက်သုံးပါ။
+Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/label နဲ့ ရှင်းပါ။
 ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။
 အသစ် scene တစ်ခုချင်းစီသည် သူ၏ အရင်/နောက် scene များနှင့် ဇာတ်လမ်းအရ ဆက်စပ်ရမည်။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။ သီးခြား caption လို မရေးရ၊ ဖြစ်ရပ်ကို သူ၏ မူရင်း start/end အတွင်းမှာသာ ထားပါ။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
@@ -7847,7 +8359,7 @@ Scene တိုင်း၏ အစပိုင်းတွင် «{new_pronoun}
 {json.dumps(scenes, ensure_ascii=False)}
 
 JSON ကိုသာပြန်ပေးပါ:
-{{"pronoun": "{new_pronoun}", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော ပထမလူစာသား"}}], "cuts": []}}
+{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော တတိယလူ recap စာသား"}}], "cuts": []}}
 """.strip()
                 try:
                     if video_file is None:
@@ -7886,8 +8398,8 @@ JSON ကိုသာပြန်ပေးပါ:
                 for scene in raw_extra_scenes:
                     if not isinstance(scene, dict):
                         continue
-                    if not _scene_is_first_person(
-                        str(scene.get("burmese") or ""), new_pronoun
+                    if not _scene_uses_third_person_narrator(
+                        str(scene.get("burmese") or "")
                     ):
                         continue
                     # Skip exact repeats -- duplicated narration text
@@ -7899,10 +8411,15 @@ JSON ကိုသာပြန်ပေးပါ:
                     existing_texts.add(key)
                     accepted_scenes.append(scene)
                 if not accepted_scenes:
-                    logger.warning("Direct duration calibration returned no first-person scenes")
+                    logger.warning("Direct duration calibration returned no third-person scenes")
                     break
                 scenes.extend(accepted_scenes)
                 scenes = sort_scenes(scenes)
+                cast_lock_replacements += _apply_cast_lock_to_scenes(
+                    scenes,
+                    story_map,
+                    story_context,
+                )
                 # A top-up that wildly overshoots the requested amount
                 # (production: ~+165 chars requested, ~+1,200 returned)
                 # is capped *before* re-voicing, so the over-source
@@ -8273,7 +8790,6 @@ JSON ကိုသာပြန်ပေးပါ:
             _story_context_from_story_map(
                 story_map,
                 protagonist=new_protagonist,
-                pronoun=new_pronoun,
             ),
             fallback_from_scenes=scenes,
         )
@@ -8283,13 +8799,10 @@ JSON ကိုသာပြန်ပေးပါ:
         _story_context_from_story_map(
             story_map,
             protagonist=new_protagonist,
-            pronoun=new_pronoun,
         ),
     )
     if new_protagonist and not new_summary.get("protagonist"):
         new_summary["protagonist"] = new_protagonist
-    if new_pronoun and not new_summary.get("pronoun"):
-        new_summary["pronoun"] = new_pronoun
 
     if isinstance(prepared_script, dict):
         # Let the manual-session caller persist any measured-TTS changes
@@ -8299,7 +8812,7 @@ JSON ကိုသာပြန်ပေးပါ:
                 "scenes": json.loads(json.dumps(scenes, ensure_ascii=False)),
                 "cuts": json.loads(json.dumps(cuts, ensure_ascii=False)),
                 "protagonist": new_protagonist,
-                "pronoun": new_pronoun,
+                "narrator_perspective": narrator_perspective,
                 "story_map": json.loads(
                     json.dumps(story_map, ensure_ascii=False)
                 ),
@@ -8310,6 +8823,11 @@ JSON ကိုသာပြန်ပေးပါ:
         metrics.update(
             {
                 "actual_chars_after_calibration": int(script_total_chars(scenes)),
+                "narrator_perspective": narrator_perspective,
+                "third_person": _third_person_metrics(
+                    [str(s.get("burmese") or "") for s in scenes]
+                ),
+                "cast_lock_replacements": int(cast_lock_replacements),
                 "measured_narration_seconds": round(float(audio_seconds), 3),
                 "rendered_duration_seconds": round(float(final_chunk_duration), 3),
                 "duration_calibration_history": calibration_history,
@@ -8332,7 +8850,7 @@ async def generate_chunk_script(
     tracker: ProgressTracker,
     settings: dict = None,
 ) -> dict:
-    """Write and validate one part's first-person script, without TTS/render."""
+    """Write and validate one part's third-person script, without TTS/render."""
     script, _summary = await build_chunk_recap(
         chunk_path,
         chunk_dur,
@@ -8368,7 +8886,7 @@ async def render_chunk_recap_from_script(
         "summary": "",
         "last_scene": "",
         "protagonist": working_script.get("protagonist") or "",
-        "pronoun": working_script.get("pronoun") or "",
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
     }
     out_chunk, _summary = await build_chunk_recap(
         chunk_path,
@@ -9470,12 +9988,15 @@ def _load_worker_job(job_id: str) -> dict:
     if not isinstance(state.get("settings"), dict):
         state["settings"] = get_user_settings(state.get("chat_id"))
     state["settings"] = _with_required_coverage(state.get("settings") or {})
-    state["settings"]["pov"] = "first"
+    state["settings"]["pov"] = "third"
     if not isinstance(state.get("story_context"), dict):
         state["story_context"] = {
             "characters": [], "summary": "", "last_scene": "",
-            "protagonist": "", "pronoun": "",
+            "protagonist": "", "narrator_perspective": "third_person",
         }
+    state["story_context"] = _normalize_story_context(
+        state.get("story_context") or {}
+    )
     return state
 
 
@@ -9567,7 +10088,7 @@ def _create_worker_job(
                 k: v for k, v in settings_override.items() if k in DEFAULT_SETTINGS
             })
             settings = _with_required_coverage(settings)
-            settings["pov"] = "first"
+            settings["pov"] = "third"
             if settings != state.get("settings"):
                 state["settings"] = settings
                 changed = True
@@ -9582,7 +10103,7 @@ def _create_worker_job(
             k: v for k, v in settings_override.items() if k in DEFAULT_SETTINGS
         })
     settings = _with_required_coverage(settings)
-    settings["pov"] = "first"
+    settings["pov"] = "third"
     os.makedirs(_worker_job_dir(job_id), exist_ok=True)
     state = {
         "job_id": job_id,
@@ -9605,7 +10126,7 @@ def _create_worker_job(
         "settings": settings,
         "story_context": {
             "characters": [], "summary": "", "last_scene": "",
-            "protagonist": "", "pronoun": "",
+            "protagonist": "", "narrator_perspective": "third_person",
         },
     }
     ACTIVE_JOBS[chat_id] = job_id
@@ -10297,13 +10818,9 @@ async def _worker_gemini_json(prompt: str, client=None):
 def _parse_rewrite_response(data, allowed_group_ids) -> tuple[dict, str, str]:
     allowed = {int(gid) for gid in (allowed_group_ids or [])}
     protagonist = ""
-    pronoun = ""
     raw_scenes = []
     if isinstance(data, dict):
-        protagonist = str(data.get("protagonist") or "").strip()
-        p = str(data.get("pronoun") or "").strip()
-        if p in ("ကျွန်တော်", "ကျွန်မ"):
-            pronoun = p
+        protagonist = _clean_protagonist_name(data.get("protagonist") or "")
         if isinstance(data.get("scenes"), list):
             raw_scenes = data["scenes"]
     elif isinstance(data, list):
@@ -10322,7 +10839,7 @@ def _parse_rewrite_response(data, allowed_group_ids) -> tuple[dict, str, str]:
         text = str(item.get("burmese") or item.get("text") or "").strip()
         if text:
             scenes[gid] = text
-    return scenes, protagonist, pronoun
+    return scenes, protagonist, NARRATOR_PERSPECTIVE
 
 
 def _rewrite_response_story_map(data) -> dict:
@@ -10344,24 +10861,29 @@ def _rewrite_prompt(
     settings: dict,
     existing_by_group: dict = None,
     expand: bool = False,
-    repair_first_person: bool = False,
+    repair_narrator: bool = False,
     adjust_mode: str = "",
+    # Deprecated keyword retained for older in-flight callers/tests.
+    repair_first_person: bool = False,
 ) -> str:
     st = _with_required_coverage(settings)
     context = _normalize_story_context(story_context or {})
-    pronoun = str(context.get("pronoun") or "").strip()
+    repair_narrator = bool(repair_narrator or repair_first_person)
     protagonist = str(context.get("protagonist") or "").strip()
-    voice_pronoun = _voice_first_person_pronoun(st)
-    if pronoun in FIRST_PERSON_PRONOUNS:
-        other = _other_first_person_pronoun(pronoun)
-        pronoun_line = (
-            f"ပြောနေသူသည် «{pronoun}» ကိုသာ ဆက်တိုက်သုံးပါ။ "
-            f"ကိုယ့်ကို «{other}» ဟု လုံးဝမပြောင်းပါနှင့်။"
+    perspective_line = (
+        "အပြင်က တတိယလူ movie-recap narrator အဖြစ်သာ ပြောပါ။ "
+        "Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» ကို narrator အနေနဲ့ လုံးဝမသုံးရ။ "
+        "ဇာတ်ကောင်စကားကို တိုက်ရိုက်သုံးရင် speaker ကိုအရင်အမည်တပ်ပြီး quotation marks အတွင်းထည့်ပါ။"
+    )
+    if protagonist:
+        cast_lock_line = (
+            f"အဓိကဇာတ်ကောင်ကို «{protagonist}» ဆိုတဲ့ spoken_name "
+            "တစ်မျိုးတည်းဖြင့်သာ ညွှန်းပါ။"
         )
     else:
-        pronoun_line = (
-            "အဓိကဇာတ်ကောင်က အမျိုးသားဖြစ်လျှင် «ကျွန်တော်»၊ အမျိုးသမီးဖြစ်လျှင် «ကျွန်မ» သုံးပါ။ "
-            f"ကျား/မကို transcript မှ မသေချာလျှင် «{voice_pronoun}» သုံးပြီး မပြောင်းပါနှင့်။"
+        cast_lock_line = (
+            "လူတစ်ဦးချင်းစီအတွက် transcript က အတည်ပြုနိုင်တဲ့ spoken_name "
+            "သို့မဟုတ် မရောနိုင်တဲ့ stable label တစ်ခုတည်းကို lock လုပ်ပါ။"
         )
 
     existing = {}
@@ -10385,7 +10907,7 @@ def _rewrite_prompt(
             "target_burmese_chars": target_chars,
             "source_text": str(group.get("source_text") or ""),
         }
-        if expand or repair_first_person or adjust_mode:
+        if expand or repair_narrator or adjust_mode:
             item["current_burmese_chars"] = len(current_text)
             item["minimum_additional_chars"] = max(0, target_chars - len(current_text))
             item["desired_burmese_chars"] = target_chars
@@ -10393,10 +10915,10 @@ def _rewrite_prompt(
                 item["existing_burmese"] = current_text
         payload_groups.append(item)
 
-    if repair_first_person:
+    if repair_narrator:
         task_line = (
-            "FIRST-PERSON REPAIR — existing_burmese ၏ အကြောင်းအရာအားလုံးကို မလျော့ဘဲ "
-            "အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောနေသလို scene အပြည့်အစုံ ပြန်ရေးပါ။"
+            "THIRD-PERSON NARRATOR REPAIR — existing_burmese ၏ အကြောင်းအရာအားလုံးကို မလျော့ဘဲ "
+            "အပြင်က professional movie-recap narrator က တတိယလူအဖြစ် ပြန်ပြောနေသလို scene အပြည့်အစုံ ပြန်ရေးပါ။"
         )
     elif adjust_mode == "shorten":
         task_line = (
@@ -10409,7 +10931,7 @@ def _rewrite_prompt(
             "source_text ထဲက ကျန်နေသေးသော အချက်အလက်အားလုံးဖြင့် target ပြည့်အောင် ချဲ့ရေးပါ။"
         )
     else:
-        task_line = "source_text ကို Burmese ပထမလူ ဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပါ။"
+        task_line = "source_text ကို Burmese တတိယလူ recap ဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပါ။"
 
     if adjust_mode == "shorten":
         length_line = (
@@ -10425,7 +10947,7 @@ def _rewrite_prompt(
         )
     context_json = json.dumps({
         "protagonist": protagonist,
-        "pronoun": pronoun,
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
         "characters": context.get("characters") or [],
         "character_cards": context.get("character_cards") or [],
         "previous_summary": str(context.get("summary") or "")[-2500:],
@@ -10440,11 +10962,12 @@ def _rewrite_prompt(
     groups_json = json.dumps(payload_groups, ensure_ascii=False)
 
     return f"""
-သင်သည် Whisper transcript ကို မြန်မာဘာသာဖြင့် အဓိကဇာတ်ကောင် ကိုယ်တိုင် ပြန်ပြောပြသလို ပထမလူဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပေးရမည်။
+သင်သည် Whisper transcript ကို မြန်မာဘာသာဖြင့် အပြင်က professional movie-recap narrator တစ်ယောက်အဖြစ် တတိယလူဇာတ်ကြောင်းအဖြစ် ပြန်ရေးပေးရမည်။
 
 အဓိကတာဝန်: {task_line}
 လေသံ: {_worker_tone_line(st)}
-နာမ်စား: {pronoun_line}
+Narrator စည်းကမ်း: {perspective_line}
+Cast Lock: {cast_lock_line}
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ ဝါကျတစ်ခုမှာ လုပ်ဆောင်ချက် တစ်ခုနဲ့ သူ့အကြောင်းရင်း/ရလဒ်သာ ထားပြီး စီးဆင်းညီအောင် ရေးပါ။ ဒီစာသားကို အသံနဲ့ ပြောပြမှာ ဖြစ်လို့ သူငယ်ချင်းကို ဇာတ်လမ်းပြောပြနေသလို သဘာဝကျရမည်။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 
 လိုက်နာရမည်များ:
@@ -10454,15 +10977,15 @@ def _rewrite_prompt(
 - start/end သို့မဟုတ် source_segment_ids ကို ကိုယ်တိုင် မဖန်တီးပါနှင့်။ ၎င်းတို့ကို worker က ထည့်ပေးမည်။
 - {length_line}
 - JSON မထုတ်ခင် scene တစ်ခုချင်းစီ၏ စာလုံးအရေအတွက်ကို ကိုယ့်ဘာသာစစ်ပါ။ Target မပြည့်သေးပါက source_text ထဲရှိ အရာ၊ နေရာ၊ အကြောင်းရင်း၊ စကားပြောချက်၊ တုံ့ပြန်မှုနှင့် အကျိုးဆက်များကို မထပ်ဘဲ ပိုမိုအသေးစိတ်ထည့်ပြီးမှ ထုတ်ပါ။ စကားလုံးထပ်ခြင်း၊ filler ထပ်ခြင်းဖြင့် အရှည်မဖြည့်ပါနှင့်။
-- ပြောနေသူမှာ အဓိကဇာတ်ကောင် ကိုယ်တိုင်ဖြစ်သည်။ ကိုယ့်ကိုယ်ကို နာမည် သို့မဟုတ် «သူ/သူမ» ဟု မညွှန်းပါနှင့်။
-- **Scene တိုင်း၏ ပထမဝါကျ သို့မဟုတ် အစပိုင်းတွင် ရွေးထားသော နာမ်စား အနည်းဆုံးတစ်ကြိမ် မဖြစ်မနေပါရမည်။** pronoun field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
-- အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «အဲဒီတုန်းက ကျွန်တော်/ကျွန်မ မသိသေးပေမယ့်…» သို့မဟုတ် «နောက်မှသိလိုက်ရတာက…» ပုံစံဖြင့် retrospective ရေးပါ။
+- Narrator မှာ ဇာတ်လမ်းအပြင်ကသာပြောသူဖြစ်သည်။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို Cast Lock spoken_name/label နဲ့ ညွှန်းပါ။ Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» ကို narrator အသံအဖြစ် လုံးဝမသုံးရ။
+- **Scene တိုင်း၏ ပထမဝါကျမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/label ဖြင့် ရှင်းပါ။** JSON field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
+- အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «တစ်ဖက်မှာတော့ ...»၊ «အဲဒီအချိန်မှာပဲ ...မှာ» လို နေရာ/အချိန် bridge နဲ့ တတိယလူအဖြစ် ဆက်ပြောပါ။
 - Transcript တွင် မပါသော အဖြစ်အပျက်၊ အမည်၊ အကြောင်းရင်းများကို မတီထွင်ပါနှင့်။
 - Dialogue ၏ အဓိပ္ပာယ်နှင့် ပြောသူ/ကြားသူကို ထိန်းသိမ်းပါ။ တိုက်ရိုက်စာလုံးချင်း ကူးနိုင်သလောက် တိကျကျ Burmese အဖြစ် ပြန်ရေးပါ။
 - Scene အားလုံးပေါင်းလျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ Group တစ်ခုချင်းကို သီးခြား caption လို မရေးရ။ အရင် group ရဲ့ ရလဒ်ကနေ အကြောင်းဆက် bridge ဖြင့် ဆက်ရေးပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။
 - အကြောင်းအရာကို group တစ်ခုကနေ နောက်တစ်ခုသို့ မရွှေ့ရ။ နောက်မှ ပေါ်မည့် reveal/စကားကို ရှေ့ group မှာ ကြိုမပြောရ၊ ရှေ့ဖြစ်ရပ်ကိုလည်း နောက်မှ ပြန်မပြောရ — အသံနဲ့ footage ကိုက်ညီမှုပျက်စေတယ်။
-- လူပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အဖြာဖြာသုံးမနေဘဲ အမည် သို့မဟုတ် အခန်းကဏ္ဍ/ဆက်နွယ်ပုံကို သုံးပါ။ လူကို ပထမဆုံးမိတ်ဆက်တိုင်း ဘယ်သူလဲ တိုတိုရှင်းပါ။
-- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေနဲ့ beat တွေကို မူရင်း start/end အတိုင်း တိုတိုပြန်ထည့်ပါ။
+- လူပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အဖြာဖြာသုံးမနေဘဲ Cast Lock spoken_name/label သို့မဟုတ် အခန်းကဏ္ဍ/ဆက်နွယ်ပုံကို သုံးပါ။ လူကို ပထမဆုံးမိတ်ဆက်တိုင်း spoken_name/label + ဘယ်သူလဲ/ဆက်နွယ်ပုံ ရှင်းပါ။ `aliases` နဲ့ `source_name` ကို narration မှာ အလှည့်ပြောင်း မသုံးရ။ Transcript က အမည်မသေချာရင် stable label ပဲ ဆက်သုံးပါ။
+- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေအတွက် spoken_name/source_name/aliases/name_source/confidence/visual_cue နဲ့ beat တွေကို မူရင်း start/end အတိုင်း ပြန်ထည့်ပါ။ Transcript မှာ subtitle/on-screen အထောက်အထား မပါရင် name_source ကို dialogue သုံးပြီး မသေချာမှုကို မဖုံးပါနှင့်။
 - Visual-only အချက်ကို transcript မှ မသိနိုင်လျှင် မှန်းမရေးပါနှင့်။
 - Scene text ထဲတွင် timestamp, heading, bullet, quotation label သို့မဟုတ် ရှင်းလင်းချက် မထည့်ပါနှင့်။ TTS ဖတ်မည့် စာသားသာရေးပါ။
 
@@ -10474,17 +10997,67 @@ def _rewrite_prompt(
 
 JSON ကိုသာ အောက်ပါပုံစံဖြင့် ပြန်ပေးပါ:
 {{
-  "protagonist": "အဓိကဇာတ်ကောင်အမည် သို့မဟုတ် ကွက်လပ်",
-  "pronoun": "ကျွန်တော် သို့မဟုတ် ကျွန်မ",
-  "story_map": {{"character_cards": [{{"name": "အမည်", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": []}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
+  "protagonist": "အဓိကဇာတ်ကောင်ရဲ့ spoken_name သို့မဟုတ် stable label",
+  "narrator_perspective": "third_person",
+  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
   "scenes": [
-    {{"group_id": 1, "burmese": "TTS ဖတ်မည့် Burmese ပထမလူစာသား"}}
+    {{"group_id": 1, "burmese": "TTS ဖတ်မည့် Burmese တတိယလူ recap စာသား"}}
   ]
 }}
 """.strip()
 
 
-async def _repair_worker_first_person_scenes(
+def _worker_scenes_from_groups(groups: list, scenes_by_group: dict) -> list:
+    """Build scene dicts in group order for shared script helpers."""
+    scenes = []
+    for group in groups or []:
+        if not isinstance(group, dict):
+            continue
+        try:
+            gid = int(group.get("group_id") or 0)
+            start = float(group.get("start") or 0)
+            end = float(group.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        if gid <= 0:
+            continue
+        raw_text = (scenes_by_group or {}).get(gid)
+        if raw_text is None:
+            raw_text = (scenes_by_group or {}).get(str(gid))
+        scene_text = str(raw_text or "").strip()
+        if not scene_text:
+            continue
+        scenes.append({
+            "group_id": gid,
+            "start": start,
+            "end": end,
+            "burmese": scene_text,
+        })
+    return scenes
+
+
+def _worker_cast_lock_scenes_by_group(
+    groups: list,
+    scenes_by_group: dict,
+    story_map: dict = None,
+    story_context: dict = None,
+) -> int:
+    """Apply the shared Cast Lock to worker text keyed by group id."""
+    scene_list = _worker_scenes_from_groups(groups, scenes_by_group)
+    replacements = _apply_cast_lock_to_scenes(
+        scene_list,
+        story_map,
+        story_context,
+    )
+    if replacements:
+        for scene in scene_list:
+            scenes_by_group[int(scene["group_id"])] = str(
+                scene.get("burmese") or ""
+            )
+    return int(replacements)
+
+
+async def _repair_worker_narrator_scenes(
     groups: list,
     scenes_by_group: dict,
     target_by_group: dict,
@@ -10493,22 +11066,24 @@ async def _repair_worker_first_person_scenes(
     client,
     state: dict = None,
     tracker=None,
-    rounds: int = FIRST_PERSON_REPAIR_ROUNDS,
+    rounds: int = NARRATOR_REPAIR_ROUNDS,
 ) -> tuple:
-    """Rewrite worker scenes whose actual text is not first-person.
+    """Rewrite worker scenes whose narrator leaks character first-person.
 
-    Returns ``(selected_pronoun, remaining_bad_group_ids)`` and mutates
-    ``scenes_by_group``/``story_context`` only with validated replacements.
+    Returns ``(narrator_perspective, remaining_bad_group_ids,
+    cast_lock_replacements)`` and mutates ``scenes_by_group`` /
+    ``story_context`` only with validated replacements.
     """
-    texts = [str(v or "") for v in (scenes_by_group or {}).values()]
-    selected = _choose_first_person_pronoun(
-        texts,
-        preferred=str((story_context or {}).get("pronoun") or ""),
-        settings=settings,
-    )
     if isinstance(story_context, dict):
         story_context.update(_normalize_story_context(story_context))
-    story_context["pronoun"] = selected
+        story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
+    repair_story_map = {}
+    cast_lock_replacements = _worker_cast_lock_scenes_by_group(
+        groups,
+        scenes_by_group,
+        repair_story_map,
+        story_context,
+    )
     group_by_id = {}
     for group in groups or []:
         try:
@@ -10518,9 +11093,9 @@ async def _repair_worker_first_person_scenes(
 
     def bad_group_ids():
         bad = []
-        for gid, group in group_by_id.items():
-            text = str(scenes_by_group.get(gid) or "").strip()
-            if text and not _scene_is_first_person(text, selected):
+        for gid in group_by_id:
+            scene_text = str(scenes_by_group.get(gid) or "").strip()
+            if scene_text and not _scene_uses_third_person_narrator(scene_text):
                 bad.append(gid)
         return sorted(bad)
 
@@ -10531,7 +11106,7 @@ async def _repair_worker_first_person_scenes(
         if state is not None:
             await _worker_progress(
                 state,
-                "👤 ပထမလူအပြောပုံစံ မဖြစ်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
+                "🎙️ တတိယလူ recap ပုံစံ မဖြစ်သေးသော scene များ ပြန်ပြင်နေပါသည်... "
                 f"({repair_round + 1}/{rounds})",
                 tracker,
             )
@@ -10547,47 +11122,57 @@ async def _repair_worker_first_person_scenes(
                 story_context,
                 settings,
                 existing_by_group=scenes_by_group,
-                repair_first_person=True,
+                repair_narrator=True,
             )
             try:
                 data = await _worker_gemini_json(prompt, client)
             except Exception as e:
-                logger.warning(f"Worker first-person repair failed: {e}")
+                logger.warning(f"Worker third-person narrator repair failed: {e}")
                 continue
             parsed, response_protagonist, _ = _parse_rewrite_response(
                 data, allowed
             )
             response_map = _rewrite_response_story_map(data)
             if response_map:
+                repair_story_map = _merge_story_maps(
+                    repair_story_map,
+                    response_map,
+                )
                 story_context.update(
                     _merge_story_contexts(
                         story_context,
                         _story_context_from_story_map(
-                            response_map,
+                            repair_story_map,
                             protagonist=(
                                 story_context.get("protagonist")
                                 or response_protagonist
                             ),
-                            pronoun=selected,
                         ),
                     )
                 )
-                story_context["pronoun"] = selected
+                story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
             if response_protagonist and not story_context.get("protagonist"):
                 story_context["protagonist"] = response_protagonist
             for gid, new_text in parsed.items():
                 old_text = str(scenes_by_group.get(int(gid)) or "")
                 if (
-                    _scene_is_first_person(new_text, selected)
+                    _scene_uses_third_person_narrator(new_text)
                     and len(new_text.strip()) >= max(
                         1, int(len(old_text.strip()) * 0.9)
                     )
                 ):
                     scenes_by_group[int(gid)] = new_text.strip()
                     accepted += 1
+        if accepted:
+            cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+                groups,
+                scenes_by_group,
+                repair_story_map,
+                story_context,
+            )
         if accepted <= 0:
             break
-    return selected, bad_group_ids()
+    return NARRATOR_PERSPECTIVE, bad_group_ids(), int(cast_lock_replacements)
 
 
 async def _worker_stage_rewrite(state: dict, tracker=None):
@@ -10595,7 +11180,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
     if not GEMINI_API_KEY:
         raise WorkerJobError("GEMINI_API_KEY is not configured")
     settings = _with_required_coverage(state.get("settings") or {})
-    settings["pov"] = "first"
+    settings["pov"] = "third"
 
     transcript_rel = (state.get("artifacts") or {}).get("transcript") or "transcript.json"
     transcript_path = _worker_path(state, transcript_rel)
@@ -10674,6 +11259,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
     client = _make_gemini_client()
     story_context = _normalize_story_context({})
     story_map = {}
+    cast_lock_replacements = 0
     scenes_by_group: dict[int, str] = {}
     batches = _batch_transcript_groups(groups, max_groups=10, max_chars=6000)
 
@@ -10685,7 +11271,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             existing_by_group=scenes_by_group,
         )
         data = await _worker_gemini_json(prompt, client)
-        parsed, response_protagonist, response_pronoun = _parse_rewrite_response(data, allowed)
+        parsed, response_protagonist, _ = _parse_rewrite_response(data, allowed)
         for gid, text in parsed.items():
             if text.strip():
                 scenes_by_group[int(gid)] = text.strip()
@@ -10699,15 +11285,16 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             _story_context_from_story_map(
                 story_map,
                 protagonist=response_protagonist,
-                pronoun=response_pronoun,
             ),
         )
-
-        detected_pronoun = _detect_pronoun(" ".join(parsed.values()))
         if response_protagonist and not story_context.get("protagonist"):
             story_context["protagonist"] = response_protagonist
-        if not story_context.get("pronoun"):
-            story_context["pronoun"] = detected_pronoun or response_pronoun
+        cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+            groups,
+            scenes_by_group,
+            story_map,
+            story_context,
+        )
 
         batch_scenes = [
             {
@@ -10729,21 +11316,23 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                 logger.warning(f"Worker story summary update failed: {e}")
                 summary = {}
             preserved_protagonist = str(story_context.get("protagonist") or "")
-            preserved_pronoun = str(story_context.get("pronoun") or "")
             story_context = _merge_story_contexts(
                 story_context,
                 summary if isinstance(summary, dict) else {},
                 _story_context_from_story_map(
                     story_map,
                     protagonist=preserved_protagonist,
-                    pronoun=preserved_pronoun,
                 ),
                 fallback_from_scenes=batch_scenes,
             )
             if preserved_protagonist:
                 story_context["protagonist"] = preserved_protagonist
-            if preserved_pronoun:
-                story_context["pronoun"] = preserved_pronoun
+            cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+                groups,
+                scenes_by_group,
+                story_map,
+                story_context,
+            )
             if not story_context.get("last_scene") and batch_scenes:
                 story_context["last_scene"] = batch_scenes[-1]["burmese"]
 
@@ -10768,7 +11357,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                 existing_by_group=scenes_by_group,
             )
             data = await _worker_gemini_json(prompt, client)
-            parsed, response_protagonist, response_pronoun = _parse_rewrite_response(data, allowed)
+            parsed, response_protagonist, _ = _parse_rewrite_response(data, allowed)
             for gid, text in parsed.items():
                 if text.strip():
                     scenes_by_group[int(gid)] = text.strip()
@@ -10782,20 +11371,21 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                 _story_context_from_story_map(
                     story_map,
                     protagonist=response_protagonist,
-                    pronoun=response_pronoun,
                 ),
             )
             if response_protagonist and not story_context.get("protagonist"):
                 story_context["protagonist"] = response_protagonist
-            if not story_context.get("pronoun"):
-                story_context["pronoun"] = (
-                    _detect_pronoun(" ".join(parsed.values())) or response_pronoun
-                )
+            cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+                groups,
+                scenes_by_group,
+                story_map,
+                story_context,
+            )
 
     # Validate/repair the actual narration text before length top-ups.  A
-    # correct JSON pronoun field does not prove the Burmese text itself is
-    # first-person; the previous system accepted third-person summaries.
-    selected_pronoun, _ = await _repair_worker_first_person_scenes(
+    # JSON perspective field does not prove the Burmese text itself keeps
+    # the external narrator out of a character's first-person voice.
+    _, _, repair_cast_replacements = await _repair_worker_narrator_scenes(
         groups,
         scenes_by_group,
         target_by_group,
@@ -10805,7 +11395,14 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         state=state,
         tracker=tracker,
     )
-    story_context["pronoun"] = selected_pronoun
+    cast_lock_replacements += repair_cast_replacements
+    cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+        groups,
+        scenes_by_group,
+        story_map,
+        story_context,
+    )
+    story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
 
     # Expand underfilled groups using only omitted facts from their own
     # source.  Small batches are deliberate: asking Gemini to expand dozens
@@ -10874,20 +11471,25 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
                 _story_context_from_story_map(
                     story_map,
                     protagonist=str(story_context.get("protagonist") or ""),
-                    pronoun=selected_pronoun,
                 ),
             )
-            story_context["pronoun"] = selected_pronoun
+            story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
             for gid, new_text in parsed.items():
                 old_text = str(scenes_by_group.get(int(gid)) or "")
                 if (
                     len(new_text.strip()) > len(old_text.strip())
-                    and _scene_is_first_person(new_text, selected_pronoun)
+                    and _scene_uses_third_person_narrator(new_text)
                 ):
                     scenes_by_group[int(gid)] = new_text.strip()
 
-    selected_pronoun, bad_first_person_groups = (
-        await _repair_worker_first_person_scenes(
+    cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+        groups,
+        scenes_by_group,
+        story_map,
+        story_context,
+    )
+    _, bad_narrator_groups, repair_cast_replacements = (
+        await _repair_worker_narrator_scenes(
             groups,
             scenes_by_group,
             target_by_group,
@@ -10899,7 +11501,14 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
             rounds=2,
         )
     )
-    story_context["pronoun"] = selected_pronoun
+    cast_lock_replacements += repair_cast_replacements
+    cast_lock_replacements += _worker_cast_lock_scenes_by_group(
+        groups,
+        scenes_by_group,
+        story_map,
+        story_context,
+    )
+    story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
     coverage_metrics = _calculate_transcript_coverage(
         groups, scenes_by_group, target_by_group=target_by_group
     )
@@ -10936,19 +11545,21 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
         for g in groups
         if str(scenes_by_group.get(int(g.get("group_id") or 0)) or "").strip()
     ]
-    first_person_metrics = _first_person_metrics(
-        ordered_scene_texts, selected_pronoun
-    )
-    coverage_metrics["first_person"] = first_person_metrics
-    coverage_metrics["first_person_pronoun"] = selected_pronoun
-    coverage_metrics["bad_first_person_group_ids"] = bad_first_person_groups
+    third_person_metrics = _third_person_metrics(ordered_scene_texts)
+    coverage_metrics["narrator_perspective"] = NARRATOR_PERSPECTIVE
+    coverage_metrics["third_person"] = third_person_metrics
+    coverage_metrics["bad_narrator_group_ids"] = bad_narrator_groups
+    coverage_metrics["cast_lock"] = {
+        "replacements": int(cast_lock_replacements),
+        "identities": story_context.get("characters") or [],
+    }
     if not scenes_by_group:
         raise WorkerJobError("Gemini returned no usable rewritten scenes")
-    if bad_first_person_groups:
+    if bad_narrator_groups:
         raise WorkerJobError(
-            "Script is not first-person in every scene after repairs: "
-            f"pronoun={selected_pronoun}, bad_group_ids={bad_first_person_groups}; "
-            "refusing to deliver a third-person recap"
+            "Script narrator leaks first-person after repairs: "
+            f"bad_group_ids={bad_narrator_groups}; "
+            "refusing to deliver a first-person recap"
         )
     if float(coverage_metrics.get("speech_coverage_ratio") or 0) < required_ratio:
         raise WorkerJobError(
@@ -10986,6 +11597,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
     script = {
         "story_context": story_context,
         "story_map": story_map,
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
         "coverage": coverage_metrics,
         "target_by_group": {str(k): int(v) for k, v in target_by_group.items()},
         "groups": groups,
@@ -11010,7 +11622,7 @@ async def _worker_stage_rewrite(state: dict, tracker=None):
 
 def _worker_settings(state: dict) -> dict:
     settings = _with_required_coverage(state.get("settings") or {})
-    settings["pov"] = "first"
+    settings["pov"] = "third"
     return settings
 
 
@@ -11148,7 +11760,7 @@ async def _worker_adjust_scenes_for_duration(
     """Use Gemini to expand scenes toward measured-duration targets."""
     groups = _worker_script_groups(script, scenes)
     if not groups:
-        return scenes, [], _voice_first_person_pronoun(settings)
+        return scenes, [], NARRATOR_PERSPECTIVE
     scenes_by_group = {}
     scene_by_group = {}
     for scene in scenes or []:
@@ -11170,12 +11782,26 @@ async def _worker_adjust_scenes_for_duration(
         story_context,
         _story_context_from_story_map(story_map),
     )
-    selected = _choose_first_person_pronoun(
-        [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
-        preferred=str(story_context.get("pronoun") or ""),
-        settings=settings,
-    )
-    story_context["pronoun"] = selected
+    story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
+    cast_changed_group_ids = []
+    before_cast_texts = {
+        int(scene.get("group_id") or 0): str(scene.get("burmese") or "")
+        for scene in scenes or []
+        if isinstance(scene, dict)
+        and str(scene.get("group_id") or "").isdigit()
+    }
+    if _apply_cast_lock_to_scenes(scenes, story_map, story_context):
+        for scene in scenes or []:
+            if not isinstance(scene, dict):
+                continue
+            try:
+                gid = int(scene.get("group_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            locked_text = str(scene.get("burmese") or "").strip()
+            if gid > 0 and locked_text != str(before_cast_texts.get(gid) or "").strip():
+                scenes_by_group[gid] = locked_text
+                cast_changed_group_ids.append(gid)
 
     candidates = []
     for group in groups:
@@ -11187,15 +11813,19 @@ async def _worker_adjust_scenes_for_duration(
             (mode == "expand" and desired > int(current * 1.02))
             or (mode == "shorten" and desired < int(current * 0.98))
         )
-        if needs_duration or not _scene_is_first_person(text, selected):
+        if (
+            gid in cast_changed_group_ids
+            or needs_duration
+            or (text and not _scene_uses_third_person_narrator(text))
+        ):
             candidates.append(group)
     if not candidates:
-        return scenes, [], selected
+        return scenes, [], NARRATOR_PERSPECTIVE
 
     if not GEMINI_API_KEY:
         raise WorkerJobError("GEMINI_API_KEY is not configured for duration calibration")
     client = _make_gemini_client()
-    changed = []
+    changed = list(cast_changed_group_ids)
     for batch in _batch_transcript_groups(candidates, max_groups=5, max_chars=3000):
         _worker_check_cancelled(state)
         allowed = [int(g["group_id"]) for g in batch]
@@ -11227,10 +11857,9 @@ async def _worker_adjust_scenes_for_duration(
             _story_context_from_story_map(
                 story_map,
                 protagonist=response_protagonist,
-                pronoun=selected,
             ),
         )
-        story_context["pronoun"] = selected
+        story_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
         if response_protagonist and not story_context.get("protagonist"):
             story_context["protagonist"] = response_protagonist
         for gid, new_text in parsed.items():
@@ -11238,9 +11867,9 @@ async def _worker_adjust_scenes_for_duration(
             old_text = str(scenes_by_group.get(gid) or "")
             desired = int(desired_by_group.get(gid) or len(old_text))
             new_len = len(new_text.strip())
-            if not _scene_is_first_person(new_text, selected):
+            if not _scene_uses_third_person_narrator(new_text):
                 continue
-            if not _scene_is_first_person(old_text, selected):
+            if not _scene_uses_third_person_narrator(old_text):
                 progress = new_len >= max(1, int(len(old_text) * 0.9))
             elif mode == "expand":
                 progress = new_len > len(old_text) and abs(new_len - desired) < abs(len(old_text) - desired)
@@ -11264,9 +11893,22 @@ async def _worker_adjust_scenes_for_duration(
         if gid in scenes_by_group:
             new_scene["burmese"] = scenes_by_group[gid]
         updated.append(new_scene)
+    before_final_cast = {
+        int(scene.get("group_id") or 0): str(scene.get("burmese") or "")
+        for scene in updated
+        if isinstance(scene, dict)
+    }
+    if _apply_cast_lock_to_scenes(updated, story_map, story_context):
+        for scene in updated:
+            try:
+                gid = int(scene.get("group_id") or 0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if gid > 0 and str(scene.get("burmese") or "") != before_final_cast.get(gid, ""):
+                changed.append(gid)
     script["story_context"] = story_context
     script["story_map"] = story_map
-    return updated, sorted(set(changed)), selected
+    return updated, sorted(set(changed)), NARRATOR_PERSPECTIVE
 
 
 async def _resynthesize_changed_worker_clips(
@@ -11308,7 +11950,7 @@ def _persist_worker_calibrated_script(
     scenes: list,
     measurements: dict,
     calibration_history: list,
-    selected_pronoun: str,
+    narrator_perspective: str,
     source_seconds: float,
     settings: dict,
 ):
@@ -11326,11 +11968,10 @@ def _persist_worker_calibrated_script(
         "acceptable_final_max_seconds": round(float(high), 3),
         "duration_calibration_rounds": max(0, len(calibration_history or []) - 1),
         "duration_calibration_history": calibration_history or [],
-        "first_person": _first_person_metrics(
-            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
-            selected_pronoun,
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
+        "third_person": _third_person_metrics(
+            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)]
         ),
-        "first_person_pronoun": selected_pronoun,
     })
     script["coverage"] = coverage
     _write_worker_json(state, "script.json", script)
@@ -11376,27 +12017,17 @@ async def _worker_stage_tts(state: dict, tracker=None):
         or ((state.get("metrics") or {}).get("source") or {}).get("duration_seconds")
         or 0
     )
-    selected_pronoun = _choose_first_person_pronoun(
-        [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
-        preferred=str(
-            (script.get("story_context") or state.get("story_context") or {}).get("pronoun")
-            or ""
-        ),
-        settings=settings,
-    )
+    narrator_perspective = NARRATOR_PERSPECTIVE
     calibration_history = []
     if source_seconds_initial > 0:
         target_final_seconds, final_low, final_high = _final_duration_window(
             source_seconds_initial, settings
         )
-        # A script artifact from an older rewrite can be third-person even
-        # when its duration happens to be right.  Repair it before measuring
-        # the final calibration so TTS never voices that version.
-        initial_bad_fp = _first_person_bad_scene_indexes(
-            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
-            selected_pronoun,
-        )
-        if initial_bad_fp:
+        # A script artifact from an older rewrite can leak a character's
+        # first-person voice even when its duration is right.  Repair it
+        # before final calibration so TTS never voices that version.
+        initial_bad_narrator = _third_person_bad_scene_indexes(scenes)
+        if initial_bad_narrator:
             desired_current = {}
             for scene in scenes:
                 try:
@@ -11407,10 +12038,10 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     desired_current[gid] = len(str(scene.get("burmese") or "").strip())
             await _worker_progress(
                 state,
-                "👤 Script ကို အဓိကဇာတ်ကောင် ကိုယ်တိုင်ပြောပုံစံဖြင့် ပြန်ပြင်နေပါသည်...",
+                "🎙️ Script ကို တတိယလူ recap narrator ပုံစံဖြင့် ပြန်ပြင်နေပါသည်...",
                 tracker,
             )
-            scenes, changed_fp, selected_pronoun = (
+            scenes, changed_narrator, _ = (
                 await _worker_adjust_scenes_for_duration(
                     state,
                     script,
@@ -11421,11 +12052,11 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     tracker,
                 )
             )
-            if changed_fp:
+            if changed_narrator:
                 clips = await _resynthesize_changed_worker_clips(
                     scenes,
                     clips,
-                    changed_fp,
+                    changed_narrator,
                     str(state.get("job_dir") or ""),
                     settings,
                 )
@@ -11502,7 +12133,7 @@ async def _worker_stage_tts(state: dict, tracker=None):
                     tracker,
                 )
                 old_total = script_total_chars(scenes)
-                scenes, changed_groups, selected_pronoun = (
+                scenes, changed_groups, _ = (
                     await _worker_adjust_scenes_for_duration(
                         state,
                         script,
@@ -11556,18 +12187,18 @@ async def _worker_stage_tts(state: dict, tracker=None):
 
         final_measurements = _narration_measurements(scenes, clips, settings)
         final_narration = float(final_measurements.get("narration_seconds") or 0)
-        bad_fp_groups = []
+        bad_narrator_groups = []
         for scene in scenes:
             if not isinstance(scene, dict):
                 continue
-            text = str(scene.get("burmese") or "")
-            if text.strip() and not _scene_is_first_person(text, selected_pronoun):
-                bad_fp_groups.append(scene.get("group_id"))
-        if bad_fp_groups:
+            scene_text = str(scene.get("burmese") or "")
+            if scene_text.strip() and not _scene_uses_third_person_narrator(scene_text):
+                bad_narrator_groups.append(scene.get("group_id"))
+        if bad_narrator_groups:
             raise WorkerJobError(
-                "Narration script is not first-person in every scene after "
-                f"calibration: pronoun={selected_pronoun}, bad_group_ids={bad_fp_groups}; "
-                "refusing to render a third-person recap"
+                "Narration narrator leaks first-person after calibration: "
+                f"bad_group_ids={bad_narrator_groups}; "
+                "refusing to render a first-person recap"
             )
         if final_narration < final_low:
             raise WorkerJobError(
@@ -11589,7 +12220,7 @@ async def _worker_stage_tts(state: dict, tracker=None):
             scenes,
             final_measurements,
             calibration_history,
-            selected_pronoun,
+            narrator_perspective,
             source_seconds_initial,
             settings,
         )
@@ -11706,10 +12337,9 @@ async def _worker_stage_tts(state: dict, tracker=None):
             calibration_history[-1].get("measured_chars_per_second")
             if calibration_history else None
         ),
-        "first_person_pronoun": selected_pronoun,
-        "first_person": _first_person_metrics(
-            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
-            selected_pronoun,
+        "narrator_perspective": narrator_perspective,
+        "third_person": _third_person_metrics(
+            [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)]
         ),
         "silent_scene_count": silent_count,
         "voice": settings.get("voice"),
@@ -12351,7 +12981,7 @@ async def _worker_stage_render(state: dict, tracker=None):
 
     # Fail before expensive rendering if an older/manual artifact would
     # violate either contract: literal 90%-of-source final duration or
-    # protagonist first-person narration in every scene.
+    # an external third-person narrator in every scene.
     planned_duration = sum(
         float(item.get("desired_output_seconds") or 0) for item in plan
     )
@@ -12370,28 +13000,17 @@ async def _worker_stage_render(state: dict, tracker=None):
             f"{_duration_status(planned_duration, source_duration, settings)}; "
             "run TTS calibration again instead of rendering an out-of-range recap"
         )
-    script_coverage_render = script.get("coverage") or {}
-    render_pronoun = _choose_first_person_pronoun(
-        [str(s.get("burmese") or "") for s in scenes if isinstance(s, dict)],
-        preferred=str(
-            script_coverage_render.get("first_person_pronoun")
-            or (script.get("story_context") or {}).get("pronoun")
-            or ""
-        ),
-        settings=settings,
-    )
     bad_render_groups = [
         s.get("group_id")
         for s in scenes
         if isinstance(s, dict)
         and str(s.get("burmese") or "").strip()
-        and not _scene_is_first_person(str(s.get("burmese") or ""), render_pronoun)
+        and not _scene_uses_third_person_narrator(str(s.get("burmese") or ""))
     ]
     if bad_render_groups:
         raise WorkerJobError(
-            "Script is not first-person in every scene before render: "
-            f"pronoun={render_pronoun}, bad_group_ids={bad_render_groups}; "
-            "run rewrite again"
+            "Script narrator leaks first-person before render: "
+            f"bad_group_ids={bad_render_groups}; run rewrite again"
         )
     _write_worker_json(state, "render_plan.json", {"items": plan})
     state.setdefault("artifacts", {})["render_plan"] = "render_plan.json"
@@ -12538,7 +13157,7 @@ async def _worker_stage_render(state: dict, tracker=None):
         "target_final_seconds": round(float(target_final_seconds), 3),
         "minimum_acceptable_final_seconds": round(float(minimum_final_seconds), 3),
         "maximum_acceptable_final_seconds": round(float(maximum_final_seconds), 3),
-        "first_person_pronoun": render_pronoun,
+        "narrator_perspective": NARRATOR_PERSPECTIVE,
         "final_ratio_of_source": round(final_duration / source_duration, 4) if source_duration else 0.0,
         "final_ratio_of_target": round(
             final_duration / target_final_seconds, 4
@@ -12627,29 +13246,19 @@ async def _worker_stage_deliver(state: dict, tracker=None):
             )
     delivery_scenes = delivery_script.get("scenes") or []
     if delivery_scenes:
-        delivery_pronoun = _choose_first_person_pronoun(
-            [str(s.get("burmese") or "") for s in delivery_scenes if isinstance(s, dict)],
-            preferred=str(
-                delivery_coverage.get("first_person_pronoun")
-                or (delivery_script.get("story_context") or {}).get("pronoun")
-                or ""
-            ),
-            settings=settings,
-        )
         bad_delivery_groups = [
             s.get("group_id")
             for s in delivery_scenes
             if isinstance(s, dict)
             and str(s.get("burmese") or "").strip()
-            and not _scene_is_first_person(
-                str(s.get("burmese") or ""), delivery_pronoun
+            and not _scene_uses_third_person_narrator(
+                str(s.get("burmese") or "")
             )
         ]
         if bad_delivery_groups:
             raise WorkerJobError(
-                "Script is not first-person in every scene before delivery: "
-                f"pronoun={delivery_pronoun}, bad_group_ids={bad_delivery_groups}; "
-                "refusing to upload"
+                "Script narrator leaks first-person before delivery: "
+                f"bad_group_ids={bad_delivery_groups}; refusing to upload"
             )
 
     await _worker_progress(state, WORKER_STAGE_LABELS["deliver"], tracker)
@@ -12996,8 +13605,11 @@ def _load_manual_session(session_id: str) -> dict:
             "summary": "",
             "last_scene": "",
             "protagonist": "",
-            "pronoun": "",
+            "narrator_perspective": "third_person",
         }
+    state["story_context"] = _normalize_story_context(
+        state.get("story_context") or {}
+    )
     state["full_source_file"] = str(
         state.get("full_source_file")
         or (state.get("source") or {}).get("full_source_file")
@@ -13296,7 +13908,7 @@ def _create_manual_session(
             "summary": "",
             "last_scene": "",
             "protagonist": "",
-            "pronoun": "",
+            "narrator_perspective": "third_person",
         },
         "full_script_file": "",
         "full_source_file": "",
@@ -13436,7 +14048,7 @@ def _build_manual_recovery_token(
             ref = part.get("recap_file_ids") or part.get("recap_file_id")
             if ref:
                 recap_refs[str(int(part.get("index") or 0))] = ref
-        ctx_full = state.get("story_context") or {}
+        ctx_full = _normalize_story_context(state.get("story_context") or {})
 
         def make_payload(summary_len, last_len, keep_recaps, keep_characters):
             payload: dict[str, object] = {
@@ -13479,8 +14091,40 @@ def _build_manual_recovery_token(
                     ctx["l"] = last_scene
             if ctx_full.get("protagonist"):
                 ctx["p"] = str(ctx_full.get("protagonist") or "")[:60]
-            if ctx_full.get("pronoun"):
-                ctx["pr"] = str(ctx_full.get("pronoun") or "")
+            if keep_characters:
+                compact_cards = []
+                for card in (ctx_full.get("character_cards") or [])[:8]:
+                    if not isinstance(card, dict):
+                        continue
+                    spoken_name = _character_card_spoken_name(card)
+                    if not spoken_name:
+                        continue
+                    item: dict[str, object] = {"n": spoken_name[:48]}
+                    source_name = str(card.get("source_name") or "").strip()
+                    if source_name and source_name != spoken_name:
+                        item["o"] = source_name[:48]
+                    if card.get("role"):
+                        item["r"] = str(card.get("role") or "")[:60]
+                    if card.get("relation"):
+                        item["e"] = str(card.get("relation") or "")[:60]
+                    aliases = [
+                        str(alias)[:48]
+                        for alias in (card.get("aliases") or [])[:4]
+                        if str(alias).strip()
+                    ]
+                    if aliases:
+                        item["a"] = aliases
+                    name_source = str(card.get("name_source") or "").strip()
+                    if name_source and name_source != "unknown":
+                        item["s"] = name_source[:20]
+                    confidence = str(card.get("confidence") or "").strip()
+                    if confidence and confidence != "uncertain":
+                        item["f"] = confidence[:20]
+                    if card.get("visual_cue"):
+                        item["v"] = str(card.get("visual_cue") or "")[:60]
+                    compact_cards.append(item)
+                if compact_cards:
+                    ctx["cc"] = compact_cards
             if ctx:
                 payload["ctx"] = ctx
             return payload
@@ -13750,13 +14394,34 @@ async def _rebuild_manual_session_from_payload(
 
     ctx = payload.get("ctx") or {}
     if isinstance(ctx, dict) and ctx:
-        state["story_context"] = {
+        restored_cards = []
+        for item in ctx.get("cc") or []:
+            if not isinstance(item, dict):
+                continue
+            restored_cards.append({
+                "spoken_name": str(item.get("n") or ""),
+                "source_name": str(item.get("o") or ""),
+                "role": str(item.get("r") or ""),
+                "relation": str(item.get("e") or ""),
+                "aliases": [
+                    str(alias)
+                    for alias in (item.get("a") or [])
+                    if str(alias).strip()
+                ],
+                "name_source": str(item.get("s") or ""),
+                "confidence": str(item.get("f") or ""),
+                "visual_cue": str(item.get("v") or ""),
+            })
+        # Legacy compact tokens may contain ``pr``; it is deliberately
+        # discarded because narrator perspective is fixed third-person.
+        state["story_context"] = _normalize_story_context({
             "characters": [str(c) for c in (ctx.get("c") or []) if str(c).strip()],
+            "character_cards": restored_cards,
             "summary": str(ctx.get("s") or ""),
             "last_scene": str(ctx.get("l") or ""),
             "protagonist": str(ctx.get("p") or ""),
-            "pronoun": str(ctx.get("pr") or ""),
-        }
+            "narrator_perspective": NARRATOR_PERSPECTIVE,
+        })
 
     recap_refs = payload.get("r") or {}
     if not isinstance(recap_refs, dict):
@@ -14739,7 +15404,7 @@ async def _handle_manual_source_job(
             "summary": "",
             "last_scene": "",
             "protagonist": "",
-            "pronoun": "",
+            "narrator_perspective": "third_person",
         }
         state["status"] = "sending_next"
         state["error"] = ""
@@ -15022,8 +15687,8 @@ async def _run_manual_part_recap(
             if script is None:
                 await tracker.update(
                     f"📝 အပိုင်း {part_index}/{total_parts} တစ်ခုတည်းအတွက် Script ရေးနေပါသည်...\n"
-                    "👤 ဇာတ်ကောင်နာမည်များ၊ အချိန်အစဉ်နဲ့ ဖြစ်စဉ်အပြည့်ကို "
-                    "«ကျွန်တော်/ကျွန်မ» ပထမလူအဖြစ်ပြောပါမယ်။",
+                    "🎙️ ဇာတ်ကောင်နာမည်ကို subtitle/အမည်ကတ်အထောက်အထားနဲ့ lock လုပ်၊ "
+                    "မသေချာရင် မရောနိုင်တဲ့ အညွှန်းတစ်ခုတည်းသုံးပြီး တတိယလူ recap အဖြစ်ပြောပါမယ်။",
                     force=True,
                 )
                 script = await generate_chunk_script(
@@ -15161,7 +15826,6 @@ async def _run_manual_part_recap(
                         protagonist=str(
                             (updated_script or {}).get("protagonist") or ""
                         ),
-                        pronoun=str((updated_script or {}).get("pronoun") or ""),
                     ),
                 )
                 if not merged_context.get("protagonist"):
@@ -15171,13 +15835,7 @@ async def _run_manual_part_recap(
                         or previous_context.get("protagonist")
                         or ""
                     )
-                if not merged_context.get("pronoun"):
-                    merged_context["pronoun"] = str(
-                        next_context.get("pronoun")
-                        or (updated_script or {}).get("pronoun")
-                        or previous_context.get("pronoun")
-                        or ""
-                    )
+                merged_context["narrator_perspective"] = NARRATOR_PERSPECTIVE
                 fresh["story_context"] = merged_context
             counts = _manual_counts(fresh)
             next_part_after_done = _manual_first_unfinished_part(fresh)
@@ -16360,7 +17018,7 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
     work_dir = tempfile.mkdtemp(prefix="vid_", dir=WORK_ROOT)
     tracker = ProgressTracker(chat_id, status_id, job_id=job_id)
 
-    story_context = {"characters": [], "summary": "", "last_scene": "", "protagonist": "", "pronoun": ""}
+    story_context = {"characters": [], "summary": "", "last_scene": "", "protagonist": "", "narrator_perspective": "third_person"}
 
     try:
         source_path, total_dur = await _acquire_source_file_with_retry(
@@ -16478,12 +17136,11 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 _story_context_from_story_map(
                     script.get("story_map"),
                     protagonist=str(script.get("protagonist") or ""),
-                    pronoun=str(script.get("pronoun") or ""),
                 ),
             )
             logger.info(
                 f"Story context: protagonist='{story_context.get('protagonist', '')}', "
-                f"pronoun='{story_context.get('pronoun', '')}', "
+                f"perspective='{story_context.get('narrator_perspective', '')}', "
                 f"{len(story_context.get('characters', []))} chars, "
                 f"{len(story_context.get('summary', ''))} summary"
             )
@@ -17059,7 +17716,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.28-pro-recap-script"
+BUILD_VERSION = "v5.29-third-person-cast-lock"
 BUILD_FEATURES = 20
 
 
@@ -17142,14 +17799,15 @@ async def root():
         "edit_sync": "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
-        "script_style": "pro_recap_opening_hook_intention_first_named_transitions_first_person",
+        "script_style": "pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
-        "first_person_enforcement": "per_scene_validated",
+        "narrator_enforcement": "third_person_quote_aware_per_scene_validated",
+        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
@@ -17263,12 +17921,13 @@ async def health():
         "edit_sync": "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
-        "script_style": "pro_recap_opening_hook_intention_first_named_transitions_first_person",
+        "script_style": "pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
-        "first_person_enforcement": "per_scene_validated",
+        "narrator_enforcement": "third_person_quote_aware_per_scene_validated",
+        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
@@ -17774,13 +18433,13 @@ async def _setup_bot():
 def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
-        "ဒီတစ်ခါ <b>script ရေးပုံကို professional recap ပုံစံ</b> ပြောင်းပြင်ထားပါတယ် —\n"
-        "• ဗီဒီယိုအစမှာ <b>အချိန်၊ နေရာ၊ ဇာတ်ကောင်က ဘယ်သူလဲ၊ အခုဘာဖြစ်နေလဲ</b> ဆိုတာ အဖွင့် hook နဲ့ ရှင်းရှင်းစပေးပါမယ်\n"
-        "• လှည့်ကွက်နဲ့ ဆုံးဖြတ်ချက်တွေမှာ <b>ရည်ရွယ်ချက်ကို အရင်</b>ဖော်ပြီး လုပ်ဆောင်ချက် → ရလဒ်ကို အစဉ်လိုက်ပြောတာမို့ အသံပဲနားထောင်လည်း ဇာတ်လမ်း လိုက်လွယ်ပါမယ်\n"
-        "• နေရာ/အချိန်ပြောင်းတိုင်း bridge ကို အမည်တပ် ရှင်းပြီး scene အဆုံးမှာ ရလဒ်/အန္တရာယ်နဲ့ ဆက်ဆွဲသွားပါမယ်\n"
-        "• Edit ပိုင်းမှာလည်း video track စစ်ဆေးမှုကို ပိုတင်းကျပ်လိုက်လို့ နောက်ဆုံး frame ရပ်နေတဲ့ frozen tail ပါတဲ့ final ကို မပို့တော့ပါ\n"
-        "• Freeze ကာကွယ်မှု (footage မလုံရင် boundary အလိုအလျောက် ပြန်ညှိ၊ replay အများဆုံး <b>၂ ကြိမ်</b>) ဆက်ပါပြီး\n"
-        "• Final က မူရင်းထက် <b>မရှည်ပါ</b> · Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
+        "ဒီတစ်ခါ narration ကို professional movie-recap channel ပုံစံ <b>တတိယလူ narrator</b> နဲ့ ပြောင်းပြီး ဇာတ်ကောင်တွေ မရောအောင် <b>Cast Lock</b> ထည့်ထားပါတယ် —\n"
+        "• အမည်ကို <b>subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်</b>က အရင်ယူပြီး တစ်မျိုးတည်းသာ ဆက်တိုက်ပြောပါမယ်။ သေချာတဲ့ အမည် မရရင် နာမည် အမျိုးမျိုး မှန်းမပြောင်းဘဲ မရောနိုင်တဲ့ အညွှန်းတစ်ခုတည်းကို အဆုံးထိ သုံးပါမယ်\n"
+        "• ဗီဒီယိုအစမှာ <b>အချိန်၊ နေရာ၊ အဓိကဇာတ်ကောင်က ဘယ်သူလဲ၊ အခုဘာဖြစ်နေလဲ</b> ရှင်းပေးပြီး လူသစ်ပါလာတိုင်း အမည်နဲ့အတူ ဘယ်သူလဲ/ဘယ်လိုဆက်နွယ်လဲ ပြောပါမယ်\n"
+        "• စကားပြောတိုင်း <b>ပြောသူနဲ့ နားထောင်သူကို အမည်တပ်</b>ပြီး ရည်ရွယ်ချက် → လုပ်ဆောင်ချက် → ရလဒ် အစဉ်နဲ့ အသံပဲနားထောင်လည်း လိုက်နိုင်အောင် ပြောပါမယ်\n"
+        "• Script က အကျဉ်းချုပ်မဟုတ်ဘဲ မူရင်းရဲ့ <b>90%</b> အပြည့်နီးပါး ပြန်ပြောပြီး Final က မူရင်းထက် <b>မရှည်ပါ</b>\n"
+        "• Freeze ကာကွယ်မှု (boundary အလိုအလျောက် ပြန်ညှိ၊ replay အများဆုံး <b>၂ ကြိမ်</b>) ဆက်ပါပြီး\n"
+        "• Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
         "🎬 ဗီဒီယို ဒါမှမဟုတ် link အသစ်ပို့ပြီး စမ်းကြည့်ပါ။"
     )
 
