@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.36-duration-calibration` is a **one-shot automatic flow**: the user
+Version `v5.37-pro-script-edit-names` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -778,6 +778,43 @@ v5.19 makes the job registry survive that:
   speaker. These heuristics are conservative editor signals, not a
   reason to invent names or story facts.
 
+## v5.37 — Professional script, edit-sync, and spoken-name gate
+
+- **Footage must cover the window it narrates.** Model scene
+  timestamps are validated against the whole source window. A
+  compressed/late timestamp scale (the rejected v5.36 final began at
+  62.7s of a 113.4s window and replayed all 11 late scenes) is
+  renormalized in relative order across the full window before the
+  editor, final validation, and alignment instead of being trusted.
+  Absolute source-video timestamps in a later chunk are shifted back
+  to chunk-relative time. Worker transcript timestamps remain ground
+  truth and are never renormalized onto silent head/tail footage.
+- **No consecutive retelling.** In addition to exact/near-duplicate
+  cleanup, adjacent paraphrase echoes across a sentence or scene
+  boundary and repeated clauses inside one sentence are removed when
+  actor/quantity/negation/opposite-action checks prove they add no
+  new event. An explicitly marked repeated action (“again/a second
+  time”) is protected. Direct prompts also run a no-echo test across
+  adjacent sentences and scene boundaries.
+- **Names are spoken, not merely stored in cards.** A supported
+  person's first short-form mention is promoted to the full locked
+  spoken name and a card-supported Burmese introduction is inserted
+  when the opening window does not already say who they are (a clear
+  reciprocal relationship such as “I am Mina's brother” is not echoed
+  back as “Mina is my sister”). Clear early `သူ/သူမ` actors are
+  replaced with the one supported Name Ladder form; ambiguous cases
+  and quoted speech are left untouched. Foreign-script name forms are
+  never inserted into TTS text by the deterministic passes.
+- **Severe defects no longer ship silently.** After all bounded
+  editor/repair passes, direct and worker scripts fail honestly when
+  local evidence still shows TTS-unsafe foreign script, repeated
+  narration, a weak Cast Lock, many unclear/unnamed actors, missing
+  introductions, generic cast labels, or an unreliable scene
+  timeline. `/healthz` records a compact `last_script_quality`
+  summary (score, failures, duplicates, actor clarity, introductions,
+  TTS safety, timeline before/after, dedupe, name repairs, and editor
+  status) so the next bad final can be diagnosed from evidence.
+
 ## v5.36 — Duration calibration converges after deploys
 
 - **Edge Thiha cold starts use its measured pace.** The learned-rate
@@ -866,7 +903,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.36-duration-calibration"`,
+URLs must show `"version":"v5.37-pro-script-edit-names"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
