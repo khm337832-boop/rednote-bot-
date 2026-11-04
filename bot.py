@@ -1780,27 +1780,78 @@ async def send_main_menu(
 
 
 async def tg_upload_media(method: str, data: dict, field_name: str, file_name: str, file_path: str, mime_type: str) -> dict:
+    """Upload one Telegram media file with bounded, flood-aware retries.
+
+    The file is streamed from disk on every attempt instead of first
+    being copied into a 45MB in-memory payload.  A long final can need
+    a dozen sequential uploads; holding each whole part (plus httpx's
+    multipart body) in RAM on a small free instance risks an OOM or
+    restart part-way through delivery -- the user then sees only the
+    first N of the announced parts.  Telegram ``retry_after`` values
+    are also honoured instead of being discarded: rapid large uploads
+    can legitimately receive a 429 whose required wait is longer than
+    a fixed 2.5s pause, and ignoring it used to burn every retry while
+    the flood window was still closed.
+    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
-    payload_bytes = await asyncio.to_thread(lambda: open(file_path, "rb").read())
-    try:
-        for attempt in range(3):
-            try:
+    last_result: dict = {"ok": False, "description": "Telegram upload failed"}
+    for attempt in range(1, 4):
+        wait_seconds = 2.5 * attempt
+        try:
+            with open(file_path, "rb") as media_file:
                 async with httpx.AsyncClient(timeout=600.0) as client:
                     resp = await client.post(
                         url,
                         data=data,
-                        files={field_name: (file_name, payload_bytes, mime_type)},
+                        files={field_name: (file_name, media_file, mime_type)},
                     )
-                    res = resp.json()
-                    if res.get("ok"):
-                        return res
+            try:
+                res = resp.json()
             except Exception:
-                pass
-            await asyncio.sleep(2.5)
-        return {"ok": False}
-    finally:
-        del payload_bytes
-        gc.collect()
+                res = {
+                    "ok": False,
+                    "error_code": int(getattr(resp, "status_code", 0) or 0),
+                    "description": f"Telegram HTTP {getattr(resp, 'status_code', '?')}",
+                }
+            if isinstance(res, dict) and res.get("ok"):
+                return res
+            if isinstance(res, dict):
+                last_result = res
+                params = res.get("parameters") or {}
+                try:
+                    retry_after = float(params.get("retry_after") or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0.0
+                if retry_after > 0:
+                    wait_seconds = min(60.0, retry_after + 1.0)
+                logger.warning(
+                    "Telegram %s upload attempt %s/3 failed for %s: %s",
+                    method,
+                    attempt,
+                    file_name,
+                    _safe_error_text(res.get("description") or res, 300),
+                )
+            else:
+                last_result = {
+                    "ok": False,
+                    "description": "Telegram returned a non-object response",
+                }
+        except Exception as exc:
+            last_result = {
+                "ok": False,
+                "description": _safe_error_text(exc, 300),
+            }
+            logger.warning(
+                "Telegram %s upload attempt %s/3 raised for %s: %s",
+                method,
+                attempt,
+                file_name,
+                _safe_error_text(exc, 300),
+            )
+        if attempt < 3:
+            await asyncio.sleep(wait_seconds)
+    gc.collect()
+    return last_result
 
 
 def _safe_video_extension(file_name: str = "", mime_type: str = "") -> str:
@@ -9948,33 +9999,44 @@ async def _prepare_source_segments(
     # nearly every real source into the accurate re-encode fallback --
     # which re-encodes the whole video window by window and takes many
     # minutes per part on a small free-tier CPU (jobs appeared frozen
-    # at "precisely splitting part x/y").  Accept the one-pass result
-    # whenever it contiguously covers the full source and no part
-    # exceeds 1.5x the target window.  The actual keyframe-snapped
-    # boundaries then become the windows: downstream already targets a
-    # percentage of each part's *measured* duration and re-checks the
-    # joined final against the full source duration, so a 126s window
-    # is recapped correctly as 126s, not mislabeled as 120s.  Only
-    # genuinely sparse-keyframe sources (some part > 1.5x the window)
-    # still use the accurate extraction fallback below.
+    # at "precisely splitting part x/y").  Keyframe-snapped boundaries
+    # are therefore still accepted, but the *number of windows* must
+    # now match the plan that was announced to the user.  The previous
+    # acceptance rule could silently turn an announced 11-window plan
+    # into 9 longer windows (full coverage, each <=1.5x), which reads
+    # exactly like two parts went missing even though the source was
+    # covered.  A count mismatch is a sparse-keyframe signal, so use
+    # the accurate extraction fallback and keep the invariant simple:
+    # announced source-window count == processed source-window count.
     max_ok_duration = float(segment_seconds) * 1.5
     coverage_ok = bool(prepared) and (
         abs(cursor - float(total_duration)) <= total_tolerance
     )
+    count_ok = len(prepared) == len(plan)
     one_pass_ok = bool(
-        coverage_ok and max_candidate_duration <= max_ok_duration
+        coverage_ok and count_ok and max_candidate_duration <= max_ok_duration
     )
-    if one_pass_ok and len(prepared) != len(plan):
+    if one_pass_ok and any(
+        abs(
+            float(item["duration"])
+            - float(plan[index]["duration"])
+        )
+        > 1.0
+        for index, item in enumerate(prepared)
+        if index < len(plan)
+    ):
         split_mode = "stream_copy_snapped"
     logger.info(
         "Source split validation: candidates=%s plan=%s cursor=%.1fs "
-        "max_part=%.1fs max_ok=%.1fs coverage_ok=%s one_pass_ok=%s elapsed=%.1fs",
+        "max_part=%.1fs max_ok=%.1fs coverage_ok=%s count_ok=%s "
+        "one_pass_ok=%s elapsed=%.1fs",
         len(prepared),
         len(plan),
         cursor,
         max_candidate_duration,
         max_ok_duration,
         coverage_ok,
+        count_ok,
         one_pass_ok,
         time.monotonic() - split_started,
     )
@@ -9982,9 +10044,12 @@ async def _prepare_source_segments(
         split_mode = "accurate_reencode"
         logger.warning(
             "Stream-copy source segments are unusable (coverage_ok=%s "
-            "max_part=%.1fs max_ok=%.1fs); falling back to accurate "
-            "per-part extraction",
+            "count_ok=%s candidates=%s plan=%s max_part=%.1fs "
+            "max_ok=%.1fs); falling back to accurate per-part extraction",
             coverage_ok,
+            count_ok,
+            len(prepared),
+            len(plan),
             max_candidate_duration,
             max_ok_duration,
         )
@@ -10597,9 +10662,40 @@ def _concat_video_parts(parts: list[str], output_path: str, concat_path: str) ->
     )
 
 
+_SEGMENT_PART_NAME_RE = re.compile(r"^part_(\d+)\.mp4$", re.IGNORECASE)
+
+
+def _segment_part_sort_key(path: str) -> tuple[int, str]:
+    match = _SEGMENT_PART_NAME_RE.match(os.path.basename(str(path or "")))
+    return (int(match.group(1)) if match else 0, str(path or ""))
+
+
+def _clear_segment_output_dir(out_dir: str) -> None:
+    """Remove segment files left by an earlier attempt in ``out_dir``.
+
+    Persistent manual/worker job directories reuse split directory
+    names.  Without this cleanup, a second split that produces fewer
+    segments can resurrect stale higher-index files from the previous
+    attempt (wrong count/order/content), while one that produces more
+    segments can mix two generations of files.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        names = os.listdir(out_dir)
+    except Exception:
+        return
+    for name in names:
+        if not _SEGMENT_PART_NAME_RE.match(name):
+            continue
+        try:
+            os.remove(os.path.join(out_dir, name))
+        except Exception:
+            pass
+
+
 def _split_video_once(path: str, out_dir: str, segment_seconds: float) -> list[str]:
     """Split one MP4 at keyframes. Returns non-empty parts in order."""
-    os.makedirs(out_dir, exist_ok=True)
+    _clear_segment_output_dir(out_dir)
     pattern = os.path.join(out_dir, "part_%04d.mp4")
     result = run_cmd([
         FFMPEG_BIN, "-y",
@@ -10619,15 +10715,139 @@ def _split_video_once(path: str, out_dir: str, segment_seconds: float) -> list[s
             _safe_error_text((result.stderr or b"").decode(errors="ignore")[-1000:]),
         )
         return []
-    return sorted(
+    parts = [
         os.path.join(out_dir, f)
         for f in os.listdir(out_dir)
         if (
-            f.startswith("part_")
-            and f.endswith(".mp4")
+            _SEGMENT_PART_NAME_RE.match(f)
             and os.path.getsize(os.path.join(out_dir, f)) > 0
         )
-    )
+    ]
+    return sorted(parts, key=_segment_part_sort_key)
+
+
+def _split_children_cover_parent(children: list[str], parent_duration: float) -> bool:
+    """Whether split children still represent the whole parent clip."""
+    try:
+        expected = float(parent_duration or 0)
+    except (TypeError, ValueError):
+        expected = 0.0
+    if expected <= 0 or len(children or []) < 2:
+        return False
+    durations = []
+    for child in children:
+        try:
+            duration = float(probe_video_info(child)[0] or 0)
+        except Exception:
+            duration = 0.0
+        if duration <= 0:
+            return False
+        durations.append(duration)
+    tolerance = max(2.0, expected * 0.02)
+    return abs(sum(durations) - expected) <= tolerance
+
+
+def _split_video_accurately(
+    path: str, out_dir: str, segment_seconds: float
+) -> list[str]:
+    """Split by planned time ranges when keyframe stream-copy cannot.
+
+    This is the last-resort path for an oversized Telegram part whose
+    keyframes are too sparse for the segment muxer.  Re-encoding each
+    planned range guarantees real, standalone children instead of
+    returning the oversized parent unchanged -- previously that parent
+    could sit in the middle of the delivery list, Telegram rejected
+    it, and every later part was never attempted.
+    """
+    duration, _, _ = probe_video_info(path)
+    if duration <= 0:
+        return []
+    plan = build_source_segment_plan(duration, segment_seconds)
+    if len(plan) < 2:
+        plan = build_source_segment_plan(duration, max(1.0, duration / 2.0))
+    if len(plan) < 2:
+        return []
+    _clear_segment_output_dir(out_dir)
+    children = []
+    for item in plan:
+        index = int(item.get("index") or (len(children) + 1))
+        output_path = os.path.join(out_dir, f"part_{index - 1:04d}.mp4")
+        ok = _extract_source_segment_file(
+            path,
+            output_path,
+            float(item.get("start") or 0),
+            float(item.get("duration") or 0),
+            preset="ultrafast",
+        )
+        if not ok or not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+            logger.warning(
+                "Accurate Telegram split failed for %s range %s",
+                os.path.basename(str(path or "")),
+                index,
+            )
+            return []
+        children.append(output_path)
+    return children
+
+
+def _validate_telegram_delivery_parts(
+    parts: list[str],
+    expected_duration: float = 0.0,
+    *,
+    require_size: bool = True,
+) -> dict:
+    """Verify a Telegram delivery set before the first upload starts.
+
+    The check is deliberately about content, not just file count:
+    every part must exist, fit the Telegram cap, and probe as real
+    video, and the parts together must still add up to the joined
+    final's duration.  Catching a bad split here means the job fails
+    *before* any upload instead of delivering 9 of 11 pieces and
+    stopping on the first missing/oversized/corrupt one.
+    """
+    errors: list[str] = []
+    sizes: list[int] = []
+    durations: list[float] = []
+    part_list = [str(part) for part in (parts or []) if part]
+    if not part_list:
+        errors.append("no_delivery_parts")
+    for index, part in enumerate(part_list, start=1):
+        if not os.path.exists(part) or os.path.getsize(part) <= 0:
+            errors.append(f"part_{index}_missing_or_empty")
+            continue
+        size = int(os.path.getsize(part))
+        sizes.append(size)
+        if require_size and size > MAX_TG_BYTES:
+            errors.append(f"part_{index}_exceeds_telegram_limit")
+        try:
+            duration = float(probe_video_info(part)[0] or 0)
+        except Exception:
+            duration = 0.0
+        if duration <= 0:
+            errors.append(f"part_{index}_has_no_readable_duration")
+        else:
+            durations.append(duration)
+    total_duration = float(sum(durations)) if len(durations) == len(part_list) else 0.0
+    try:
+        expected = float(expected_duration or 0)
+    except (TypeError, ValueError):
+        expected = 0.0
+    if expected > 0 and total_duration > 0:
+        tolerance = max(2.0, expected * 0.02)
+        if abs(total_duration - expected) > tolerance:
+            errors.append(
+                "split_duration_mismatch:"
+                f"{total_duration:.1f}s_vs_final_{expected:.1f}s"
+            )
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "part_count": len(part_list),
+        "part_sizes_bytes": sizes,
+        "part_durations_seconds": [round(float(item), 3) for item in durations],
+        "total_duration_seconds": round(total_duration, 3),
+        "expected_duration_seconds": round(expected, 3),
+    }
 
 
 async def split_for_telegram(path: str, work_dir: str) -> list[str]:
@@ -10671,14 +10891,42 @@ async def split_for_telegram(path: str, work_dir: str) -> list[str]:
             children = await asyncio.to_thread(
                 _split_video_once, part, out_dir, segment_seconds
             )
-            if len(children) < 2:
-                # Keyframes may be sparse.  Try a shorter target once for
-                # this file before giving up and returning it unchanged.
+            children_valid = _split_children_cover_parent(children, duration)
+            if not children_valid:
+                # Keyframes may be sparse, or a stream-copy child set
+                # may not actually cover the parent.  Try a shorter
+                # stream-copy target once, then planned accurate
+                # ranges; never silently keep an oversized parent in
+                # the middle of the delivery list if either works.
                 retry_dir = os.path.join(base_dir, f"r{round_no}_{part_index}_retry")
-                children = await asyncio.to_thread(
+                retry_children = await asyncio.to_thread(
                     _split_video_once, part, retry_dir, max(0.5, segment_seconds / 2.0)
                 )
-            if len(children) >= 2:
+                if _split_children_cover_parent(retry_children, duration):
+                    children = retry_children
+                    children_valid = True
+                else:
+                    accurate_dir = os.path.join(
+                        base_dir, f"r{round_no}_{part_index}_accurate"
+                    )
+                    accurate_children = await asyncio.to_thread(
+                        _split_video_accurately,
+                        part,
+                        accurate_dir,
+                        segment_seconds,
+                    )
+                    if _split_children_cover_parent(accurate_children, duration):
+                        children = accurate_children
+                        children_valid = True
+                    else:
+                        logger.warning(
+                            "Telegram split could not divide oversized part "
+                            "%s (%.1fs, %.1fMB)",
+                            os.path.basename(str(part or "")),
+                            float(duration),
+                            float(size) / (1024 * 1024),
+                        )
+            if children_valid:
                 new_parts.extend(children)
                 changed = True
             else:
@@ -14111,14 +14359,17 @@ async def _worker_stage_deliver(state: dict, tracker=None):
         parts = [final_path]
     if not parts:
         raise WorkerJobError("could not prepare final video for Telegram")
-    for part in parts:
-        if not os.path.exists(part) or os.path.getsize(part) <= 0:
-            raise WorkerJobError("a Telegram delivery part is missing or empty")
-        if os.path.getsize(part) > MAX_TG_BYTES:
-            raise WorkerJobError(
-                "a final video part still exceeds the Telegram limit; "
-                "enable Telegram splitting or lower the output settings"
-            )
+    delivery_validation = _validate_telegram_delivery_parts(
+        parts,
+        final_duration,
+        require_size=True,
+    )
+    if not delivery_validation.get("ok"):
+        raise WorkerJobError(
+            "Telegram delivery split is incomplete or invalid: "
+            + ", ".join(delivery_validation.get("errors") or ["invalid_split"])
+            + "; refusing to upload a partial final"
+        )
 
     for index, part in enumerate(parts, start=1):
         _worker_check_cancelled(state)
@@ -14126,7 +14377,7 @@ async def _worker_stage_deliver(state: dict, tracker=None):
         if settings.get("caption", True):
             caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_duration)})"
             if len(parts) > 1:
-                caption += f" - အပိုင်း {index}/{len(parts)}"
+                caption += f" - 📦 Telegram ပို့ရန်ဖိုင် {index}/{len(parts)}"
         result = await tg_upload_media(
             "sendVideo",
             {"chat_id": str(chat_id), "caption": caption},
@@ -14145,7 +14396,13 @@ async def _worker_stage_deliver(state: dict, tracker=None):
 
     metrics = {
         "part_count": len(parts),
-        "part_sizes_bytes": [os.path.getsize(part) for part in parts],
+        "part_sizes_bytes": delivery_validation.get("part_sizes_bytes") or [],
+        "part_durations_seconds": (
+            delivery_validation.get("part_durations_seconds") or []
+        ),
+        "split_total_duration_seconds": (
+            delivery_validation.get("total_duration_seconds") or 0.0
+        ),
         "final_duration_seconds": round(float(final_duration), 3),
         "source_duration_seconds": round(float(delivery_source_seconds), 3),
         "final_ratio_of_source": round(
@@ -16079,6 +16336,19 @@ async def _send_manual_original_part(state: dict, part: dict) -> int | None:
             )
             if split_files:
                 files_to_send = list(split_files)
+        if len(files_to_send) > 1:
+            delivery_validation = _validate_telegram_delivery_parts(
+                files_to_send,
+                float(probe_video_info(send_path)[0] or 0),
+                require_size=True,
+            )
+            if not delivery_validation.get("ok"):
+                raise RuntimeError(
+                    f"original part {index} Telegram split is incomplete or invalid: "
+                    + ", ".join(
+                        delivery_validation.get("errors") or ["invalid_split"]
+                    )
+                )
 
         base_caption = (
             f"🎬 မူရင်းအပိုင်း {index}/{total_parts} "
@@ -16598,8 +16868,24 @@ async def _run_manual_part_recap(
             )
             if split_files:
                 files_to_send = list(split_files)
+        delivery_validation = _validate_telegram_delivery_parts(
+            files_to_send,
+            rendered_duration,
+            require_size=True,
+        )
+        if not delivery_validation.get("ok"):
+            raise RuntimeError(
+                "Recap upload ခွဲထားပုံ မမှန်ပါ ("
+                + ", ".join(delivery_validation.get("errors") or ["invalid_split"])
+                + ")။"
+            )
         await tracker.update(
-            f"📤 Recap အပိုင်း {part_index}/{total_parts} ကို ပို့နေပါသည်...",
+            f"📤 Recap အပိုင်း {part_index}/{total_parts} ကို ပို့နေပါသည်..."
+            + (
+                f" (Telegram ဖိုင် {len(files_to_send)} ဖိုင်)"
+                if len(files_to_send) > 1
+                else ""
+            ),
             force=True,
         )
         delivered_recap_file_ids: list[str] = []
@@ -17286,8 +17572,24 @@ async def _run_manual_join(
             )
             if split_files:
                 files_to_send = list(split_files)
+        delivery_validation = _validate_telegram_delivery_parts(
+            files_to_send,
+            final_duration,
+            require_size=True,
+        )
+        if not delivery_validation.get("ok"):
+            raise RuntimeError(
+                "Final ဗီဒီယိုခွဲထားပုံ မမှန်ပါ ("
+                + ", ".join(delivery_validation.get("errors") or ["invalid_split"])
+                + ")။ အပိုင်းမစုံဘဲ မပို့ပါ။"
+            )
         await tracker.update(
-            f"📤 Final Recap ဗီဒီယို ပို့နေပါသည်... ({fmt_time(final_duration)})",
+            f"📤 Final Recap ဗီဒီယို ပို့နေပါသည်... ({fmt_time(final_duration)})"
+            + (
+                f"\n📦 Telegram ပို့ရန်ဖိုင် {len(files_to_send)} ဖိုင်"
+                if len(files_to_send) > 1
+                else ""
+            ),
             force=True,
         )
         for file_index, path_to_send in enumerate(files_to_send, start=1):
@@ -17299,7 +17601,7 @@ async def _run_manual_join(
             if settings.get("caption", True):
                 caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_duration)})"
                 if len(files_to_send) > 1:
-                    caption += f" - အပိုင်း {file_index}/{len(files_to_send)}"
+                    caption += f" - 📦 Telegram ပို့ရန်ဖိုင် {file_index}/{len(files_to_send)}"
             result = {}
             for send_attempt in range(1, 4):
                 result = await tg_upload_media(
@@ -18092,11 +18394,44 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
         parts = await split_for_telegram(final_out, work_dir) if job_settings.get('split_tg') else [final_out]
         if not parts:
             raise RuntimeError("Final ဗီဒီယိုဖိုင် မတွေ့ပါ (ပို့ရန် အပိုင်း မရှိပါ)။")
+        # Verify the whole delivery set before uploading piece 1.
+        # Internal 2-minute source windows and Telegram delivery files
+        # are different counts by design (windows are joined, then the
+        # joined final is split only by file size), so the guard that
+        # matters is duration coverage: the delivery files together
+        # must still be the entire joined final.  Failing here is far
+        # better than sending 9 files and stopping on the 10th.
+        delivery_validation = _validate_telegram_delivery_parts(
+            parts,
+            final_dur,
+            require_size=bool(job_settings.get("split_tg")),
+        )
+        logger.info(
+            "Final delivery validation for job %s: %s",
+            job_id,
+            delivery_validation,
+        )
+        if not delivery_validation.get("ok"):
+            raise RuntimeError(
+                "Final ဗီဒီယိုခွဲထားပုံ မမှန်ပါ ("
+                + ", ".join(delivery_validation.get("errors") or ["invalid_split"])
+                + ")။ အပိုင်းမစုံဘဲ မပို့ပါ။"
+            )
+        await tracker.update(
+            f"🧩 အတွင်း ၂ မိနစ်ပိုင်း {total_parts}/{total_parts} လုံး Final ထဲ ပါဝင်ပါတယ်\n"
+            f"📦 Telegram size ကြောင့် ပို့ရန်ဖိုင် {len(parts)} ဖိုင်ခွဲထားပါတယ် "
+            f"({fmt_time(delivery_validation['total_duration_seconds'])})\n"
+            f"📊 {fmt_progress_bar(99)}",
+            force=True,
+        )
         sent_parts = 0
         for i, part in enumerate(parts):
             caption = f"📹 Recap ပြီးပါပြီ။ ({fmt_time(final_dur)})" if job_settings.get("caption") else ""
             if len(parts) > 1:
-                caption += f" - အပိုင်း {i + 1}/{len(parts)}"
+                # Name these as Telegram delivery files, not source
+                # windows: 11 internal windows can legitimately be
+                # joined and re-split into e.g. 9 size-based files.
+                caption += f" - 📦 Telegram ပို့ရန်ဖိုင် {i + 1}/{len(parts)}"
             delivered = False
             for send_attempt in range(1, 4):
                 res = await tg_upload_media(
@@ -18118,7 +18453,7 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 )
                 if send_attempt < 3:
                     await tracker.update(
-                        f"♻️ Final အပိုင်း {i + 1}/{len(parts)} ပို့တာ ယာယီအမှားဖြစ်လို့ "
+                        f"♻️ Telegram ပို့ရန်ဖိုင် {i + 1}/{len(parts)} ပို့တာ ယာယီအမှားဖြစ်လို့ "
                         f"ပြန်ကြိုးစားနေပါသည်... ({send_attempt + 1}/3)",
                         force=True,
                     )
@@ -18130,6 +18465,13 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                     "ပို့၍မရပါ။ ခဏစောင့်ပြီး source ကို ပြန်ပို့ကြည့်ပါ။"
                 )
             sent_parts += 1
+            if len(parts) > 1:
+                await tracker.update(
+                    f"📤 Telegram ပို့ရန်ဖိုင် {sent_parts}/{len(parts)} ပို့ပြီးပါပြီ"
+                    + (" — နောက်ဆုံးဖိုင်" if sent_parts == len(parts) else " — ဆက်ပို့နေပါသည်")
+                    + f"\n🧩 အတွင်း ၂ မိနစ်ပိုင်း {total_parts}/{total_parts} လုံး Final ထဲပါဝင်ပြီး",
+                    force=True,
+                )
         if sent_parts != len(parts):
             raise RuntimeError(
                 f"Final ဗီဒီယို {sent_parts}/{len(parts)} ပိုင်းသာ ပို့နိုင်ပါသည်။"
@@ -18147,6 +18489,8 @@ async def _handle_source_job(chat_id: int, reply_msg_id: int, source_spec: dict)
                 f"✅ <b>Recap ပြီးပါပြီ!</b> ({fmt_time(final_dur)})\n"
                 f"🎯 Final duration {job_settings['coverage']}% "
                 f"(အမှန် {final_dur / total_dur * 100:.1f}%) · "
+                f"🧩 အတွင်းပိုင်း {total_parts}/{total_parts} · "
+                f"📦 Telegram ဖိုင် {sent_parts}/{len(parts)} ပို့ပြီး · "
                 f"🎙️ {job_settings['voice']}",
                 reply_markup=main_menu_keyboard(chat_id),
             )
@@ -18562,7 +18906,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.31-story-clarity-dialogue"
+BUILD_VERSION = "v5.32-delivery-integrity"
 BUILD_FEATURES = len(FEATURES)
 
 
@@ -18598,7 +18942,7 @@ async def root():
             "final_upload_attempts_per_part": 3,
             "partial_final_delivery": "rejected_as_failed",
         },
-        "source_split_acceptance": "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
+        "source_split_acceptance": "stream_copy_exact_plan_count_max_1p5x_window_then_720p_ultrafast_fallback",
         "render_keepalive": "self_ping_public_healthz_while_jobs_active",
         "gemini_generate_timeout_seconds": GEMINI_GENERATE_TIMEOUT_SECONDS,
         "gemini_tts_timeout_seconds": GEMINI_TTS_TIMEOUT_SECONDS,
@@ -18648,6 +18992,7 @@ async def root():
         "script_style": "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
         "script_qa": "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
         "story_clarity_contract": "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
+        "delivery_integrity": "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
         "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
@@ -18723,7 +19068,7 @@ async def health():
             "final_upload_attempts_per_part": 3,
             "partial_final_delivery": "rejected_as_failed",
         },
-        "source_split_acceptance": "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
+        "source_split_acceptance": "stream_copy_exact_plan_count_max_1p5x_window_then_720p_ultrafast_fallback",
         "render_keepalive": "self_ping_public_healthz_while_jobs_active",
         "gemini_generate_timeout_seconds": GEMINI_GENERATE_TIMEOUT_SECONDS,
         "gemini_tts_timeout_seconds": GEMINI_TTS_TIMEOUT_SECONDS,
@@ -18773,6 +19118,7 @@ async def health():
         "script_style": "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
         "script_qa": "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
         "story_clarity_contract": "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
+        "delivery_integrity": "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
         "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
@@ -19286,6 +19632,7 @@ def _update_notice_text(version: str) -> str:
     return (
         f"✅ <b>Bot ကို အသစ်ပြင်ပြီးပါပြီ! ({version})</b>\n\n"
         "ဒီတစ်ခါ narration ကို professional movie-recap channel ပုံစံ <b>တတိယလူ narrator</b> နဲ့ပဲ ဆက်သုံးပြီး <b>ဘယ်သူက ဘယ်သူလဲ၊ ပြဿနာက ဘာလဲ၊ နောက်တစ်ဆင့် ဘာကြောင့်ဖြစ်တာလဲ</b> ပိုရှင်းအောင် ပြင်ထားပါတယ် —\n"
+        "• <b>အပိုင်းအရေအတွက် မရောအောင်</b> အတွင်း ၂ မိနစ်ပိုင်း အရေအတွက်ကို ကြေညာထားတဲ့ plan နဲ့ အတိအကျတူအောင် လုပ်ထားပါတယ်။ Final ကို Telegram မပို့ခင် ခွဲထားတဲ့ ဖိုင်အားလုံးရဲ့ ကြာချိန်ပေါင်းက Final တစ်ခုလုံးနဲ့ ကိုက်မကိုက် အရင်စစ်ပြီး၊ ပို့နေစဉ်လည်း <b>Telegram ပို့ရန်ဖိုင် x/y</b> ကို တစ်ဆင့်ချင်း ပြပါမယ်\n"
         "• အမည်ကို <b>subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်</b>ကနေ အပိုင်းတစ်ခုလုံး စကင်လုပ်ပြီးယူမှာ ဖြစ်ပြီး ပထမဆုံးအကြိမ်မှာ <b>အမည် + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ</b>နဲ့ မိတ်ဆက်ပါမယ်။ သေချာတဲ့ အမည် မရရင် နာမည်အတု မလုပ်ဘဲ မှတ်မိလွယ် မရောနိုင်တဲ့ အညွှန်းတစ်ခုတည်းကို အဆုံးထိ သုံးပါမယ်\n"
         "• အဓိကတောင်းဆိုမှု/ခြိမ်းခြောက်မှုမှာ <b>ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ၊ မလိုက်နာရင် ဘာဆုံးရှုံးနိုင်တာ</b>ကို source ပြသလောက် ရှင်းပါမယ်\n"
         "• တုံ့ပြန်မှု/ဆုံးဖြတ်ချက်တွေမှာ <b>ဘာကြောင့် အဲဒီလိုထင်/လုပ်တာလဲ</b>ဆိုတာပါ ထည့်ပြီး ဖြစ်ရပ်အုပ်စုပြောင်းတိုင်း အကြောင်းဆက် bridge နဲ့ ဆက်ပါမယ်\n"

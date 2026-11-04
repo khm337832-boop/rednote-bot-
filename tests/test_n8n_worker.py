@@ -36,6 +36,7 @@ import numpy as np
 import bot
 
 
+REAL_TG_UPLOAD_MEDIA = bot.tg_upload_media
 MALE_PRONOUN = "\u1000\u103b\u103d\u1014\u103a\u1010\u1031\u102c\u103a"
 FEMALE_PRONOUN = "\u1000\u103b\u103d\u1014\u103a\u1019"
 HERO_NAME = "အေဒင်"
@@ -3726,23 +3727,27 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         small = self.tmp_path / "small.mp4"
         small.write_bytes(b"x" * 10)
         calls = []
+        durations = {str(source): 100.0}
 
         def fake_split(part, out_dir, segment_seconds):
             calls.append((str(part), out_dir, segment_seconds))
             out_path = Path(out_dir)
             out_path.mkdir(parents=True, exist_ok=True)
             sizes = [2500, 2500] if len(calls) == 1 else [625, 625, 625]
+            parent_duration = durations.get(str(part), 100.0)
             results = []
-            for index, size in enumerate(sizes, start=1):
-                child = out_path / f"part_{index:03d}.mp4"
+            for index, size in enumerate(sizes):
+                child = out_path / f"part_{index:04d}.mp4"
                 child.write_bytes(b"y" * size)
+                durations[str(child)] = parent_duration / len(sizes)
                 results.append(str(child))
             return results
 
+        def fake_probe(part):
+            return (durations.get(str(part), 100.0), 16, 16)
+
         self.start_patch(patch.object(bot, "MAX_TG_BYTES", 1000))
-        self.start_patch(
-            patch.object(bot, "probe_video_info", lambda part: (100.0, 16, 16))
-        )
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
         self.start_patch(patch.object(bot, "_split_video_once", new=fake_split))
 
         self.assertEqual(
@@ -3752,6 +3757,149 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(len(parts), 6)
         self.assertTrue(all(Path(part).stat().st_size <= 1000 for part in parts))
+
+    async def test_split_for_telegram_accurate_fallback_when_stream_copy_cannot_split(self):
+        source = self.tmp_path / "sparse-final.mp4"
+        source.write_bytes(b"x" * 10000)
+        durations = {str(source): 100.0}
+        extract_calls = []
+
+        def fake_probe(path):
+            return (durations.get(str(path), 100.0), 16, 16)
+
+        def fake_extract(_source, output_path, _start, duration, **_kwargs):
+            extract_calls.append((str(output_path), float(duration)))
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"y" * 400)
+            durations[str(path)] = float(duration)
+            return True
+
+        self.start_patch(patch.object(bot, "MAX_TG_BYTES", 1000))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.start_patch(patch.object(bot, "_split_video_once", return_value=[]))
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
+        )
+
+        parts = await bot.split_for_telegram(str(source), str(self.tmp_path))
+
+        self.assertEqual(len(parts), 12)
+        self.assertEqual(len(extract_calls), 12)
+        self.assertTrue(all(Path(part).stat().st_size <= 1000 for part in parts))
+        validation = bot._validate_telegram_delivery_parts(parts, 100.0)
+        self.assertTrue(validation["ok"], validation)
+        self.assertAlmostEqual(validation["total_duration_seconds"], 100.0)
+
+    def test_validate_telegram_delivery_parts_rejects_missing_duration_coverage(self):
+        first = self.tmp_path / "delivery-1.mp4"
+        second = self.tmp_path / "delivery-2.mp4"
+        first.write_bytes(b"x" * 100)
+        second.write_bytes(b"x" * 100)
+        durations = {str(first): 30.0, str(second): 40.0}
+        self.start_patch(
+            patch.object(
+                bot,
+                "probe_video_info",
+                new=lambda path: (durations[str(path)], 16, 16),
+            )
+        )
+
+        validation = bot._validate_telegram_delivery_parts(
+            [str(first), str(second)], 100.0
+        )
+
+        self.assertFalse(validation["ok"])
+        self.assertEqual(validation["total_duration_seconds"], 70.0)
+        self.assertTrue(
+            any(
+                error.startswith("split_duration_mismatch")
+                for error in validation["errors"]
+            )
+        )
+
+    def test_clear_segment_output_dir_removes_only_stale_segment_files(self):
+        out_dir = self.tmp_path / "segment-out"
+        out_dir.mkdir()
+        stale = out_dir / "part_0010.mp4"
+        keep = out_dir / "keep.txt"
+        stale.write_bytes(b"old")
+        keep.write_bytes(b"keep")
+
+        bot._clear_segment_output_dir(str(out_dir))
+
+        self.assertFalse(stale.exists())
+        self.assertTrue(keep.exists())
+
+    async def test_tg_upload_media_streams_file_and_honours_retry_after(self):
+        media = self.tmp_path / "upload-part.mp4"
+        media.write_bytes(b"video-bytes")
+        attempts = []
+        waits = []
+
+        class FakeResponse:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        responses = [
+            FakeResponse(
+                429,
+                {
+                    "ok": False,
+                    "error_code": 429,
+                    "description": "Too Many Requests",
+                    "parameters": {"retry_after": 7},
+                },
+            ),
+            FakeResponse(200, {"ok": True, "result": {"message_id": 42}}),
+        ]
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, _url, data=None, files=None):
+                file_name, handle, _mime = files["video"]
+                attempts.append(
+                    (
+                        file_name,
+                        isinstance(handle, (bytes, bytearray)),
+                        handle.read(5),
+                    )
+                )
+                return responses.pop(0)
+
+        async def fake_sleep(seconds):
+            waits.append(seconds)
+
+        self.start_patch(patch.object(bot.httpx, "AsyncClient", FakeClient))
+        self.start_patch(patch.object(bot.asyncio, "sleep", new=fake_sleep))
+
+        result = await REAL_TG_UPLOAD_MEDIA(
+            "sendVideo",
+            {"chat_id": "1"},
+            "video",
+            "part.mp4",
+            str(media),
+            "video/mp4",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            attempts,
+            [("part.mp4", False, b"video"), ("part.mp4", False, b"video")],
+        )
+        self.assertEqual(waits, [8.0])
 
     async def test_download_stage_reuses_valid_existing_source(self):
         state = self.create_job(job_id="job-download-1", chat_id=10005)
@@ -4652,6 +4800,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
             )
             self.assertEqual(
+                health.json()["delivery_integrity"],
+                "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
+            )
+            self.assertEqual(
                 health.json()["video_geometry"],
                 "display_sar_rotation_square_pixel_output",
             )
@@ -4697,7 +4849,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["source_split_acceptance"],
-                "stream_copy_keyframe_snapped_max_1p5x_window_then_720p_ultrafast_fallback",
+                "stream_copy_exact_plan_count_max_1p5x_window_then_720p_ultrafast_fallback",
             )
             self.assertEqual(
                 health.json()["render_keepalive"],
@@ -7299,12 +7451,16 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         def fake_probe(path):
             if Path(path).name == "final_recap.mp4":
                 return (54.0, 64, 64)
+            if Path(path).name.startswith("final_part"):
+                return (27.0, 64, 64)
             return (60.0, 64, 64)
 
-        async def fake_split(path, work_dir):
-            extra = Path(work_dir) / "final_part2.mp4"
-            extra.write_bytes(b"p2" * 100)
-            return [path, str(extra)]
+        async def fake_split(_path, work_dir):
+            first = Path(work_dir) / "final_part1.mp4"
+            second = Path(work_dir) / "final_part2.mp4"
+            first.write_bytes(b"p1" * 100)
+            second.write_bytes(b"p2" * 100)
+            return [str(first), str(second)]
 
         self.start_patch(
             patch.object(bot, "download_telegram_file", new=fake_telegram_download)
@@ -7391,6 +7547,60 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         extract.assert_not_called()
         manifest = json.loads((work_dir / "source_segments.json").read_text())
         self.assertEqual(manifest["split_mode"], "stream_copy")
+
+    async def test_prepare_source_segments_falls_back_when_window_count_differs(self):
+        # Regression for the user-visible "11 split, only 9 sent"
+        # report: a stream-copy result can cover the full source with
+        # fewer, longer windows, but accepting it silently changes the
+        # announced/process window count.  Count mismatch must use the
+        # accurate planned extraction even when every candidate is
+        # within the old 1.5x duration allowance.
+        work_dir = self.tmp_path / "segment-count-mismatch"
+        work_dir.mkdir()
+        extract_calls = []
+
+        def fake_split(_path, out_dir, _segment_seconds):
+            out = Path(out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            results = []
+            for index in range(2):
+                part = out / f"part_{index:04d}.mp4"
+                part.write_bytes(b"x" * 100)
+                results.append(str(part))
+            return results
+
+        def fake_extract(_source, output_path, start, duration, **kwargs):
+            extract_calls.append((start, duration, kwargs))
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * 100)
+            return True
+
+        def fake_probe(path):
+            name = Path(path).name
+            if name.startswith("source_part"):
+                return (1.0 if name.endswith("0003.mp4") else 2.0, 64, 64)
+            return (2.6 if name == "part_0000.mp4" else 2.4, 64, 64)
+
+        self.start_patch(patch.object(bot, "_split_video_once", new=fake_split))
+        self.start_patch(patch.object(bot, "probe_video_info", new=fake_probe))
+        self.start_patch(
+            patch.object(bot, "_extract_source_segment_file", new=fake_extract)
+        )
+
+        segments = await bot._prepare_source_segments(
+            str(self.tmp_path / "source.mp4"),
+            str(work_dir),
+            5,
+            segment_seconds=2,
+            progress_interval=0.01,
+        )
+
+        self.assertEqual([item["index"] for item in segments], [1, 2, 3])
+        self.assertEqual(len(extract_calls), 3)
+        manifest = json.loads((work_dir / "source_segments.json").read_text())
+        self.assertEqual(manifest["split_mode"], "accurate_reencode")
+        self.assertEqual(len(manifest["segments"]), 3)
 
     async def test_prepare_source_segments_falls_back_when_part_exceeds_1p5x(self):
         work_dir = self.tmp_path / "segment-oversized"
