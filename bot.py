@@ -5288,6 +5288,7 @@ def _normalize_character_cards(value, character_names=None) -> list:
                 "role": "",
                 "relation": "",
                 "introduction": "",
+                "identity_anchor": "",
                 "goal": "",
                 "motivation": "",
                 "aliases": [],
@@ -5352,6 +5353,22 @@ def _normalize_character_cards(value, character_names=None) -> list:
                     "intro_phrase",
                 ),
                 240,
+            ),
+            # A short reminder used when the person returns after an
+            # absence ("Mary's elder brother Aiden"), so re-entry does
+            # not depend on the listener remembering a bare name from
+            # several scenes/windows earlier.
+            "identity_anchor": first_text(
+                item,
+                (
+                    "identity_anchor",
+                    "reintroduction",
+                    "reintroduction_phrase",
+                    "recognition_phrase",
+                    "reminder_phrase",
+                    "anchor_phrase",
+                ),
+                180,
             ),
             "goal": first_text(
                 item,
@@ -5509,7 +5526,13 @@ def _normalize_character_cards(value, character_names=None) -> list:
                 existing["source_name"] = candidate["source_name"]
         elif not existing.get("source_name") and candidate.get("source_name"):
             existing["source_name"] = candidate["source_name"]
-        for key in ("role", "relation", "visual_cue", "introduction"):
+        for key in (
+            "role",
+            "relation",
+            "visual_cue",
+            "introduction",
+            "identity_anchor",
+        ):
             if candidate.get(key) and not existing.get(key):
                 existing[key] = candidate[key]
         # A goal/motivation is current story state, not a permanent
@@ -5633,6 +5656,19 @@ def _normalize_story_beats(value, *, chunk_duration: float = 0.0) -> list:
         ("dialogue", ("dialogue", "dialogue_meaning", "exchange", "said")),
         ("reaction", ("reaction", "response", "decision", "judgement", "judgment")),
         ("result", ("result", "outcome", "consequence", "next_problem", "next_step")),
+        (
+            "visible_text",
+            (
+                "visible_text",
+                "visible_text_meaning",
+                "on_screen_text_meaning",
+                "screen_text_meaning",
+            ),
+        ),
+        (
+            "why_it_matters",
+            ("why_it_matters", "importance", "stakes", "why_important"),
+        ),
     )
     for item in raw_values:
         parts = {}
@@ -5656,7 +5692,14 @@ def _normalize_story_beats(value, *, chunk_duration: float = 0.0) -> list:
                 text = _clean_story_text(
                     " — ".join(
                         parts[key]
-                        for key in ("trigger", "dialogue", "reaction", "result")
+                        for key in (
+                            "trigger",
+                            "dialogue",
+                            "reaction",
+                            "result",
+                            "visible_text",
+                            "why_it_matters",
+                        )
                         if parts.get(key)
                     ),
                     320,
@@ -5707,6 +5750,316 @@ def _normalize_story_beats(value, *, chunk_duration: float = 0.0) -> list:
     return beats[:32]
 
 
+def _story_term_key(value) -> str:
+    return " ".join(_normalize_burmese_text(value or "").lower().split()).strip()
+
+
+def _normalize_story_terms(value) -> list:
+    """Canonical glossary for story-specific words and world rules.
+
+    Real system/cultivation/game recaps failed not only on people's
+    names: words such as a system, a rank/quality, or "mortal" were
+    merely transliterated and repeated with no explanation.  A term
+    therefore locks three things together -- the one Burmese form the
+    narrator may say, what it means *in this story*, and the exact
+    plain-Burmese explanation to use at its first occurrence.
+    Definitions are first-established facts; a later window may add
+    aliases but must not silently redefine the term.
+    """
+    if isinstance(value, list):
+        raw_values = value
+    elif isinstance(value, (dict, str)):
+        raw_values = [value]
+    else:
+        raw_values = []
+    terms: list[dict] = []
+    by_key: dict[str, dict] = {}
+
+    def first_value(item, keys):
+        for key in keys:
+            candidate = item.get(key)
+            if candidate not in (None, "", []):
+                return candidate
+        return ""
+
+    def first_text(item, keys, limit):
+        return _clean_story_text(first_value(item, keys), limit)
+
+    for item in raw_values:
+        if isinstance(item, dict):
+            source_term = first_text(
+                item,
+                (
+                    "source_term",
+                    "original_term",
+                    "term_in_source",
+                    "source_text",
+                    "original",
+                ),
+                120,
+            )
+            spoken_term = first_text(
+                item,
+                (
+                    "spoken_term",
+                    "burmese_term",
+                    "canonical_term",
+                    "term",
+                    "name",
+                ),
+                120,
+            )
+            meaning = first_text(
+                item,
+                (
+                    "meaning_in_story",
+                    "meaning",
+                    "definition",
+                    "burmese_meaning",
+                    "explanation",
+                ),
+                300,
+            )
+            first_explanation = first_text(
+                item,
+                (
+                    "first_explanation",
+                    "first_mention_explanation",
+                    "explanation_phrase",
+                    "intro_explanation",
+                ),
+                320,
+            )
+            category = first_text(
+                item,
+                ("category", "kind", "term_type", "type"),
+                60,
+            ).lower()
+            evidence_source = _normalize_cast_name_source(
+                first_value(
+                    item,
+                    ("evidence_source", "source", "term_source", "evidence"),
+                )
+            )
+            aliases = []
+            for key in ("aliases", "variants", "variant_spellings", "also_called"):
+                aliases.extend(
+                    _clean_story_string_list(
+                        item.get(key) or [], limit=8, item_limit=80
+                    )
+                )
+        else:
+            source_term = ""
+            spoken_term = _clean_story_text(item, 120)
+            meaning = ""
+            first_explanation = ""
+            category = ""
+            evidence_source = "unknown"
+            aliases = []
+        if not spoken_term and source_term:
+            spoken_term = source_term
+        if not spoken_term:
+            continue
+        if source_term and _story_term_key(source_term) != _story_term_key(spoken_term):
+            aliases.append(source_term)
+        aliases = [
+            alias
+            for alias in _clean_story_string_list(
+                aliases, limit=8, item_limit=80
+            )
+            if _story_term_key(alias) != _story_term_key(spoken_term)
+        ]
+        candidate = {
+            "spoken_term": spoken_term,
+            "source_term": source_term,
+            "meaning": meaning,
+            "first_explanation": first_explanation,
+            "category": category,
+            "evidence_source": evidence_source,
+            "aliases": aliases,
+        }
+        keys = {
+            _story_term_key(value)
+            for value in [spoken_term, source_term, *aliases]
+            if _story_term_key(value)
+        }
+        existing = next(
+            (by_key[key] for key in keys if key in by_key),
+            None,
+        )
+        if existing is None:
+            terms.append(candidate)
+            existing = candidate
+        else:
+            for key in (
+                "source_term",
+                "meaning",
+                "first_explanation",
+                "category",
+            ):
+                if candidate.get(key) and not existing.get(key):
+                    existing[key] = candidate[key]
+            if existing.get("evidence_source") in ("", "unknown") and candidate.get(
+                "evidence_source"
+            ):
+                existing["evidence_source"] = candidate["evidence_source"]
+            existing_alias_keys = {
+                _story_term_key(alias)
+                for alias in (existing.get("aliases") or [])
+            }
+            for alias in aliases:
+                alias_key = _story_term_key(alias)
+                if alias_key and alias_key not in existing_alias_keys:
+                    existing.setdefault("aliases", []).append(alias)
+                    existing_alias_keys.add(alias_key)
+            existing["aliases"] = (existing.get("aliases") or [])[:8]
+        for key in keys:
+            by_key[key] = existing
+    return terms[:16]
+
+
+def _normalize_visible_text_kind(value) -> str:
+    raw = _clean_story_text(value, 60)
+    lowered = raw.lower().replace("-", "_").replace(" ", "_")
+    if any(token in lowered for token in ("system", "status", "panel", "window")):
+        return "system_panel"
+    if any(token in lowered for token in ("name_card", "namecard", "character_name")):
+        return "name_card"
+    if any(token in lowered for token in ("subtitle", "caption")):
+        return "subtitle"
+    if any(token in lowered for token in ("document", "letter", "paper", "note")):
+        return "document"
+    if any(token in lowered for token in ("sign", "board", "plaque")):
+        return "sign"
+    if any(token in lowered for token in ("chat", "message", "phone")):
+        return "message"
+    if "title" in lowered:
+        return "title_card"
+    return lowered or "visible_text"
+
+
+def _normalize_visible_texts(value, *, chunk_duration: float = 0.0) -> list:
+    """Important readable on-screen text and its Burmese meaning.
+
+    This is deliberately not a transcript of every subtitle line.  It
+    is the ledger for name cards, system/status panels, signs,
+    documents, title cards and messages whose meaning an audio-only
+    listener cannot recover from dialogue alone.  Keeping the source
+    text beside the Burmese meaning lets prompts/QA reconcile the
+    narration with what was actually written on screen.
+    """
+    if isinstance(value, list):
+        raw_values = value
+    elif isinstance(value, (dict, str)):
+        raw_values = [value]
+    else:
+        raw_values = []
+    duration = max(0.0, float(chunk_duration or 0))
+    texts = []
+    seen = set()
+    for item in raw_values:
+        if isinstance(item, dict):
+            source_text = _clean_story_text(
+                item.get("source_text")
+                or item.get("original_text")
+                or item.get("chinese_text")
+                or item.get("text")
+                or item.get("original")
+                or "",
+                260,
+            )
+            meaning = _clean_story_text(
+                item.get("burmese_meaning")
+                or item.get("meaning")
+                or item.get("translation")
+                or item.get("spoken_meaning")
+                or item.get("meaning_in_burmese")
+                or "",
+                320,
+            )
+            kind = _normalize_visible_text_kind(
+                item.get("kind") or item.get("type") or item.get("text_type")
+            )
+            related_character = _clean_story_text(
+                item.get("related_character")
+                or item.get("character")
+                or item.get("related_to")
+                or "",
+                100,
+            )
+            narrate_raw = None
+            for key in ("narrate", "must_narrate", "should_narrate", "important"):
+                if key in item:
+                    narrate_raw = item.get(key)
+                    break
+            if isinstance(narrate_raw, bool):
+                narrate = narrate_raw
+            elif narrate_raw is None:
+                narrate = True
+            else:
+                narrate = str(narrate_raw).strip().lower() not in {
+                    "0",
+                    "false",
+                    "no",
+                    "none",
+                }
+            start = _direct_float_or_none(
+                item.get("start", item.get("start_time", item.get("start_seconds")))
+            )
+            end = _direct_float_or_none(
+                item.get("end", item.get("end_time", item.get("end_seconds")))
+            )
+        else:
+            source_text = _clean_story_text(item, 260)
+            meaning = ""
+            kind = "visible_text"
+            related_character = ""
+            narrate = True
+            start = None
+            end = None
+        if not source_text and not meaning:
+            continue
+        entry = {
+            "source_text": source_text,
+            "burmese_meaning": meaning,
+            "kind": kind,
+            "narrate": bool(narrate),
+        }
+        if related_character:
+            entry["related_character"] = related_character
+        if start is not None:
+            start = max(0.0, float(start))
+            if duration > 0:
+                start = min(duration, start)
+            entry["start"] = round(start, 3)
+        if end is not None:
+            end = max(0.0, float(end))
+            if duration > 0:
+                end = min(duration, end)
+            if entry.get("start") is None or end > float(entry["start"]):
+                entry["end"] = round(end, 3)
+        key = (
+            entry.get("start"),
+            _story_term_key(source_text),
+            _normalize_burmese_text(meaning),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        texts.append(entry)
+    texts.sort(
+        key=lambda item: (
+            float(item.get("start"))
+            if isinstance(item.get("start"), (int, float))
+            else float("inf"),
+            float(item.get("end"))
+            if isinstance(item.get("end"), (int, float))
+            else float("inf"),
+        )
+    )
+    return texts[:16]
+
+
 def _normalize_story_map(value, *, chunk_duration: float = 0.0) -> dict:
     """Normalize the model's non-spoken story plan for one window."""
     if not isinstance(value, dict):
@@ -5721,11 +6074,31 @@ def _normalize_story_map(value, *, chunk_duration: float = 0.0) -> dict:
         or [],
         chunk_duration=chunk_duration,
     )
+    terms = _normalize_story_terms(
+        value.get("terms")
+        or value.get("glossary")
+        or value.get("world_terms")
+        or value.get("key_terms")
+        or []
+    )
+    visible_texts = _normalize_visible_texts(
+        value.get("visible_texts")
+        or value.get("on_screen_texts")
+        or value.get("screen_texts")
+        or value.get("visible_text")
+        or value.get("on_screen_text")
+        or [],
+        chunk_duration=chunk_duration,
+    )
     story_map = {}
     if cards:
         story_map["character_cards"] = cards
     if beats:
         story_map["beats"] = beats
+    if terms:
+        story_map["terms"] = terms
+    if visible_texts:
+        story_map["visible_texts"] = visible_texts
     for output_key, aliases in (
         ("current_goal", ("current_goal", "goal", "objective")),
         ("current_conflict", ("current_conflict", "conflict", "problem")),
@@ -5804,6 +6177,25 @@ def _merge_story_maps(*maps, chunk_duration: float = 0.0) -> dict:
         merged["character_cards"] = merged_cards
     if merged_beats:
         merged["beats"] = merged_beats
+    merged_terms = _normalize_story_terms(
+        [
+            term
+            for story_map in normalized
+            for term in (story_map.get("terms") or [])
+        ]
+    )
+    if merged_terms:
+        merged["terms"] = merged_terms
+    merged_visible_texts = _normalize_visible_texts(
+        [
+            item
+            for story_map in normalized
+            for item in (story_map.get("visible_texts") or [])
+        ],
+        chunk_duration=chunk_duration,
+    )
+    if merged_visible_texts:
+        merged["visible_texts"] = merged_visible_texts
     for key in (
         "current_goal",
         "current_conflict",
@@ -5848,11 +6240,16 @@ def _story_context_from_story_map(
     if not normalized_map and not last_scene and not clean_protagonist:
         return {}
     cards = normalized_map.get("character_cards") or []
-    beats = [
-        str(item.get("beat") or "")
-        for item in (normalized_map.get("beats") or [])
-        if isinstance(item, dict)
-    ]
+    beats = []
+    for item in normalized_map.get("beats") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("beat") or "")
+        for key in ("visible_text", "why_it_matters"):
+            detail = str(item.get(key) or "").strip()
+            if detail and _normalize_burmese_text(detail) not in _normalize_burmese_text(text):
+                text = f"{text}; {detail}" if text else detail
+        beats.append(text)
     return {
         "characters": [
             _character_card_spoken_name(card)
@@ -5860,6 +6257,7 @@ def _story_context_from_story_map(
             if _character_card_spoken_name(card)
         ],
         "character_cards": cards,
+        "terms": normalized_map.get("terms") or [],
         "summary": "",
         "story_beats": _clean_story_string_list(beats, limit=24, item_limit=320),
         "current_goal": normalized_map.get("current_goal") or "",
@@ -5930,6 +6328,16 @@ def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) 
     protagonist = _clean_protagonist_name(
         raw.get("protagonist") or raw.get("main_character") or ""
     )
+    term_values = []
+    for key in ("terms", "glossary", "world_terms", "key_terms"):
+        value = raw.get(key)
+        if isinstance(value, list):
+            term_values.extend(value)
+        elif value not in (None, ""):
+            term_values.append(value)
+    terms = _normalize_story_terms(
+        term_values + list(map_context.get("terms") or [])
+    )
     # Legacy ``pronoun`` fields are ignored: narration perspective is
     # no longer state that can drift between windows.
 
@@ -5943,6 +6351,7 @@ def _normalize_story_context(value, *, scenes=None, derive_beats: bool = False) 
     return {
         "characters": character_names,
         "character_cards": cards,
+        "terms": terms,
         "summary": _clean_story_text(raw.get("summary"), 4000),
         "story_beats": beats,
         "current_goal": first_text(
@@ -6095,6 +6504,9 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
     merged = {
         "characters": character_names,
         "character_cards": cards,
+        "terms": _normalize_story_terms(
+            [term for item in normalized for term in (item.get("terms") or [])]
+        ),
         "summary": summary,
         "story_beats": _clean_story_string_list(
             [beat for item in normalized for beat in (item.get("story_beats") or [])],
@@ -6156,6 +6568,8 @@ def _story_context_prompt_lines(story_context: dict) -> str:
             bits.append(str(card["relation"]))
         if card.get("introduction"):
             bits.append("ပထမမိတ်ဆက်ရန်: " + str(card["introduction"]))
+        if card.get("identity_anchor"):
+            bits.append("ပြန်ပေါ်လာရင်အမှတ်ရစေရန်: " + str(card["identity_anchor"]))
         if card.get("goal"):
             bits.append("ရည်မှန်းချက်: " + str(card["goal"]))
         if card.get("motivation"):
@@ -6175,6 +6589,27 @@ def _story_context_prompt_lines(story_context: dict) -> str:
         )
     elif context["characters"]:
         lines.append("- ဇာတ်ကောင်များ: " + ", ".join(context["characters"][:10]))
+    term_lines = []
+    for term in (context.get("terms") or [])[:16]:
+        spoken_term = str(term.get("spoken_term") or "").strip()
+        if not spoken_term:
+            continue
+        bits = [spoken_term]
+        if term.get("source_term"):
+            bits.append("မူရင်းအခေါ်: " + str(term["source_term"]))
+        if term.get("meaning"):
+            bits.append("အဓိပ္ပာယ်: " + str(term["meaning"]))
+        if term.get("first_explanation"):
+            bits.append("ပထမအကြိမ်ရှင်းပြရန်: " + str(term["first_explanation"]))
+        if term.get("aliases"):
+            bits.append("မသုံးရန် variant: " + ", ".join(term["aliases"][:3]))
+        term_lines.append(" — ".join(bit for bit in bits if bit))
+    if term_lines:
+        lines.append(
+            "- Glossary Lock (အသုံးအနှုန်း/စည်းမျဉ်းတစ်ခုချင်းအတွက် ပြောရမည့်ပုံစံ "
+            "တစ်မျိုးတည်းသုံးပြီး ပထမဆုံးအကြိမ်မှာ ရှင်းပြရန်): "
+            + "; ".join(term_lines)
+        )
     if context["story_beats"]:
         beats = context["story_beats"][-10:]
         lines.append(
@@ -6467,9 +6902,10 @@ async def extract_story_summary(
 မှတ်ချက် — Narrator သည် ဇာတ်ကောင်မဟုတ်ဘဲ အပြင်က တတိယလူ recap ပြောပြသူဖြစ်သည်။
 Cast Lock ကို မပြောင်းပါနှင့် — ဇာတ်ကောင်တစ်ဦးစီအတွက် script/story_map မှာ သုံးထားပြီးသား spoken_name တစ်မျိုးကိုသာ ဆက်သုံးပါ။ မူရင်းအမည် သို့မဟုတ် variant ကို aliases မှာသာ ထားပါ။
 မသေချာသော ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်နှင့် အမည်ကို မတီထွင်ပါနှင့်။ Narration မှာ ပြောရမည့်အမည်များကို မြန်မာအသံထွက်ဖြင့်သာ ရေးပါ။
-ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ ပထမဆုံးမိတ်ဆက်ခဲ့တဲ့ မြန်မာစာကြောင်း (introduction)၊ လက်ရှိလိုချင်တာ (goal) နဲ့ ဘာကြောင့်လဲ (motivation)၊ အမည်ကို subtitle/name-card/dialogue/visual label ဘယ်ကရလဲနှင့် မြင်မှတ်ချက်ကို ရှင်းပါ။
+ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ ပထမဆုံးမိတ်ဆက်ခဲ့တဲ့ မြန်မာစာကြောင်း (introduction)၊ ပြန်ပေါ်လာရင် အမှတ်ရစေမယ့် စာကြောင်းတို (identity_anchor)၊ လက်ရှိလိုချင်တာ (goal) နဲ့ ဘာကြောင့်လဲ (motivation)၊ အမည်ကို subtitle/name-card/dialogue/visual label ဘယ်ကရလဲနှင့် မြင်မှတ်ချက်ကို ရှင်းပါ။
 အဓိကပြဿနာကို ရေးရာမှာ ဘယ်သူက ဘာကြောင့် ဘာကို အတိအကျ တောင်း/ဖိအားပေးနေလဲနဲ့ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ (conflict_stakes) ကိုပါ script/map ထဲ တကယ်ပါသလောက်သာ မှတ်ပါ။ မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း (central_question) ကိုလည်း တစ်ကြောင်းသိမ်းပါ။
 Story beats များကို အစဉ်အတိုင်း၊ ဖြစ်ရပ်အကြောင်းရင်း → စကားပြော/လုပ်ဆောင်ချက် → တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် → အကျိုးဆက် ပုံစံရအောင် တိုတိုရေးပါ။
+ဇာတ်လမ်းထဲက system/rank/quality/skill/level/title/အဖွဲ့/နေရာ/ပစ္စည်းအခေါ်တွေကို `terms` မှာ spoken_term တစ်မျိုးတည်း၊ source_term, ဒီဇာတ်လမ်းထဲ အမှန်အဓိပ္ပာယ်/လုပ်ဆောင်ချက်, first_explanation နဲ့ ထိန်းပါ။ အဓိပ္ပာယ်ကို genre အလေ့အထကနေ မှန်းမဖွင့်ရဘူး။ အရေးကြီးတဲ့ name card/system Panel/document လို ဖန်သားပြင်စာရဲ့ မြန်မာအဓိပ္ပာယ်ကိုလည်း important_facts ထဲ မမေ့အောင် ထိန်းပါ။
 ယခု script မှ အတည်ပြုထားပြီး story_map (ရှိလျှင်) — အမှားမပါအောင် အခြေခံပြီး ခိုင်မာသောအချက်များကိုသာ ဆက်ထိန်းပါ:
 {map_json}
 
@@ -6477,7 +6913,7 @@ Script:
 {all_text}
 
 Return JSON:
-{{"characters": ["spoken_name များ"], "character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["မူရင်း/variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "protagonist": "အဓိကဇာတ်ကောင်၏ spoken_name", "narrator_perspective": "third_person", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
+{{"characters": ["spoken_name များ"], "character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["မူရင်း/variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "protagonist": "အဓိကဇာတ်ကောင်၏ spoken_name", "narrator_perspective": "third_person", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
     """.strip()
     try:
         data = await _generate_direct_gemini_json(
@@ -7423,6 +7859,12 @@ _SPOKEN_STYLE_GUIDE = """
 - **ဖြစ်ရပ်အုပ်စုပြောင်းတိုင်း အကြောင်းဆက် bridge (why next?)** — နေရာ/အချိန်/လုပ်ရပ်အုပ်စု ပြောင်းတိုင်း နောက် scene ရဲ့ ပထမ clause မှာ «အရင်ရလဒ် → အဲဒါကြောင့် လိုလာတာ/ဆုံးဖြတ်တာ → နောက်လုပ်ရပ်» ကို ချိတ်ပါ။ (ပုံသေ ဥပမာ: «…တွေ ပြန်ထွက်သွားပြီးနောက် တောင်းဆိုထားတာကို ပြည့်အောင်လုပ်ဖို့ လိုလာလို့ အေဒင်နဲ့ … က သစ်တောထဲသွားပြီး … လုပ်ဖို့ ဆုံးဖြတ်တယ်»)။ «အဲဒီနောက် သစ်တောထဲ ရောက်သွားတယ်» လို အကြောင်းမဲ့ ခုန်သွားတာ မလုပ်ရ။
 - **အရေးကြီးစကားပြောကို အပြန်အလှန် ပြပါ (dialogue exchange, report မချည်းမဟုတ်)** — တောင်းဆိုမှု၊ မေးမြန်း၊ သတိပေးမှု၊ ငြင်းဆို/ညှိနှိုင်းမှု၊ ဆုံးဖြတ်ချက်လို အရေးကြီးစကားပြောတွေကို «သူတို့ဆွေးနွေးတယ်» လို တစ်ကြောင်းတည်းနဲ့ မချုံ့ရ။ **ပြောသူ မေး/တောင်း/သတိပေး → နားထောင်သူ ပြန်ဖြေ/ငြင်း/မေး → ပြောသူ ပြန်ရှင်း/ဖိအား → ဆုံးဖြတ်ချက်/တုံ့ပြန်မှု** ဆိုတဲ့ အပြန်အလှန်စီးဆင်းပုံနဲ့ ရေးပါ။ အများစုကို speaker/listener အမည်တပ် reported speech နဲ့ရေးပြီး အရေးကြီးစကားပြောတစ်ခုချင်းမှာ source စကားအဓိပ္ပာယ် ရှင်းလျှင် အလှည့်အပြောင်းဖြစ်စေတဲ့ တိုတောင်းတဲ့ စကားတစ်ခွန်းကိုတော့ speaker အမည်တပ်ပြီး quotation marks နဲ့ တိုက်ရိုက်ထည့်ပါ (စကားမရှင်းလျှင် quote အတု မဖန်တီးဘဲ reported speech ပဲ သုံးပါ)။ Source ထဲ မပြောထားတဲ့ စကားကို တီထွင်မရေးရ၊ အဓိပ္ပာယ်ကိုလည်း မပြောင်းရ။ Narrator ကတော့ အပြင်က တတိယလူတစ်ယောက်တည်းပဲ ဆက်ပြောနေတာဖြစ်ရမယ်။
 - **အဆုံးသတ်ကို ဆက်ကြည့်ချင်အောင် ပိတ်ပါ (ending hook — နောက်ဆုံး window မှာသာ)** — Source video ရဲ့ နောက်ဆုံး window ဆိုလျှင် နောက်ဆုံး scene ရဲ့ နောက်ဆုံး တစ်ကြောင်း-နှစ်ကြောင်းမှာ source ထဲ **တကယ်မဖြေရှင်းရသေးတဲ့** ဆုံးဖြတ်ချက်/အန္တရာယ်/နောက်ဆုံးရက်ကို ပြန်ချိတ်ပြီး «ဒီတော့ … က လိုက်နာမှာလား၊ ငြင်းဆန်မှာလား» လို အမှန်တကယ် ကျန်နေတဲ့မေးခွန်းနဲ့ ပိတ်နိုင်တယ်။ မဖြစ်သေးတဲ့ နောက်ဖြစ်ရပ်ကို ခန့်မှန်း/ကတိပေးသလို မရေးရ၊ «နောက်အပိုင်းမှာ ဆက်ကြည့်ပါ» လို meta စကားလည်း မသုံးရ။ နောက်ဆုံး window မဟုတ်ရင်တော့ အတုအယောင် cliffhanger မလုပ်ဘဲ လက်ရှိရလဒ်/အသစ်ပေါ်လာတဲ့ ပြဿနာမှာပဲ ရပ်ပါ။
+
+## အမည်၊ အခေါ်အဝေါ်နဲ့ ဖန်သားပြင်စာ (Glossary Lock)
+- **သဘာဝကျတဲ့ အမည်အသုံးအနှုန်း** — `spoken_name` ကို လူတစ်ယောက်တကယ်ပြောလေ့ရှိတဲ့ တိုပြီး အသံထွက်ရှင်းတဲ့ အမည်တစ်မျိုးတည်းထားပါ။ ပထမဆုံးအကြိမ်မှာသာ `introduction` နဲ့ အမည်အပြည့် + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံကို အသေးစိတ်မိတ်ဆက်ပြီး နောက်ပိုင်း တိုတဲ့အမည်ကိုသာ သုံးပါ။ အကာလကြာမှ ပြန်ပေါ်လာသူ၊ လုပ်ဆောင်သူ အကြိမ်များစွာပြောင်းသူကို `identity_anchor` (အမည် + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံတိုတို) နဲ့ ပြန်အမှတ်ရစေပါ။ ရှည်လျားတဲ့ ဖော်ပြစာကြောင်းကြီးကို နေ့တိုင်းခေါ်တဲ့ အမည်လိုထပ်ထပ်မပြောရ၊ transliteration/spelling ကိုလည်း အလှည့်ပြောင်းမသုံးရ။
+- **အသုံးအနှုန်းတိုင်းကို ပထမဆုံးအကြိမ် ရှင်းပါ** — narration မရေးခင် story_map `terms` ထဲမှာ system, အဆင့်/အရည်အသွေး, Mortal, skill, level, ရာထူး/ဘွဲ့, အဖွဲ့အစည်း, နေရာနဲ့ အထူးပစ္စည်းတွေကို မှတ်ပါ။ Term တစ်ခုစီမှာ မူရင်းစကားလုံး (`source_term`)၊ narration မှာ အမြဲသုံးရမယ့် မြန်မာပုံစံတစ်ခုတည်း (`spoken_term`)၊ ဒီဇာတ်လမ်းထဲမှာ အမှန်အဓိပ္ပာယ်/လုပ်ဆောင်ချက် (`meaning`)၊ ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာစာကြောင်း (`first_explanation`) နဲ့ variant (`aliases`) ပါရမည်။ သဘောတရားစကားလုံးဆိုရင် အသံလှယ်ရုံမကဘဲ အဓိပ္ပာယ်ပေါ်တဲ့ မြန်မာဘာသာပြန်ကို ဦးစားပေးပြီး ဘာအတွက်အသုံးဝင်လဲ/ဇာတ်ကောင်အတွက် ဘာအရေးကြီးလဲ တစ်ခါတည်း ရှင်းပါ။ Source က အဓိပ္ပာယ်ကို မဖော်သေးရင် မြင်ရတဲ့ လုပ်ဆောင်ချက်/အကျိုးသက်ရောက်မှုသာ ပြောပြီး genre အလေ့အထကနေ မှန်းမဖွင့်ရ။
+- **ဖန်သားပြင်ပေါ်က စာကို အသံနဲ့ကြားရအောင် ပြောပါ** — အမည်ကတ်, system/status Panel, ဆိုင်းဘုတ်, စာရွက်စာတမ်း, title card, မြေပုံနဲ့ message လို အရေးကြီးစာတွေတွေ့တိုင်း story_map `visible_texts` ထဲမှာ မူရင်းစာသား, အမျိုးအစား (`kind`)နဲ့ မြန်မာအဓိပ္ပာယ် (`burmese_meaning`)ကို မှတ်ပြီး ဆိုင်ရာ footage ပေါ်မှာတင် အဓိပ္ပာယ်ကို ပြောပါ။ မူရင်းစကားပြော, subtitle နဲ့ visible text သုံးခုလုံးကို တိုက်ဆိုင်စစ်ပါ။ စာက ဖတ်မရ/အဓိပ္ပာယ်ညှိမရရင် အတိအကျစာလုံးကို မှန်းမပြောဘဲ ပိုခိုင်တဲ့အထောက်အထားကိုသာ သုံးပါ။
+- **မြန်တဲ့ scene မှာလည်း အကြောင်းအကျိုးမပျက်ရ** — scene တိုရင်တောင် အကြောင်းရင်းစတင်မှု → လုပ်ဆောင်ချက်/စကားပြော → တုံ့ပြန်မှု → ရလဒ်/နောက်ဘာလိုလာလဲ ကို ထိန်းပါ။ ပြဿနာတစ်ခုပေါ်လာတိုင်း ဘယ်သူ့အတွက် ဘာကြောင့် အရေးကြီးလဲ၊ ငြင်း/နောက်ကျ/မအောင်မြင်/ပေါ်သွားရင် ဘာပြောင်းမလဲကို source က အတည်ပြုနိုင်သလောက်သာ `why_it_matters` ထဲမှတ်ပြီး narration ထဲပါ ရှင်းပါ။
 """.strip()
 
 
@@ -7458,7 +7900,7 @@ def _direct_narrator_repair_prompt(
     return f"""
 THIRD-PERSON NARRATOR REPAIR ONLY — အောက်ပါ scenes များတွင် narrator က ဇာတ်ကောင်တစ်ဦးလို «ကျွန်တော်/ကျွန်မ» ဖြင့် ဝင်ပြောထားသည်။
 အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ အပြင်က professional movie-recap narrator က တတိယလူအဖြစ် ပြန်ပြောနေသလို ပြန်ရေးပါ။
-မူရင်းစာသားမှာ ပါပြီးသား လူမိတ်ဆက်စာကြောင်း၊ တောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန်၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ အဆုံးသတ် မဖြေရှင်းရသေးတဲ့ ပြဿနာကိုလည်း မပျောက်အောင် ထိန်းပါ။
+မူရင်းစာသားမှာ ပါပြီးသား လူမိတ်ဆက်/ပြန်အမှတ်ရစေတဲ့ စာကြောင်း၊ term ရဲ့ ပထမဆုံးရှင်းပြချက်၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန်၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ အဆုံးသတ် မဖြေရှင်းရသေးတဲ့ ပြဿနာကိုလည်း မပျောက်အောင် ထိန်းပါ။
 ဇာတ်လမ်းအဆက်အစပ်ကိုပါ ထိန်းပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းအောင် လုပ်ပါ။ အချက်အသစ် မတီထွင်ပါနှင့်၊ ဖြစ်ရပ်ကို scene အချင်းချင်း မရွှေ့ပါနှင့်။
 Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ/ကျွန်တော့်» လုံးဝ မထားရ။ အဲ့ဒီစကားက အဓိကဇာတ်ကောင်ကို ဆိုလိုလျှင် သူ၏ Cast Lock spoken_name/label ကိုသုံးပါ။ အခြားဇာတ်ကောင်ကို ဆိုလိုလျှင် သက်ဆိုင်သူ၏ spoken_name/label ကိုသုံးပါ။
 တိုက်ရိုက်စကားကို quotation marks အတွင်းမှာသာ ဇာတ်ကောင်၏ကိုယ်ပိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် ထားနိုင်သည်။ Quote မတိုင်ခင် ပြောသူကို အမည်ဖြင့် အရင်ရှင်းပါ။ မဟုတ်လျှင် reported speech အဖြစ် ပြောင်းပါ။
@@ -7859,7 +8301,13 @@ def _story_clarity_metrics(
                 break
         identity_fields = [
             str(card.get(key) or "").strip()
-            for key in ("introduction", "role", "relation", "visual_cue")
+            for key in (
+                "introduction",
+                "identity_anchor",
+                "role",
+                "relation",
+                "visual_cue",
+            )
         ]
         burmese_field_terms = [
             value
@@ -7986,6 +8434,223 @@ def _story_clarity_metrics(
             )
         )
 
+    # --- Glossary, visible text, re-entries and abrupt switches ---
+    def _mention_window(text: str, needle: str) -> str:
+        sentences = _split_sentences(text)
+        for index, sentence in enumerate(sentences):
+            if needle and needle in sentence:
+                window = sentence
+                if index + 1 < len(sentences):
+                    window += sentences[index + 1]
+                return window
+        return ""
+
+    def _phrase_reflected(window: str, phrases) -> bool:
+        normalized_window = _normalize_burmese_text(window)
+        if not normalized_window:
+            return False
+        for phrase in phrases or []:
+            normalized_phrase = _normalize_burmese_text(phrase or "")
+            if len(normalized_phrase) >= 6 and normalized_phrase in normalized_window:
+                return True
+            for fragment in re.split(r"[။၊,;]", normalized_phrase):
+                fragment = fragment.strip()
+                if len(fragment) >= 8 and fragment in normalized_window:
+                    return True
+        return False
+
+    def _burmese_phrases(values) -> list:
+        phrases = []
+        for value in values or []:
+            text = str(value or "").strip()
+            if text and any("\u1000" <= char <= "\u109f" for char in text):
+                phrases.append(text)
+        return phrases
+
+    explanation_markers = (
+        "ဆိုတာ",
+        "အဓိပ္ပာယ်",
+        "လို့ခေါ်တဲ့",
+        "ဖြစ်တဲ့",
+        "လုပ်ပေးတဲ့",
+        "ပြတဲ့",
+        "သတ်မှတ်တဲ့",
+        "အတွက်",
+    )
+    beat_stakes = [
+        str(beat.get("why_it_matters") or "").strip()
+        for beat in beat_dicts
+        if str(beat.get("why_it_matters") or "").strip()
+    ]
+    beat_stakes_signal = bool(beat_stakes)
+    if not stakes_reflected and beat_stakes:
+        stakes_reflected = _phrase_reflected(all_text, beat_stakes)
+
+    context_terms = normalized_context.get("terms") or []
+    current_terms = normalized_map.get("terms") or []
+    all_terms = _normalize_story_terms(list(context_terms) + list(current_terms))
+
+    def _term_keys(term) -> set:
+        return {
+            _story_term_key(value)
+            for value in [
+                term.get("spoken_term"),
+                term.get("source_term"),
+                *(term.get("aliases") or []),
+            ]
+            if _story_term_key(value)
+        }
+
+    context_term_keys = set()
+    for context_term in context_terms:
+        context_term_keys.update(_term_keys(context_term))
+    new_terms = [
+        term
+        for term in current_terms
+        if not (_term_keys(term) & context_term_keys)
+    ]
+    term_alias_variant_count = 0
+    canonical_term_keys = {
+        _story_term_key(term.get("spoken_term")) for term in all_terms
+    }
+    for term in all_terms:
+        for alias in term.get("aliases") or []:
+            clean_alias = str(alias or "").strip()
+            alias_key = _story_term_key(clean_alias)
+            if not clean_alias or not alias_key or alias_key in canonical_term_keys:
+                continue
+            if any(
+                alias_key in canonical_key or canonical_key in alias_key
+                for canonical_key in canonical_term_keys
+                if canonical_key
+            ):
+                continue
+            term_alias_variant_count += sum(text.count(clean_alias) for text in texts)
+    missing_term_explanations = []
+    for term in new_terms:
+        spoken_term = str(term.get("spoken_term") or "").strip()
+        if not spoken_term or not any(spoken_term in text for text in texts):
+            continue
+        explanation_phrases = _burmese_phrases(
+            [term.get("first_explanation"), term.get("meaning")]
+        )
+        can_judge_term = bool(
+            explanation_phrases
+            or str(term.get("category") or "").strip()
+        )
+        if not can_judge_term:
+            continue
+        first_window = ""
+        for text in texts:
+            first_window = _mention_window(text, spoken_term)
+            if first_window:
+                break
+        explained = bool(
+            _phrase_reflected(first_window, explanation_phrases)
+            or any(marker in first_window for marker in explanation_markers)
+        )
+        if first_window and not explained:
+            missing_term_explanations.append(spoken_term)
+
+    visible_entries = list(normalized_map.get("visible_texts") or [])
+    existing_visible_meanings = {
+        _normalize_burmese_text(str(item.get("burmese_meaning") or ""))
+        for item in visible_entries
+        if isinstance(item, dict)
+    }
+    for beat in beat_dicts:
+        beat_meaning = str(beat.get("visible_text") or "").strip()
+        if beat_meaning and _normalize_burmese_text(beat_meaning) not in existing_visible_meanings:
+            visible_entries.append(
+                {"burmese_meaning": beat_meaning, "narrate": True}
+            )
+            existing_visible_meanings.add(_normalize_burmese_text(beat_meaning))
+    visible_text_count = sum(
+        1
+        for item in visible_entries
+        if isinstance(item, dict) and item.get("narrate", True)
+    )
+    missing_visible_text_meanings = []
+    for item in visible_entries:
+        if not isinstance(item, dict) or not item.get("narrate", True):
+            continue
+        meaning = str(item.get("burmese_meaning") or "").strip()
+        if (
+            meaning
+            and not _phrase_reflected(all_text, [meaning])
+            and meaning not in missing_visible_text_meanings
+        ):
+            missing_visible_text_meanings.append(meaning)
+
+    missing_character_reintroductions = []
+    last_scene_text = str(normalized_context.get("last_scene") or "")
+    for card in cards:
+        spoken_name = _character_card_spoken_name(card)
+        if not spoken_name:
+            continue
+        occurrence_indexes = [
+            index for index, text in enumerate(texts) if spoken_name in text
+        ]
+        if not occurrence_indexes:
+            continue
+        anchor_phrases = _burmese_phrases(
+            [
+                card.get("identity_anchor"),
+                card.get("role"),
+                card.get("relation"),
+                card.get("introduction"),
+            ]
+        )
+        if not anchor_phrases:
+            continue
+        return_indexes = []
+        first_index = occurrence_indexes[0]
+        in_previous_context = bool(_identity_keys(card) & context_identity_keys)
+        # A person already known from an earlier window has been
+        # absent across the window boundary unless the immediately
+        # preceding scene was still about them.
+        if in_previous_context and spoken_name not in last_scene_text:
+            return_indexes.append(first_index)
+        for position, occurrence_index in enumerate(occurrence_indexes[1:], start=1):
+            if occurrence_index - occurrence_indexes[position - 1] >= 3:
+                return_indexes.append(occurrence_index)
+        for scene_index in return_indexes:
+            window = _mention_window(texts[scene_index], spoken_name)
+            anchored = bool(
+                _phrase_reflected(window, anchor_phrases)
+                or any(marker in window for marker in _STORY_INTRODUCTION_MARKERS)
+            )
+            if window and not anchored:
+                missing_character_reintroductions.append(spoken_name)
+                break
+
+    scene_identity_sets = [
+        {
+            name
+            for name in canonical_identities
+            if name and name in text
+        }
+        for text in texts
+    ]
+    abrupt_scene_switch_indexes = []
+    for index in range(1, len(texts)):
+        previous_identities = scene_identity_sets[index - 1]
+        current_identities = scene_identity_sets[index]
+        if (
+            not previous_identities
+            or not current_identities
+            or previous_identities & current_identities
+        ):
+            continue
+        opening_sentences = _split_sentences(texts[index])[:2]
+        opening = "".join(opening_sentences) or texts[index]
+        bridged = bool(
+            any(marker in opening for marker in _STORY_TRANSITION_MARKERS)
+            or any(marker in opening for marker in _STORY_CAUSAL_MARKERS)
+        )
+        if not bridged:
+            abrupt_scene_switch_indexes.append(index)
+
     issues = []
     score = 100
     if duplicate_count:
@@ -8023,6 +8688,21 @@ def _story_clarity_metrics(
     if generic_cast_labels:
         issues.append("generic_cast_labels")
         score -= 10
+    if len(texts) >= 3 and missing_character_reintroductions:
+        issues.append("missing_character_reintroductions")
+        score -= min(15, 6 + 3 * len(missing_character_reintroductions))
+    if len(texts) >= 3 and missing_term_explanations:
+        issues.append("missing_term_explanations")
+        score -= min(20, 8 + 4 * len(missing_term_explanations))
+    if term_alias_variant_count >= 2:
+        issues.append("inconsistent_story_terms")
+        score -= 10
+    if missing_visible_text_meanings:
+        issues.append("missing_visible_text_meanings")
+        score -= min(20, 8 + 4 * len(missing_visible_text_meanings))
+    if len(texts) >= 5 and len(abrupt_scene_switch_indexes) >= 2:
+        issues.append("abrupt_scene_switches")
+        score -= 10
     if len(texts) >= 4 and dialogue_signal and dialogue_exchange_count == 0:
         issues.append("weak_dialogue_exchange")
         score -= 15
@@ -8032,7 +8712,11 @@ def _story_clarity_metrics(
     if len(texts) >= 6 and motivation_signal and motivation_occurrences < 2:
         issues.append("weak_character_motivations")
         score -= 10
-    if len(texts) >= 4 and conflict_stakes and not stakes_reflected:
+    if (
+        len(texts) >= 4
+        and (conflict_stakes or beat_stakes_signal)
+        and not stakes_reflected
+    ):
         issues.append("missing_conflict_stakes")
         score -= 15
     if is_final_window and unresolved_signal and not ending_hook_present:
@@ -8040,7 +8724,12 @@ def _story_clarity_metrics(
         score -= 10
     story_quality_issues = {
         "missing_character_introductions",
+        "missing_character_reintroductions",
         "generic_cast_labels",
+        "missing_term_explanations",
+        "inconsistent_story_terms",
+        "missing_visible_text_meanings",
+        "abrupt_scene_switches",
         "weak_dialogue_exchange",
         "weak_character_reactions",
         "weak_character_motivations",
@@ -8077,7 +8766,15 @@ def _story_clarity_metrics(
         "dialogue_exchanges": int(dialogue_exchange_count),
         "reaction_markers": int(reaction_occurrences),
         "motivation_markers": int(motivation_occurrences),
-        "conflict_stakes_present": bool(conflict_stakes),
+        "missing_character_reintroductions": missing_character_reintroductions,
+        "story_terms": int(len(all_terms)),
+        "missing_term_explanations": missing_term_explanations,
+        "term_alias_variant_count": int(term_alias_variant_count),
+        "visible_texts": int(visible_text_count),
+        "missing_visible_text_meanings": missing_visible_text_meanings,
+        "abrupt_scene_switches": int(len(abrupt_scene_switch_indexes)),
+        "abrupt_scene_switch_indexes": abrupt_scene_switch_indexes,
+        "conflict_stakes_present": bool(conflict_stakes or beat_stakes_signal),
         "conflict_stakes_reflected": bool(stakes_reflected),
         "ending_hook_present": bool(ending_hook_present),
         "is_final_window": bool(is_final_window),
@@ -8121,12 +8818,13 @@ STORY EDITOR PASS — သင်က professional story editor ပါ။
 
 အရေးအကြီးဆုံး စည်းကမ်းများ:
 - Scene အရေအတွက်၊ အစဉ်၊ start/end အားလုံး အတိအကျထားပါ။ Scene တစ်ခုချင်းစီရဲ့ အချက်အလက်နဲ့ key beats အားလုံးကို ထိန်းပါ။
-- ဗီဒီယိုမှာ/မူရင်းစာသားမှာ မပါတဲ့ အချက်၊ အမည်၊ ဆက်နွယ်မှု၊ ရည်ရွယ်ချက် အသစ် လုံးဝ မတီထွင်ပါနဲ့။ Story_map beats/cards/context ထဲ **ရှိပြီးသား** trigger/dialogue/reaction/result, introduction, goal, motivation, conflict_stakes ကိုတော့ narration ထဲ ထည့်ဖို့ သုံးနိုင်တယ်။ ဖြစ်ရပ်ကို အခြား scene သို့ မရွှေ့ပါနဲ့ — footage နဲ့ ကိုက်ညီမှု ပျက်သွားမယ်။
+- ဗီဒီယိုမှာ/မူရင်းစာသားမှာ မပါတဲ့ အချက်၊ အမည်၊ ဆက်နွယ်မှု၊ ရည်ရွယ်ချက် အသစ် လုံးဝ မတီထွင်ပါနဲ့။ Story_map beats/cards/context ထဲ **ရှိပြီးသား** trigger/dialogue/reaction/result/visible_text/why_it_matters, introduction, identity_anchor, terms.meaning/first_explanation, visible_texts.burmese_meaning, goal, motivation, conflict_stakes ကိုတော့ narration ထဲ ထည့်ဖို့ သုံးနိုင်တယ်။ ဖြစ်ရပ်ကို အခြား scene သို့ မရွှေ့ပါနဲ့ — footage နဲ့ ကိုက်ညီမှု ပျက်သွားမယ်။
 - Scene တစ်ခုစီကို သီးခြား caption လို မရေးဘဲ ဇာတ်လမ်းတစ်ခုလုံး ဆက်တိုက်စီးဆင်းအောင် ရေးပါ။ နောက် scene အစဟာ အရင် scene ရဲ့ ရလဒ်ကနေ သဘာဝကျကျ ဆက်ရမယ်။
 - ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ၊ ဘယ်သူက ဘာလုပ်လဲ၊ ဘာကြောင့်လုပ်လဲ၊ ဘာဆက်ဖြစ်လဲဆိုတာ ရှင်းပါ။
 - လူနှစ်ယောက်ထက်ပိုပါလာရင် သို့မဟုတ် subject ပြောင်းသွားရင် «သူ/သူမ» ပဲ မထားဘဲ အမည် သို့မဟုတ် အခန်းကဏ္ဍကို ပြန်ပြောပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာသူဆိုလျှင် အမည်+ဆက်နွယ်ပုံကို တိုတိုပြန်အမှတ်ရစေပါ။
 - Story map/context ရှိ `spoken_name` တစ်မျိုးတည်းကိုသာ သုံးပါ။ Aliases၊ source_name နဲ့ variant တွေကို narration မှာ မသုံးပါနဲ့။ အမည်အသစ်ကို မတီထွင်ပါနဲ့ — map က အမည်မသေချာသေးလျှင် ရှိပြီးသား stable descriptive label သို့မဟုတ် အခန်းကဏ္ဍကိုသာ ဆက်သုံးပါ။
 - လူကို ပထမဆုံးမိတ်ဆက်တိုင်း spoken_name/label + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ ရှင်းပါ။ Card မှာ `introduction` ရှိရင် အဲဒီစာကြောင်းကိုသာ ပထမဆုံး mention မှာ သုံးပါ။ «အမည်မသိလူငယ်»၊ «အမျိုးသမီး»၊ «လယ်သမားကြီး» လို bare category label ချည်းကျန်နေရင် Cast Lock `spoken_name` ကို နောက်ထပ် form အသစ်နဲ့ မပြောင်းဘဲ map ထဲက ရှိပြီးသား role/relation/visual_cue ကိုသာ သုံးပြီး **ပထမဆုံး mention ကိုပဲ** နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက်ပါတဲ့ မှတ်မိလွယ်တဲ့ မိတ်ဆက်စာကြောင်းအဖြစ် ချဲ့ရေးပါ — အမည်အတုတော့ မဖန်တီးရ။ အချိန်ကြာမှ ပြန်ပေါ်လာရင် spoken_name + ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါ။
+- ပြန်ပေါ်လာသူတိုင်းကို card ရဲ့ `identity_anchor` နဲ့ ပြန်အမှတ်ရစေပါ။ Term အသစ်တစ်ခုကို ပထမဆုံးပြောတဲ့နေရာမှာ `terms.first_explanation` ကို သဘာဝကျကျထည့်ပြီး နောက်ပိုင်း `spoken_term` တစ်မျိုးတည်းသုံးပါ။ `visible_texts` မှာ narrate=true အရေးကြီးဖန်သားပြင်စာရှိရင် သူ့ `burmese_meaning` ကို ဆိုင်ရာ scene မှာတင် ပြောပါ။ Beat ရဲ့ `visible_text`/`why_it_matters` ကိုလည်း မချန်ပါနဲ့။
 - အကြောင်းရင်းကို တုံ့ပြန်မှု/ရလဒ်ထက် အရင် သို့မဟုတ် အတူဖော်ပြပါ။ Dialogue မှာ speaker နဲ့ listener ကို ရှင်းပါ။
 - အဓိကတောင်းဆိုမှု/ပြဿနာရှိတဲ့ scene တွေမှာ map ထဲ ရှိပြီးသားဆိုရင် ဘယ်သူက ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ၊ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်တာ (conflict_stakes) ကို အဲဒီ scene ထဲမှာပဲ ရှင်းပါ။ Map/စာသားမှာ မပါတဲ့ အကြောင်းရင်း/အကျိုးဆက်ကိုတော့ မတီထွင်ရ။
 - အရေးကြီးစကားပြောတွေကို report တစ်ကြောင်းတည်းနဲ့ မချန်ပါနဲ့ — map ရဲ့ dialogue/reaction အချက်ကိုသုံးပြီး ပြောသူ → နားထောင်သူရဲ့ ပြန်ဖြေ/ငြင်း/မေး → တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် ဆိုတဲ့ အပြန်အလှန်ပုံစံ ဖြစ်အောင် ပြင်ပါ။ မူရင်းစာသား/map မှာ စကားအဓိပ္ပာယ် ရှင်းနေရင် အလှည့်အပြောင်းစကား တိုတိုတစ်ခွန်းကို speaker အမည်တပ်ပြီး quotation marks နဲ့ တိုက်ရိုက်ထားနိုင်တယ်။ စကားအသစ် မဖန်တီးရ။ တုံ့ပြန်သူရဲ့ စိုးရိမ်/ဆုံးဖြတ်/သုံးသပ်ချက်မှာ map/စာသားက အတည်ပြုနိုင်တဲ့ အကြောင်းရင်းကိုပါ ထည့်ပါ။
@@ -8148,7 +8846,7 @@ Scenes:
 {json.dumps(payload, ensure_ascii=False)}
 
 JSON ကိုသာ ပြန်ပေးပါ:
-{{"narrator_perspective": "third_person", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး တတိယလူ recap စာသား"}}], "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "open_threads": [], "important_facts": []}}}}
+{{"narrator_perspective": "third_person", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး တတိယလူ recap စာသား"}}], "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}}}}
 """.strip()
 
 
@@ -8345,7 +9043,7 @@ Cast Lock spoken_name/label တွေကို လုံးဝမပြောင
 
 ## ဗီဒီယိုကို အပြည့်အဝ ပြန်ပြောပုံ (အကျဉ်းချုပ် မဟုတ်ပါ)
 - အတိုချုပ် (summary) မရေးပါနှင့်။ နားထောင်နေသူက မူရင်းဗီဒီယိုကို ပြန်ပင် ကြည့်နေရသလို ထင်ရအောင် အစက အဆုံးအထိ အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပြပါ။
-- **Narration မရေးခင် Cast Lock registry + story map ကို အတိအကျ တည်ဆောက်ပါ** — လူ/အရေးကြီးအဖွဲ့ တစ်ခုချင်းစီအတွက် narration မှာ အမြဲပြောရမည့် `spoken_name` တစ်ခု၊ သိလျှင် `source_name`၊ ဘယ်သူလဲ (`role`)၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ (`relation`)၊ **ပထမဆုံးအကြိမ် ပြောရမည့် မြန်မာမိတ်ဆက်စာကြောင်း (`introduction` = spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)**၊ လက်ရှိ လိုချင်တာ (`goal`)၊ ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ (`motivation`)၊ variant အားလုံး (`aliases`)၊ အထောက်အထားအရင်းအမြစ် (`name_source`: subtitle/on_screen/dialogue/visual_label)၊ သေချာမှု (`confidence`: confirmed/descriptive/uncertain) နဲ့ မရောအောင် မှတ်လို့ရတဲ့ `visual_cue` ကို သတ်မှတ်ပါ။ အမည်မချမှတ်ခင် ဒီအပိုင်းတစ်ခုလုံးကို အစအဆုံးစကင်လုပ်ပြီး subtitle/အမည်ကတ်/အချင်းချင်းခေါ်ဆိုမှုက အမည်ကို အရင်ရှာပါ — အမည်က နောက်ပိုင်းမှသိရရင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ အမည်အတည်မပြုနိုင်ရင် «အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး» လို bare category ကို spoken_name မလုပ်ဘဲ နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက် ပါတဲ့ မှတ်မိလွယ် unique label တစ်ခု လုပ်ပါ။ ပြီးမှ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် `beat` အပြင် ဖြစ်ရပ်ကို စစေတာ (`trigger`)၊ ဘယ်သူက ဘယ်သူ့ကို ဘာပြောတာ (`dialogue`)၊ ဘယ်သူက ဘယ်လိုတုံ့ပြန်/ဆုံးဖြတ်ပြီး ဘာကြောင့်လဲ (`reaction`)၊ ဘာဆက်ဖြစ်တာ/နောက်ပြဿနာ (`result`) ကို source က ပြသလောက်သာ ဖြည့်ပါ (မသက်ဆိုင်ရင် ကွက်လပ်ထားပါ၊ မတီထွင်ရ)။ `current_conflict` အပြင် မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ (`conflict_stakes`) နဲ့ မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း (`central_question`) ကိုပါ မှတ်ပါ။ အဲ့ဒီ registry/map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း ပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
+- **Narration မရေးခင် Cast Lock registry + story map ကို အတိအကျ တည်ဆောက်ပါ** — လူ/အရေးကြီးအဖွဲ့ တစ်ခုချင်းစီအတွက် narration မှာ အမြဲပြောရမည့် `spoken_name` တစ်ခု၊ သိလျှင် `source_name`၊ ဘယ်သူလဲ (`role`)၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ (`relation`)၊ **ပထမဆုံးအကြိမ် ပြောရမည့် မြန်မာမိတ်ဆက်စာကြောင်း (`introduction` = spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)**၊ လက်ရှိ လိုချင်တာ (`goal`)၊ ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ (`motivation`)၊ variant အားလုံး (`aliases`)၊ အထောက်အထားအရင်းအမြစ် (`name_source`: subtitle/on_screen/dialogue/visual_label)၊ သေချာမှု (`confidence`: confirmed/descriptive/uncertain) နဲ့ မရောအောင် မှတ်လို့ရတဲ့ `visual_cue` ကို သတ်မှတ်ပါ။ အမည်မချမှတ်ခင် ဒီအပိုင်းတစ်ခုလုံးကို အစအဆုံးစကင်လုပ်ပြီး subtitle/အမည်ကတ်/အချင်းချင်းခေါ်ဆိုမှုက အမည်ကို အရင်ရှာပါ — အမည်က နောက်ပိုင်းမှသိရရင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ အမည်အတည်မပြုနိုင်ရင် «အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး» လို bare category ကို spoken_name မလုပ်ဘဲ နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက် ပါတဲ့ မှတ်မိလွယ် unique label တစ်ခု လုပ်ပါ။ ပြီးမှ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် `beat` အပြင် ဖြစ်ရပ်ကို စစေတာ (`trigger`)၊ ဘယ်သူက ဘယ်သူ့ကို ဘာပြောတာ (`dialogue`)၊ ဘယ်သူက ဘယ်လိုတုံ့ပြန်/ဆုံးဖြတ်ပြီး ဘာကြောင့်လဲ (`reaction`)၊ ဘာဆက်ဖြစ်တာ/နောက်ပြဿနာ (`result`) ကို source က ပြသလောက်သာ ဖြည့်ပါ (မသက်ဆိုင်ရင် ကွက်လပ်ထားပါ၊ မတီထွင်ရ)။ ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် `identity_anchor` တိုတိုလည်း မှတ်ပါ။ အခေါ်အဝေါ်/စည်းမျဉ်း အရေးကြီးတိုင်းအတွက် `terms` (spoken_term/source_term/meaning/first_explanation) နဲ့ အမည်ကတ်/system Panel/စာရွက်/ဆိုင်းဘုတ်လို ဖတ်လို့ရတဲ့ ဖန်သားပြင်စာတိုင်းအတွက် `visible_texts` (source_text/burmese_meaning/kind) ကိုပါ တည်ဆောက်ပြီး beat မှာလည်း သက်ဆိုင်ရင် `visible_text` နဲ့ `why_it_matters` ဖြည့်ပါ။ `current_conflict` အပြင် မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ (`conflict_stakes`) နဲ့ မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း (`central_question`) ကိုပါ မှတ်ပါ။ အဲ့ဒီ registry/map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း ပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
 - အမည်ကို ဆုံးဖြတ်ရာမှာ (၁) ဖတ်လို့ရတဲ့ burned-in subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်/title၊ (၂) ဇာတ်ကောင်တွေ ရှင်းရှင်း အချင်းချင်းခေါ်တာ/မိတ်ဆက်တာ၊ (၃) အဲ့ဒါတွေ မသေချာရင် အခန်းကဏ္ဍ+မြင်သာတဲ့အချက်နဲ့ unique descriptive label ဆိုတဲ့ အစဉ်နဲ့ သွားပါ။ စာလုံးပေါင်းနှစ်မျိုး ရှိနေရင် subtitle/on-screen ပုံစံကို ဦးစားပေးပြီး Burmese spoken form တစ်မျိုးတည်း lock လုပ်ပါ။ မရှင်းတဲ့ အသံကို နာမည်မှန်းမထည့်ပါနှင့်။ အခြားအချက်အလက်တွေကိုလည်း ပြောစကား/စာတန်းနဲ့ မြင်ရတဲ့ လုပ်ဆောင်ချက်က အတည်ပြုနိုင်သလောက်သာ ပြောပါ။ မသေချာလျှင် မြင်ရတဲ့လုပ်ဆောင်ချက်ကိုသာ ပြောပြီး ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်၊ လျှို့ဝှက်အကြောင်းရင်းကို မှန်းမရေးပါနှင့်။
 - Scene အစမှာ အရင် scene ရဲ့ ရလဒ်ကနေ ဆက်စပ်တဲ့ anchor/bridge ကို ထားပြီး အဲ့ဒီ scene ရဲ့ key beat ကို အချိန်အစဉ်အတိုင်း စောစောဖော်ပြပါ။ အကြောင်းရင်း မသိရသေးဘဲ ရလဒ်ချည်း အရင်ပြော၍ နားထောင်သူကို လည်မနေစေပါနှင့်။
 - ခန်းတိုင်းတွင် ဘယ်သူတွေ ရှိနေလဲ၊ ဘယ်မှာလဲ၊ ဘာလုပ်နေလဲ၊ ဘာတွေ ပြောလဲ (အဓိပ္ပာယ်)၊ တစ်ဖက်က ဘယ်လို တုံ့ပြန်လဲ၊ ဘာကြောင့်လဲနှင့် ဘာဆက်ဖြစ်သည်ကို ရှင်းလင်းစွာ ဖော်ပြပါ။
@@ -8383,10 +9081,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
   "narrator_perspective": "third_person",
   "story_map": {{
     "character_cards": [
-      {{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}
+      {{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}
     ],
     "beats": [
-      {{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ"}}
+      {{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}
     ],
     "current_goal": "လက်ရှိရည်မှန်းချက်",
     "current_conflict": "လက်ရှိအဓိကပြဿနာ",
@@ -8527,7 +9225,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {{
   "protagonist": "အဓိကဇာတ်ကောင်နာမည် သို့မဟုတ် ကွက်လပ်",
   "narrator_perspective": "third_person",
-  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "open_threads": [], "important_facts": []}},
+  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}},
   "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "တတိယလူ recap မြန်မာစာသား"}}]
 }}
 """.strip()
@@ -8718,7 +9416,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 ယခင် ရေးပြီးသား အကြောင်းအရာများကို စကားလုံး ထပ်မရေးပါနှင့်။ ယခင် scenes များ၏ ကြားလပ်နေသော အချိန်များ၊ ကျန်ခဲ့သော ဖြစ်ရပ်များ၊ စကားပြောချက်များ၏ အဓိပ္ပာယ်၊ ဇာတ်ကောင်တို့၏ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို အစဉ်အတိုင်း ဖြည့်ရေးပါ။
 တတိယလူ recap narrator အမြင်ကိုသာ ဆက်ထိန်းပါ — quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» မသုံးရ။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို ရှိပြီးသား script/story_map ထဲက spoken_name/label တစ်မျိုးတည်းနဲ့သာ ညွှန်းပါ။
 အဓိကဇာတ်ကောင် မပါတဲ့မြင်ကွင်းဆိုလျှင် «တစ်ဖက်မှာတော့ ...» လို နေရာ/အချိန် bridge နဲ့ ဆက်ပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
-ဖြည့်စွက်ရာတွင် ကျန်နေသော လူမိတ်ဆက်ချက် (အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံ)၊ အဓိကတောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/အတိအကျ လိုချင်တာ/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန် (ပြောသူ→ပြန်ဖြေ→ဆုံးဖြတ်ချက်)၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ နောက်မြင်ကွင်းသို့ အကြောင်းဆက် bridge ကို အရင် ဦးစားပေးဖြည့်ပါ။
+ဖြည့်စွက်ရာတွင် ကျန်နေသော လူမိတ်ဆက်/identity_anchor (အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံ)၊ term ရဲ့ first_explanation၊ အရေးကြီးဖန်သားပြင်စာရဲ့ မြန်မာအဓိပ္ပာယ်၊ အဓိကတောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/အတိအကျ လိုချင်တာ/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန် (ပြောသူ→ပြန်ဖြေ→ဆုံးဖြတ်ချက်)၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ နောက်မြင်ကွင်းသို့ အကြောင်းဆက် bridge ကို အရင် ဦးစားပေးဖြည့်ပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 🎯 အသစ်စာသားကို {missing} လုံးမှ {int(missing * 1.2)} လုံးအတွင်းသာ ထပ်ဖြည့်ပါ (အဲဒီထက် မပိုရ)။ ပေါင်းလျှင် စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ဝန်းကျင် ဖြစ်ရပါမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဦးစားပေး ဖြည့်ပါ။
@@ -8728,7 +9426,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {json.dumps(scenes, ensure_ascii=False)}
 
 အောက်ပါပုံစံအတိုင်း JSON object ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် မည်သည့်စာသားမှ မရေးပါနှင့်။
-{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}]}}
+{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [], "visible_texts": [], "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}]}}
         """.strip()
         try:
             extra = await _generate_direct_gemini_json(
@@ -9200,7 +9898,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 အသစ်စာသား စုစုပေါင်းကို {missing_chars} လုံးမှ {int(missing_chars * 1.2)} လုံးအတွင်းသာ ရေးပါ (အဲဒီထက် လုံးဝ မပိုရ)။ ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ဝန်းကျင် ဖြစ်ရမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဖြည့်ပါ — ပြောပြီးသားကို ပုံစံပြောင်း ပြန်မရေးရ။
 Narrator မှာ ဇာတ်လမ်းအပြင်က တတိယလူ recap narrator ဖြစ်ပြီး quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးရ။ ရှိပြီးသား script/story_map ထဲက spoken_name/label တွေကိုသာ ဆက်သုံးပါ။
 Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/label နဲ့ ရှင်းပါ။
-ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။ အထူးသဖြင့် ကျန်နေသော လူမိတ်ဆက်ချက်၊ တောင်းဆိုချက်ရဲ့ ဆုံးရှုံးနိုင်မှု၊ dialogue အပြန်အလှန်နဲ့ နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲဆိုတဲ့ bridge ကို ဦးစားပေးပါ။
+ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။ အထူးသဖြင့် ကျန်နေသော လူမိတ်ဆက်/identity_anchor၊ term ရဲ့ first_explanation၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ ဆုံးရှုံးနိုင်မှု၊ dialogue အပြန်အလှန်နဲ့ နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲဆိုတဲ့ bridge ကို ဦးစားပေးပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
 အသစ် scene တစ်ခုချင်းစီသည် သူ၏ အရင်/နောက် scene များနှင့် ဇာတ်လမ်းအရ ဆက်စပ်ရမည်။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။ သီးခြား caption လို မရေးရ၊ ဖြစ်ရပ်ကို သူ၏ မူရင်း start/end အတွင်းမှာသာ ထားပါ။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
 
@@ -9208,7 +9906,7 @@ Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓ
 {json.dumps(scenes, ensure_ascii=False)}
 
 JSON ကိုသာပြန်ပေးပါ:
-{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော တတိယလူ recap စာသား"}}]}}
+{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [], "visible_texts": [], "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော တတိယလူ recap စာသား"}}]}}
 """.strip()
                 try:
                     if video_file is None:
@@ -12015,6 +12713,7 @@ def _rewrite_prompt(
         "narrator_perspective": NARRATOR_PERSPECTIVE,
         "characters": context.get("characters") or [],
         "character_cards": context.get("character_cards") or [],
+        "terms": context.get("terms") or [],
         "previous_summary": str(context.get("summary") or "")[-2500:],
         "story_beats_so_far": (context.get("story_beats") or [])[-16:],
         "current_setting": str(context.get("setting") or ""),
@@ -12056,7 +12755,7 @@ Cast Lock: {cast_lock_line}
 - Scene အားလုံးပေါင်းလျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ Group တစ်ခုချင်းကို သီးခြား caption လို မရေးရ။ အရင် group ရဲ့ ရလဒ်ကနေ အကြောင်းဆက် bridge ဖြင့် ဆက်ရေးပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။
 - အကြောင်းအရာကို group တစ်ခုကနေ နောက်တစ်ခုသို့ မရွှေ့ရ။ နောက်မှ ပေါ်မည့် reveal/စကားကို ရှေ့ group မှာ ကြိုမပြောရ၊ ရှေ့ဖြစ်ရပ်ကိုလည်း နောက်မှ ပြန်မပြောရ — အသံနဲ့ footage ကိုက်ညီမှုပျက်စေတယ်။
 - လူပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အဖြာဖြာသုံးမနေဘဲ Cast Lock spoken_name/label သို့မဟုတ် အခန်းကဏ္ဍ/ဆက်နွယ်ပုံကို သုံးပါ။ လူကို ပထမဆုံးမိတ်ဆက်တိုင်း card ရဲ့ `introduction` (spoken_name + ဘယ်သူလဲ/အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ) ကို သုံးပါ။ ဒီ batch တစ်ခုလုံးကို အရင်စကင်လုပ်ပြီး နောက် group မှ အမည်ရှင်းလာသူဆိုလျှင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ `aliases` နဲ့ `source_name` ကို narration မှာ အလှည့်ပြောင်း မသုံးရ။ Transcript က အမည်မသေချာရင် bare category မသုံးဘဲ အဖွဲ့/နေရာ + အခန်းကဏ္ဍ + transcript က သိနိုင်တဲ့ ထူးခြားအချက်ပါတဲ့ မှတ်မိလွယ် stable label ပဲ ဆက်သုံးပါ။
-- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေအတွက် spoken_name/source_name/introduction/goal/motivation/aliases/name_source/confidence/visual_cue နဲ့ beat တွေကို မူရင်း start/end အတိုင်း ပြန်ထည့်ပါ။ Beat တိုင်းမှာ ရနိုင်လျှင် trigger/dialogue/reaction/result ကိုပါ ဖြည့်ပါ။ `current_conflict` အပြင် `conflict_stakes` နဲ့ `central_question` ကိုပါ transcript ပြသလောက်သာ မှတ်ပါ။ Transcript မှာ subtitle/on-screen အထောက်အထား မပါရင် name_source ကို dialogue သုံးပြီး မသေချာမှုကို မဖုံးပါနှင့်။
+- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေအတွက် spoken_name/source_name/introduction/identity_anchor/goal/motivation/aliases/name_source/confidence/visual_cue, terms (spoken_term/source_term/meaning/first_explanation), transcript ထဲ တကယ်ပါတဲ့ visible_texts (source_text/burmese_meaning/kind) နဲ့ beat တွေကို မူရင်း start/end အတိုင်း ပြန်ထည့်ပါ။ Beat တိုင်းမှာ ရနိုင်လျှင် trigger/dialogue/reaction/result/visible_text/why_it_matters ကိုပါ ဖြည့်ပါ။ Term အသစ်ကို ပထမဆုံးပြောတဲ့နေရာမှာ first_explanation နဲ့ရှင်းပြီး နောက်ပိုင်း spoken_term တစ်မျိုးတည်းသုံးပါ။ Transcript က အဓိပ္ပာယ်/ဖန်သားပြင်စာကို မပြနိုင်ရင် မှန်းမရေးရဘူး။ `current_conflict` အပြင် `conflict_stakes` နဲ့ `central_question` ကိုပါ transcript ပြသလောက်သာ မှတ်ပါ။ Transcript မှာ subtitle/on-screen အထောက်အထား မပါရင် name_source ကို dialogue သုံးပြီး မသေချာမှုကို မဖုံးပါနှင့်။
 - Visual-only အချက်ကို transcript မှ မသိနိုင်လျှင် မှန်းမရေးပါနှင့်။
 - Scene text ထဲတွင် timestamp, heading, bullet, quotation label သို့မဟုတ် ရှင်းလင်းချက် မထည့်ပါနှင့်။ TTS ဖတ်မည့် စာသားသာရေးပါ။
 
@@ -12070,7 +12769,7 @@ JSON ကိုသာ အောက်ပါပုံစံဖြင့် ပြ�
 {{
   "protagonist": "အဓိကဇာတ်ကောင်ရဲ့ spoken_name သို့မဟုတ် stable label",
   "narrator_perspective": "third_person",
-  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "open_threads": [], "important_facts": []}},
+  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}},
   "scenes": [
     {{"group_id": 1, "burmese": "TTS ဖတ်မည့် Burmese တတိယလူ recap စာသား"}}
   ]
@@ -18906,7 +19605,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.32-delivery-integrity"
+BUILD_VERSION = "v5.33-story-glossary"
 BUILD_FEATURES = len(FEATURES)
 
 
@@ -18992,6 +19691,7 @@ async def root():
         "script_style": "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
         "script_qa": "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
         "story_clarity_contract": "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
+        "story_comprehension": "natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
         "delivery_integrity": "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
         "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
@@ -19118,6 +19818,7 @@ async def health():
         "script_style": "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
         "script_qa": "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
         "story_clarity_contract": "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
+        "story_comprehension": "natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
         "delivery_integrity": "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
         "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
@@ -19637,6 +20338,9 @@ def _update_notice_text(version: str) -> str:
         "• အဓိကတောင်းဆိုမှု/ခြိမ်းခြောက်မှုမှာ <b>ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ၊ မလိုက်နာရင် ဘာဆုံးရှုံးနိုင်တာ</b>ကို source ပြသလောက် ရှင်းပါမယ်\n"
         "• တုံ့ပြန်မှု/ဆုံးဖြတ်ချက်တွေမှာ <b>ဘာကြောင့် အဲဒီလိုထင်/လုပ်တာလဲ</b>ဆိုတာပါ ထည့်ပြီး ဖြစ်ရပ်အုပ်စုပြောင်းတိုင်း အကြောင်းဆက် bridge နဲ့ ဆက်ပါမယ်\n"
         "• အရေးကြီးစကားပြောတွေကို report ချည်း မဟုတ်ဘဲ <b>ပြောသူ → ပြန်ဖြေ/ငြင်း → ဆုံးဖြတ်ချက်</b> အပြန်အလှန်နဲ့ ပြောပါမယ်။ ဗီဒီယိုအဆုံးမှာ တကယ်မဖြေရှင်းရသေးတဲ့ ပြဿနာနဲ့ပဲ ပိတ်ပါမယ် (အနာဂတ်ကို မခန့်မှန်းပါ)\n"
+        "• အမည်ကို ပထမတစ်ကြိမ် အသေးစိတ်မိတ်ဆက်ပြီး နောက်ပိုင်း <b>လူပြောအသံထွက် သဘာဝကျတဲ့ အမည်တိုတစ်မျိုးတည်း</b>ကိုပဲ သုံးပါမယ်။ ကြာမှ ပြန်ပေါ်လာရင် အမည် + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါမယ်\n"
+        "• <b>System, အဆင့်/အရည်အသွေး, Mortal</b> လို ဇာတ်လမ်းစည်းမျဉ်းစကားလုံးတွေကို ပထမဆုံးအကြိမ် မြန်မာလို ရိုးရိုးရှင်းရှင်း ရှင်းပြပြီး နောက်ပိုင်း အခေါ်တစ်မျိုးတည်း ဆက်သုံးပါမယ်\n"
+        "• အမည်ကတ်, system/status Panel, စာရွက်, ဆိုင်းဘုတ်နဲ့ title card လို <b>ဖန်သားပြင်ပေါ်က အရေးကြီးစာ</b>ကို မူရင်းစကား/subtitle နဲ့ တိုက်စစ်ပြီး မြန်မာအဓိပ္ပာယ်ကို ဆိုင်ရာ footage ပေါ်မှာတင် ပြောပါမယ်\n"
         "• Script က အကျဉ်းချုပ်မဟုတ်ဘဲ မူရင်းရဲ့ <b>90%</b> အပြည့်နီးပါး ပြန်ပြောပြီး Final က မူရင်းထက် <b>မရှည်ပါ</b>\n"
         "• Freeze ကာကွယ်မှု (boundary အလိုအလျောက် ပြန်ညှိ၊ replay အများဆုံး <b>၂ ကြိမ်</b>) ဆက်ပါပြီး\n"
         "• Thiha အသံ · Turbo ဖွင့်ထားပြီး\n\n"
