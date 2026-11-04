@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.38-tts-safe-repair` is a **one-shot automatic flow**: the user
+Version `v5.39-foreign-name-token-lock` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -778,6 +778,40 @@ v5.19 makes the job registry survive that:
   speaker. These heuristics are conservative editor signals, not a
   reason to invent names or story facts.
 
+## v5.39 — Foreign-name token lock and actor-targeted repair
+
+- **Foreign card names are repaired at token level.** The first live
+  v5.38 retry generated Chinese character cards themselves
+  (`董礼茂`, `杨伟`, `乔碧落`, `九州学院长老`), leaving the deterministic
+  ledger no Burmese target and making whole-scene repair copy the
+  Chinese back. Direct and worker repair now asks the model only for
+  a validated source-token → Burmese mapping, then applies it
+  deterministically so scene content, POV, order, timestamps, and
+  length cannot drift. Proper names/places/groups are transliterated;
+  common terms, titles, skills, and phrases use a concise Burmese
+  meaning. Every accepted target must contain Myanmar script and no
+  TTS-unsafe letters.
+- **Successful mappings become the new Cast/Glossary Lock.** The
+  foreign source spelling is retained only as source/alias evidence;
+  the Burmese result replaces unsafe card `spoken_name`/short forms,
+  term `spoken_term`, protagonist identity, and context character
+  lists. Later scenes/windows and quality metrics therefore use the
+  speakable Burmese identity instead of re-learning the foreign one.
+- **Simplified/Traditional variants share one lock.** Ledger and
+  token replacements expand common CJK spelling variants (for
+  example `杨伟`/`楊偉` and `九州学院长老`/`九州學院長老`) to the same
+  Burmese target. Foreign `spoken_name`/`spoken_term` values in
+  generation, editor, and repair prompts are explicitly marked as
+  evidence—not locked spoken forms—to stop weaker fallback models
+  preserving them verbatim.
+- **Severe actor/dialogue blockers get their own repair target.**
+  Bounded direct/worker repair now includes scenes behind severe
+  unclear/unnamed scene openings, ambiguous pronoun sentences, and
+  unattributed dialogue, rather than only POV/TTS failures. Unknown
+  foreign tokens or unresolved professional blockers still fail the
+  hard gate honestly; `/healthz` exposes `tts_token_repair` beside
+  the sanitizer and remaining-token diagnostics.
+
 ## v5.38 — TTS-safe foreign-script repair
 
 - **A few foreign letters no longer kill an otherwise valid script.**
@@ -927,7 +961,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.38-tts-safe-repair"`,
+URLs must show `"version":"v5.39-foreign-name-token-lock"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
