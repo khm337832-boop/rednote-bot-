@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.35-first-person-protagonist` is a **one-shot automatic flow**: the user
+Version `v5.36-duration-calibration` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -145,9 +145,9 @@ seconds — and the duration calibration then deleted two thirds of it,
 which was heard as broken, chopped speech ("အသံအမှန် 05:41 ရှည်နေလို့
 ပစ်မှတ် 01:52 ဖြစ်အောင် ချိန်နေပါသည်"). Scripts are now sized with a
 **learned rate**: the bot keeps a process-global chars/second per TTS
-provider (`edge`, `gemini`), seeded at 12 for the Edge voice (production
-measures `my-MM-ThihaNeural` at ~14-17 chars/second: a 313-char scene
-took 18.65s) and 10 for Gemini. The first real measurement replaces the
+provider (`edge`, `gemini`), seeded at 18 for the Edge voice (production
+repeatedly measures `my-MM-ThihaNeural` at ~17.8-18.6 chars/second)
+and 10 for Gemini. The first real measurement replaces the
 seed outright; later measurements blend in (exponential moving average,
 clamped to 1.2-24.0 chars/second) from `_narration_measurements`'
 `effective_chars_per_second` after every measured window. The learned
@@ -304,9 +304,9 @@ Character counts are only the first estimate — the pre-TTS char
 gate is a coarse anti-summary floor (85% of the estimate), not the
 duration guarantee — but that estimate is no longer a guess: scripts are
 sized with the learned chars/second of the voice that will speak them
-(free Edge `my-MM-ThihaNeural`: ~14-17 measured, cold-start seed 12), so
-a 2-minute window at 90% plans about 1,300 characters — close to the
-voice's real speed from the first draft. After TTS, the bot
+(free Edge `my-MM-ThihaNeural`: ~17.8-18.6 measured,
+cold-start seed 18), so a 2-minute window at 90% plans about 1,950
+characters — close to the voice's real speed from the first draft. After TTS, the bot
 measures the real narration seconds and this job's real chars/second. If the
 narration is short, Gemini expands the full chronological script and the
 changed scenes are synthesized again; if it is long *but still inside
@@ -477,7 +477,7 @@ remain hard requirements.
 9. 🎨 အရောင် မြှင့် (color enhance) on/off
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
-12. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 12 / 17 is an explicit manual override (the retired 5.5 / 7.5 UI values are migrated back to auto for real jobs)
+12. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~17.8-18.6 measured) from measured TTS and sizes every script with it; choosing 12 / 17 is an explicit manual override (the retired 5.5 / 7.5 UI values are migrated back to auto for real jobs)
 13. 👤 ပြောပြသူ ရှုထောင့် — the protagonist is always the first-person narrator with a source-supported locked `ကျွန်တော်`/`ကျွန်မ`; the protagonist self-introduces once by full spoken name/role, then uses that pronoun for their own actions, while the Cast Lock Name Ladder fixes one full Burmese name/stable label plus any source-grounded routine short form for every other character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
 14. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 15. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
@@ -778,6 +778,25 @@ v5.19 makes the job registry survive that:
   speaker. These heuristics are conservative editor signals, not a
   reason to invent names or story facts.
 
+## v5.36 — Duration calibration converges after deploys
+
+- **Edge Thiha cold starts use its measured pace.** The learned-rate
+  process reset on every deploy previously fell back to 12 chars/sec,
+  so the first v5.35 live job wrote 1,365 chars that measured only
+  75.5 seconds against a 108.7-second target. Production repeatedly
+  measures 17.8-18.6 chars/sec, so the Edge seed is now 18 and a 120s
+  window at 90% plans about 1,944 chars from the first draft.
+- **A small or empty calibration top-up no longer ends the job.** If
+  measured narration is still short and the “new scenes only” answer
+  fails, returns `scenes: []`, under-delivers, or makes no progress,
+  calibration now expands the existing timed scenes in place against
+  proportional per-scene character targets. It preserves scene order
+  and timestamps, first-person protagonist POV, the Name Ladder, and
+  source-only facts, then re-voices and re-measures.
+- **The duration refusal stays honest.** A recap that remains below
+  the ~90% floor after all bounded calibration rounds is still not
+  padded, sped up, or shipped short; finals still never exceed source.
+
 ## v5.35 — First-person protagonist lived-story recap
 
 - **The protagonist tells their own story.** This release supersedes
@@ -847,7 +866,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.35-first-person-protagonist"`,
+URLs must show `"version":"v5.36-duration-calibration"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
