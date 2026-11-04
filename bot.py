@@ -660,13 +660,15 @@ FINAL_DURATION_TOLERANCE_MIN_SECONDS = 0.35
 # after every measured chunk from `_narration_measurements`'
 # effective_chars_per_second, and sizes every script with it.
 # Seeds are cold-start guesses only -- the first real measurement
-# replaces them outright.  Production measurement (v5.20 job): a
-# 313-char scene of my-MM-ThihaNeural measured 18.65s (~17 chars/s)
-# and the job-level effective rate pinned itself against the old
-# 9.0 clamp, so the earlier ~2.3 seed (inferred from an oversized
-# script's 341s total, not from the voice) and the 9.0 ceiling were
-# both far too low and mis-sized every cold-start script.
-SCRIPT_CHARS_PER_SEC_SEED = {"edge": 12.0, "gemini": 10.0}
+# replaces them outright.  Production measurements of the Edge
+# my-MM-ThihaNeural voice are consistently ~17.8-18.6 chars/s.  The
+# previous 12.0 seed sized the first script after every deploy about
+# one-third short (v5.35 production: 1,365 chars measured only 75.5s
+# against a 108.7s target), leaving measured calibration to invent a
+# very large expansion under quota pressure.  Seed Edge at its real
+# measured ballpark instead; the first real measurement still
+# replaces the seed outright for later windows/jobs.
+SCRIPT_CHARS_PER_SEC_SEED = {"edge": 18.0, "gemini": 10.0}
 SCRIPT_CHARS_PER_SEC_MIN = 1.2
 SCRIPT_CHARS_PER_SEC_MAX = 24.0
 SCRIPT_CHARS_PER_SEC_LEARN_WEIGHT = 0.5  # EMA weight of the newest measurement
@@ -11617,6 +11619,96 @@ def _parse_direct_scene_replacements(data, allowed_indexes) -> dict:
     return replacements
 
 
+def _direct_duration_expansion_prompt(
+    scenes: list,
+    story_context: dict,
+    story_map: dict,
+    protagonist: str = "",
+    *,
+    desired_total_chars: int,
+    is_opening_window: bool = False,
+) -> str:
+    """Prompt to expand existing scenes after measured TTS came out short.
+
+    Adding brand-new "missing beat" scenes is the first calibration
+    strategy, but production showed a model can keep returning only a
+    fraction of the requested text (or an empty scene list) once it
+    believes the key beats are already covered.  Rewriting the same
+    chronological scenes more fully -- with source-supported dialogue,
+    reactions, reasons, visible detail and consequences already in
+    the video/story map -- gives calibration a second, independent
+    way to converge without moving events or inventing filler.
+    """
+    scene_list = [
+        scene for scene in (scenes or []) if isinstance(scene, dict)
+    ]
+    current_total = script_total_chars(scene_list)
+    desired_total = max(current_total, int(desired_total_chars or 0))
+    scale = (desired_total / current_total) if current_total > 0 else 1.0
+    payload = []
+    allocated = 0
+    for index, scene in enumerate(scene_list):
+        current_chars = len(str(scene.get("burmese") or "").strip())
+        if index == len(scene_list) - 1:
+            desired_chars = max(current_chars, desired_total - allocated)
+        else:
+            desired_chars = max(
+                current_chars,
+                int(math.ceil(current_chars * scale)),
+            )
+            allocated += desired_chars
+        payload.append({
+            "scene_index": int(index),
+            "start": scene.get("start"),
+            "end": scene.get("end"),
+            "current_burmese_chars": int(current_chars),
+            "desired_burmese_chars": int(desired_chars),
+            "minimum_additional_chars": int(
+                max(0, desired_chars - current_chars)
+            ),
+            "burmese": str(scene.get("burmese") or ""),
+        })
+    resolved_protagonist, protagonist_gender, protagonist_pronoun, merged_context = (
+        _resolve_protagonist_pronoun(
+            protagonist=protagonist,
+            story_map=story_map,
+            story_context=story_context,
+            scenes=scene_list,
+        )
+    )
+    protagonist = resolved_protagonist or protagonist
+    context_lines = _story_context_prompt_lines(merged_context)
+    map_json = json.dumps(_normalize_story_map(story_map), ensure_ascii=False)
+    return f"""
+DURATION CALIBRATION SCENE EXPANSION — တိုင်းတာပြီးအသံက ပစ်မှတ်ထက် တိုနေလို့ ရှိပြီးသား scene တွေကိုပဲ အပြည့်အဝ ချဲ့ပြန်ရေးရပါမယ်။
+
+အရေးအကြီးဆုံး စည်းကမ်းများ:
+- Scene အရေအတွက်၊ `scene_index`၊ အစဉ်နဲ့ start/end အားလုံးကို အတိအကျထားပါ။ Scene အသစ် မထည့်ပါနဲ့၊ scene မဖျက်ပါနဲ့၊ ဖြစ်ရပ်ကို အခြား scene သို့ မရွှေ့ပါနဲ့။
+- Scene တစ်ခုစီအတွက် `desired_burmese_chars` သည် ခန့်မှန်းမဟုတ်ဘဲ **အနိမ့်ဆုံး** ပမာဏဖြစ်သည်။ စုစုပေါင်း အနည်းဆုံး {desired_total} လုံး ပြည့်ရမည်။ JSON မထုတ်ခင် scene တစ်ခုချင်းနဲ့ စုစုပေါင်းကို ကိုယ့်ဘာသာ ရေတွက်စစ်ပါ။ မပြည့်သေးလျှင် မထုတ်သေးဘဲ အောက်ပါခွင့်ပြုထားသော source အသေးစိတ်ဖြင့်ပဲ ထပ်ချဲ့ပါ။ `scenes` ကို ဗလာမပြန်ပါနှင့်။
+- ချဲ့ရာတွင် အဲဒီ scene ရဲ့ မူရင်း start/end အတွင်း ဗီဒီယိုမှာ တကယ်ပါပြီး လက်ရှိစာသားက အတိုချုပ်ထားတဲ့ အချက်ကိုသာသုံးပါ — ဘယ်သူဘယ်နေရာမှာလဲ၊ ပြောသူ→နားထောင်သူပြန်ဖြေ/ငြင်း→ဆုံးဖြတ်ချက် dialogue exchange၊ လုပ်ရပ်အသေးစိတ်၊ အကြောင်းရင်း၊ တုံ့ပြန်မှုနဲ့သူ့အကြောင်းရင်း၊ မြင်ရတဲ့အရာဝတ္ထု/ဖန်သားပြင်စာအဓိပ္ပာယ်၊ ဆုံးရှုံးနိုင်မှု၊ အရင်ရလဒ်ကနေ နောက်လုပ်ရပ်သို့ bridge တို့ကိုသာ ဖြည့်ပါ။
+- ဗီဒီယို/story_map/context မှာ မပါတဲ့ ဖြစ်ရပ်၊ အမည်၊ ဆက်နွယ်မှု၊ စကားပြော၊ အတွေး၊ အကြောင်းရင်း အသစ် လုံးဝ မတီထွင်ပါနှင့်။ အချက်တစ်ခုတည်းကို စကားလုံးပြောင်းပြီး ထပ်ပြောတာ၊ filler ထပ်တာ၊ အမည်ကို စက်ပိုင်းအတိုင်း ထပ်ခေါ်တာ မလုပ်ပါနှင့်။
+- Narrator မှာ အဓိကဇာတ်ကောင်ကိုယ်တိုင်ဖြစ်ပြီး locked self-pronoun «{protagonist_pronoun or "story_map/context က အတည်ပြုထားတဲ့ ကျွန်တော်/ကျွန်မ"}» တစ်ခုတည်းကို ကိုယ့်လုပ်ရပ်/အတွေး/တုံ့ပြန်မှုအတွက် သုံးပါ။ Protagonist ကို ကိုယ့်အမည်နဲ့ တတိယလူ subject လို မခေါ်ပါနှင့်။ အခြားလူတိုင်းကိုတော့ ရှိပြီးသား Name Ladder (full spoken_name introduction → approved short_name/spoken_name routine → identity_anchor re-entry) အတိုင်းသာ ညွှန်းပါ။
+- {"ပထမ scene မှာ protagonist ရဲ့ အမည်အပြည့် + ဘယ်သူလဲ self-introduction ကို ထိန်းထားပါ။" if is_opening_window else "Opening self-introduction ကို ဒီ window မှာ ထပ်မလုပ်ပါနှင့်။"}
+- Scene အစောပိုင်းမှာ protagonist ဆိုလျှင် locked pronoun, အခြားသူဆိုလျှင် အမည်ဖြင့် actor/speaker ကို ရှင်းပါ။ Protagonist မပါတဲ့ cutaway မှာ named actor/နေရာ bridge ကိုထိန်းပါ။
+- ပြောဟန်က စာအုပ်ဖတ်ပြတာ မဟုတ်ဘဲ protagonist က သူငယ်ချင်းကို တကယ်ကြုံခဲ့ရတာကို ပြန်ပြောပြနေသလို ဖြစ်ရမည်။ အရင်ရလဒ် → လိုချင်တာ → အဟန့်အတား/တောင်းဆိုချက် → လုပ်ရပ်/စကားပြော → တုံ့ပြန်မှု → အကျိုးဆက်ပုံစံနဲ့ ရေးပါ။
+- စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ။ "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး မသုံးဘဲ မြန်မာအသံထွက်နဲ့ မြန်မာဂဏန်းစာလုံးသာ သုံးပါ။
+
+အဓိကဇာတ်ကောင်: {protagonist or "မသိရသေး"}
+Locked narrator pronoun: {protagonist_pronoun or "story_map/context နဲ့သာ အတည်ပြုပါ"}
+Protagonist gender (metadata): {protagonist_gender or "မသိရသေး"}
+ယခင်ဇာတ်လမ်းအခြေအနေ:
+{context_lines or "- မရှိသေးပါ"}
+ယခုအပိုင်း story_map:
+{map_json}
+
+Scenes:
+{json.dumps(payload, ensure_ascii=False)}
+
+JSON ကိုသာ ပြန်ပေးပါ:
+{{"narrator_perspective": "first_person_protagonist", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "ချဲ့ရေးပြီး အဓိကဇာတ်ကောင် ကိုယ်တိုင်ပြန်ပြောဟန် recap စာသား"}}], "story_map": {{"character_cards": [], "beats": [], "terms": [], "visible_texts": [], "open_threads": [], "important_facts": []}}}}
+""".strip()
+
+
 async def _upload_video_to_gemini(client, chunk_path: str):
     video_file = await asyncio.wait_for(
         asyncio.to_thread(client.files.upload, file=chunk_path),
@@ -12031,6 +12123,167 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
             "dedupe": dedupe_stats,
             "cast_lock_replacements": int(replacements),
         }
+
+    async def _expand_calibration_scenes(desired_total_chars: int) -> bool:
+        """Expand the existing scenes when calibration additions stall.
+
+        This is intentionally a *replacement* strategy, not another
+        request for new scenes: the production failure was a model
+        adding only 226 of ~640 requested chars, then 96 more, then
+        returning an empty scene list.  Rewriting each timed scene
+        more fully can use dialogue/reaction/reason detail from the
+        same footage without moving story events across boundaries.
+        """
+        nonlocal scenes, story_map, video_file
+        nonlocal cast_lock_replacements, last_script_error
+        nonlocal latest_first_person_stats, latest_scene_opening_stats
+        nonlocal latest_dedupe_stats
+        before_chars = script_total_chars(scenes)
+        desired_total = int(desired_total_chars or 0)
+        if not scenes or before_chars <= 0 or desired_total <= before_chars:
+            return False
+        await tracker.update(
+            "⏱️ အသံတိုနေသေးလို့ ရှိပြီးသား scene တွေကို အချက်အလက်မပျောက်ဘဲ "
+            "အသေးစိတ် ချဲ့ပြန်ရေးနေပါသည်...",
+            force=True,
+        )
+        expansion_prompt = _direct_duration_expansion_prompt(
+            scenes,
+            story_context,
+            story_map,
+            protagonist=new_protagonist,
+            desired_total_chars=desired_total,
+            is_opening_window=(chunk_index == 1),
+        )
+        try:
+            if video_file is None:
+                video_file = await _upload_video_to_gemini(client, chunk_path)
+            expansion_data = await _generate_direct_gemini_json(
+                client,
+                [video_file, expansion_prompt],
+                purpose="duration calibration scene expansion",
+                tracker=tracker,
+                max_output_tokens=16384,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            last_script_error = _safe_error_text(e, 900)
+            logger.warning(
+                "Direct duration calibration scene expansion failed: %s",
+                last_script_error,
+            )
+            return False
+
+        expansion_payload = _normalize_direct_script_payload(
+            expansion_data,
+            chunk_duration=chunk_dur,
+        )
+        candidate_map = _merge_story_maps(
+            story_map,
+            expansion_payload.get("story_map"),
+            chunk_duration=chunk_dur,
+        )
+        replacements = _parse_direct_scene_replacements(
+            expansion_data,
+            list(range(len(scenes))),
+        )
+        if not replacements:
+            ordered_scenes = expansion_payload.get("scenes") or []
+            if len(ordered_scenes) == len(scenes):
+                replacements = {
+                    index: str(scene.get("burmese") or "").strip()
+                    for index, scene in enumerate(ordered_scenes)
+                    if isinstance(scene, dict)
+                    and str(scene.get("burmese") or "").strip()
+                }
+        if not replacements:
+            logger.warning(
+                "Direct duration calibration scene expansion returned no replacements"
+            )
+            return False
+
+        protagonist_forms = _protagonist_name_forms(
+            new_protagonist,
+            story_map=candidate_map,
+            story_context={
+                **(story_context or {}),
+                "protagonist": new_protagonist,
+                "protagonist_gender": new_protagonist_gender,
+                "protagonist_pronoun": new_protagonist_pronoun,
+            },
+        )
+        raw_candidate = []
+        for scene_index, scene in enumerate(scenes):
+            old_text = str(scene.get("burmese") or "").strip()
+            replacement = str(replacements.get(scene_index) or "").strip()
+            if replacement:
+                replacement = _polish_text_for_speech(replacement).strip()
+            if (
+                not replacement
+                or len(replacement) < max(1, int(len(old_text) * 0.95))
+                or _tts_unsafe_script_chars(replacement)
+                or not _scene_uses_first_person_protagonist_narrator(
+                    replacement,
+                    expected_pronoun=new_protagonist_pronoun,
+                    protagonist_forms=protagonist_forms,
+                )
+            ):
+                replacement = old_text
+            raw_candidate.append({**scene, "burmese": replacement})
+
+        candidate_scenes, expansion_stats = _apply_first_person_pass(
+            raw_candidate,
+            candidate_map=candidate_map,
+            is_opening=(chunk_index == 1),
+            dedupe=True,
+            dedupe_floor=before_chars,
+            sync_identity=False,
+        )
+        if len(candidate_scenes) != len(scenes):
+            return False
+        pov_stats = expansion_stats.get("first_person") or {}
+        pov_metrics = pov_stats.get("metrics") or {}
+        if pov_stats.get("bad_scene_indexes") or pov_metrics.get(
+            "bad_scene_indexes"
+        ):
+            return False
+        candidate_scenes = sort_scenes(candidate_scenes)
+        candidate_chars = script_total_chars(candidate_scenes)
+        expansion_cap = int(desired_total * 1.10)
+        if candidate_chars > expansion_cap:
+            candidate_scenes = sort_scenes(
+                trim_scenes_proportionally(candidate_scenes, expansion_cap)
+            )
+            candidate_chars = script_total_chars(candidate_scenes)
+        if candidate_chars <= before_chars:
+            logger.warning(
+                "Direct duration calibration scene expansion made no progress: "
+                "%s -> %s chars (desired %s)",
+                before_chars,
+                candidate_chars,
+                desired_total,
+            )
+            return False
+
+        scenes = candidate_scenes
+        story_map = candidate_map
+        _sync_protagonist_identity(expansion_payload)
+        cast_lock_replacements += int(
+            expansion_stats.get("cast_lock_replacements") or 0
+        )
+        latest_first_person_stats = pov_stats
+        latest_scene_opening_stats = expansion_stats.get("scene_opening") or {}
+        latest_dedupe_stats = expansion_stats.get("dedupe") or {}
+        logger.info(
+            "Chunk %s duration calibration scene expansion: %s -> %s chars "
+            "(desired %s)",
+            chunk_index,
+            before_chars,
+            candidate_chars,
+            desired_total,
+        )
+        return True
 
     if has_prepared_script:
         # Manual per-part flow: the script was already generated and stored
@@ -13031,6 +13284,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                     expand=True,
                 )
                 missing_chars = max(1, desired_total_chars - current_chars)
+                minimum_new_scenes = max(1, int(math.ceil(missing_chars / 220)))
                 await tracker.update(
                     f"⏱️ အသံအမှန် {fmt_time(audio_seconds)} ပဲရှိသေးလို့ "
                     f"ပစ်မှတ် {fmt_time(target_final_seconds)} ပြည့်အောင် "
@@ -13039,8 +13293,8 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 )
                 extra_prompt = f"""
 မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ အတိုချုပ်လွန်းသော/ကျန်ခဲ့သော အပိုင်းများကို scene အသစ်များအဖြစ် ထပ်ဖြည့်ပါ။
-ယခင် scenes များကို ပြန်မပေးပါနှင့် — အသစ်ထပ်ထည့်ရမည့် scenes များကိုသာ ပေးပါ။
-အသစ်စာသား စုစုပေါင်းကို {missing_chars} လုံးမှ {int(missing_chars * 1.2)} လုံးအတွင်းသာ ရေးပါ (အဲဒီထက် လုံးဝ မပိုရ)။ ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ဝန်းကျင် ဖြစ်ရမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဖြည့်ပါ — ပြောပြီးသားကို ပုံစံပြောင်း ပြန်မရေးရ။
+ယခင် scenes များကို ပြန်မပေးပါနှင့် — အသစ်ထပ်ထည့်ရမည့် scenes များကိုသာ ပေးပါ။ `scenes` ကို ဗလာမပြန်ပါနှင့်။ အနည်းဆုံး scene အသစ် {minimum_new_scenes} ခန်း ခွဲရေးပါ။
+အသစ်စာသား စုစုပေါင်းကို {missing_chars} လုံးမှ {int(missing_chars * 1.2)} လုံးအတွင်းသာ ရေးပါ (အဲဒီထက် လုံးဝ မပိုရ)။ {missing_chars} သည် ခန့်မှန်းမဟုတ်ဘဲ **အနိမ့်ဆုံး** ပမာဏဖြစ်သည်။ JSON မထုတ်ခင် အသစ်စာသားစုစုပေါင်းကို ကိုယ့်ဘာသာ ရေတွက်စစ်ပါ။ မပြည့်သေးလျှင် မထုတ်သေးဘဲ ကျန်နေသော source dialogue/reaction/reason/result အသေးစိတ်ကိုပဲ ထပ်ဖြည့်ပါ။ ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ဝန်းကျင် ဖြစ်ရမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဖြည့်ပါ — ပြောပြီးသားကို ပုံစံပြောင်း ပြန်မရေးရ။
 Narrator မှာ အဓိကဇာတ်ကောင်ကိုယ်တိုင်ဖြစ်ပြီး protagonist အတွက် script/story_map က locked «ကျွန်တော်» သို့မဟုတ် «ကျွန်မ» တစ်ခုတည်းကိုသုံးပါ။ အခြားလူတွေကိုတော့ ရှိပြီးသား full spoken_name, approved short_name နဲ့ identity_anchor ကိုသာ Name Ladder အတိုင်း ဆက်သုံးပါ။
 Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/approved short_name/label နဲ့ ရှင်းပါ။
 ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။ အထူးသဖြင့် ကျန်နေသော လူမိတ်ဆက်/identity_anchor/approved short_name/name_reveal_bridge၊ term ရဲ့ first_explanation၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ ဆုံးရှုံးနိုင်မှု၊ dialogue အပြန်အလှန်နဲ့ နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲဆိုတဲ့ bridge ကို ဦးစားပေးပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
@@ -13070,6 +13324,11 @@ JSON ကိုသာပြန်ပေးပါ:
                         "Direct duration calibration top-up failed: "
                         f"{last_script_error}"
                     )
+                    if await _expand_calibration_scenes(desired_total_chars):
+                        clips = await synthesize_tts(
+                            scenes, os.path.dirname(chunk_path), st
+                        )
+                        continue
                     break
                 extra_payload = _normalize_direct_script_payload(
                     extra, chunk_duration=chunk_dur
@@ -13127,6 +13386,11 @@ JSON ကိုသာပြန်ပေးပါ:
                     logger.warning(
                         "Direct duration calibration returned no usable first-person scenes"
                     )
+                    if await _expand_calibration_scenes(desired_total_chars):
+                        clips = await synthesize_tts(
+                            scenes, os.path.dirname(chunk_path), st
+                        )
+                        continue
                     break
                 scenes.extend(accepted_scenes)
                 scenes = sort_scenes(scenes)
@@ -13157,6 +13421,8 @@ JSON ကိုသာပြန်ပေးပါ:
                     scenes = sort_scenes(
                         trim_scenes_proportionally(scenes, topup_cap)
                     )
+                if script_total_chars(scenes) < int(desired_total_chars * 0.98):
+                    await _expand_calibration_scenes(desired_total_chars)
                 if script_total_chars(scenes) <= current_chars:
                     break
             elif over_source:
@@ -23275,7 +23541,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.35-first-person-protagonist"
+BUILD_VERSION = "v5.36-duration-calibration"
 BUILD_FEATURES = len(FEATURES)
 
 

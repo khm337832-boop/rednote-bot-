@@ -98,12 +98,13 @@ def unique_first_person_sentence(index: int) -> str:
         "နောက်လမ်းကိုရှာ", "အကူအညီထပ်တောင်း", "စိတ်ချစွာပြန်လာ",
         "သေချာစွာနားထောင်", "အရေးတကြီးလိုက်ရှာ",
     )
+    cycle = index // 16
     place = places[index % len(places)]
-    item = objects[(index * 3) % len(objects)]
-    action = actions[(index * 5) % len(actions)]
-    companion = companions[(index * 3) % len(companions)]
-    explanation = explanations[(index * 5) % len(explanations)]
-    decision = decisions[(index * 7) % len(decisions)]
+    item = objects[(index * 3 + cycle * 5) % len(objects)]
+    action = actions[(index * 5 + cycle * 7) % len(actions)]
+    companion = companions[(index * 3 + cycle) % len(companions)]
+    explanation = explanations[(index * 5 + cycle * 3) % len(explanations)]
+    decision = decisions[(index * 7 + cycle * 3) % len(decisions)]
     if index % 2:
         return (
             f"{companion}က {place}မှာ {item}အကြောင်းကို "
@@ -950,30 +951,29 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
     def test_script_length_rate_is_learned_not_hardcoded_6_5(self):
         # A fresh process on the default edge-first order plans with the
         # cold-start seed for the Edge voice, then replaces it with the
-        # first real measurement.  Production measured my-MM-ThihaNeural
-        # at ~14-17 chars/s (a 313-char scene took 18.65s); the earlier
-        # 2.3 seed -- inferred from an oversized script's total, not
-        # from the voice -- mis-sized every cold-start script ~6x short
-        # and sent calibration into expand/trim oscillation.
+        # first real measurement.  Production repeatedly measured my-MM-ThihaNeural
+        # at ~17.8-18.6 chars/s; the earlier 12.0 seed sized the first
+        # script after a deploy about one-third short and left measured
+        # calibration to expand a 75.5s narration all the way to 108.7s.
         bot.reset_learned_chars_per_second()
         self.assertEqual(bot.TTS_PROVIDER_ORDER[0], "edge")
-        self.assertAlmostEqual(bot.learned_chars_per_second(), 12.0, places=6)
-        self.assertAlmostEqual(bot._settings_script_rate({}), 12.0, places=6)
+        self.assertAlmostEqual(bot.learned_chars_per_second(), 18.0, places=6)
+        self.assertAlmostEqual(bot._settings_script_rate({}), 18.0, places=6)
 
         # The shipped 6.5 default means "learn it for me"; any other value
         # is a deliberate user override and is kept.
         self.assertAlmostEqual(
-            bot._settings_script_rate({"rate": 6.5}), 12.0, places=6
+            bot._settings_script_rate({"rate": 6.5}), 18.0, places=6
         )
         self.assertAlmostEqual(
             bot._settings_script_rate({"rate": 7.5}), 7.5, places=6
         )
 
-        # A 120s window at 90% is 1296 chars at the 12 chars/s seed --
-        # within one calibration round of the voice's real speed, so the
-        # first script no longer needs heavy expansion *or* trimming.
-        self.assertEqual(bot.script_target_chars(120, {}), 1296)
-        self.assertEqual(bot._rewrite_target_chars_for_duration(120, {}), 1296)
+        # A 120s window at 90% is 1944 chars at the 18 chars/s seed --
+        # the voice's production-measured speed, so a cold-start script
+        # no longer needs heavy expansion *or* trimming.
+        self.assertEqual(bot.script_target_chars(120, {}), 1944)
+        self.assertEqual(bot._rewrite_target_chars_for_duration(120, {}), 1944)
         # Gemini seeds at its own measured ballpark.
         self.assertAlmostEqual(
             bot.learned_chars_per_second("gemini"), 10.0,
@@ -1075,7 +1075,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "effective_chars_per_second": 8.0,
         })
         self.assertAlmostEqual(
-            bot.learned_chars_per_second("edge"), 12.0, places=6
+            bot.learned_chars_per_second("edge"), 18.0, places=6
         )
 
     def test_trim_cuts_only_at_sentence_boundaries(self):
@@ -2172,6 +2172,212 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
         "ffmpeg is not available",
     )
+    async def test_direct_calibration_expands_scenes_when_topup_returns_empty(self):
+        """Production regression: calibration additions can return [].
+
+        The v5.35 live job measured 75.5s -> 87.3s -> 92.7s against a
+        108.7s target as each "new scenes only" top-up under-delivered,
+        then the next answer was an empty scene list and calibration
+        stopped.  It must fall back to expanding the existing timed
+        scenes instead of refusing a fixable recap.
+        """
+        self.start_patch(
+            patch.object(bot, "GEMINI_HEDGE_INITIAL_PARALLEL", 1)
+        )
+        chunk_path = self.tmp_path / "calibration_expansion_chunk.mp4"
+        result = subprocess.run(
+            [
+                bot.FFMPEG_BIN,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=64x64:r=25:d=3",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(chunk_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest("could not generate a local MP4 fixture")
+
+        video_file = SimpleNamespace(
+            state=SimpleNamespace(name="ACTIVE"),
+            name="files/test-video",
+        )
+        expanded = _padded_sentence(
+            f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။ {MALE_PRONOUN}",
+            56,
+        )
+        generate_calls = []
+
+        def fake_generate(model, contents, config):
+            prompt = next(
+                (str(c) for c in reversed(contents) if isinstance(c, str)),
+                "",
+            )
+            generate_calls.append(prompt)
+            if "DURATION CALIBRATION SCENE EXPANSION" in prompt:
+                payload = {
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [
+                        {
+                            "scene_index": 0,
+                            "start": 0,
+                            "end": 3,
+                            "burmese": expanded,
+                        }
+                    ],
+                }
+            elif "ယခင် scenes များကို ပြန်မပေးပါနှင့်" in prompt:
+                # The exact production failure: a syntactically valid
+                # answer with no usable new scenes.
+                payload = {
+                    "narrator_perspective": "first_person_protagonist",
+                    "story_map": {"character_cards": [], "beats": []},
+                    "scenes": [],
+                }
+            elif "STORY EDITOR PASS" in prompt:
+                payload = {
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [
+                        {
+                            "scene_index": 0,
+                            "start": 0,
+                            "end": 3,
+                            "burmese": first_person_text(27),
+                        }
+                    ],
+                }
+            elif "ယခင် script:" in prompt:
+                payload = {
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [],
+                    "cuts": [],
+                }
+            else:
+                payload = {
+                    "protagonist": HERO_NAME,
+                    "protagonist_gender": "male",
+                    "protagonist_pronoun": MALE_PRONOUN,
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [
+                        {
+                            "start": 0,
+                            "end": 3,
+                            "burmese": first_person_text(27),
+                        }
+                    ],
+                    "cuts": [],
+                }
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False)
+            )
+
+        fake_client = SimpleNamespace(
+            files=SimpleNamespace(
+                upload=lambda file: video_file,
+                get=lambda name: video_file,
+                delete=lambda name: None,
+            ),
+            models=SimpleNamespace(generate_content=fake_generate),
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "genai",
+                SimpleNamespace(Client=lambda api_key: fake_client),
+            )
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "types",
+                SimpleNamespace(
+                    GenerateContentConfig=lambda **kwargs: SimpleNamespace(**kwargs)
+                ),
+            )
+        )
+
+        async def fake_fast_tts(tts_scenes, work_dir, settings):
+            return [
+                np.full(
+                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 20.0)),
+                    0.5,
+                    dtype=np.float32,
+                )
+                for scene in tts_scenes
+            ]
+
+        self.start_patch(patch.object(bot, "synthesize_tts", new=fake_fast_tts))
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(
+                    return_value={
+                        "summary": "done",
+                        "characters": [],
+                        "last_scene": "end",
+                        "protagonist": HERO_NAME,
+                        "protagonist_gender": "male",
+                        "protagonist_pronoun": MALE_PRONOUN,
+                        "narrator_perspective": "first_person_protagonist",
+                    }
+                ),
+            )
+        )
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        out_chunk, _summary = await bot.build_chunk_recap(
+            str(chunk_path),
+            3,
+            0,
+            3,
+            {},
+            1,
+            tracker,
+            settings={
+                "coverage": 90,
+                "rate": 10.0,
+                "speed": 1.0,
+                "pause": 0,
+                "voice": "Charon",
+                "resolution": 64,
+                "shield": False,
+                "color": False,
+                "quality": 35,
+                "fast_mode": True,
+            },
+        )
+
+        self.assertTrue(
+            any(
+                "ယခင် scenes များကို ပြန်မပေးပါနှင့်" in p
+                for p in generate_calls
+            ),
+            generate_calls,
+        )
+        self.assertTrue(
+            any(
+                "DURATION CALIBRATION SCENE EXPANSION" in p
+                for p in generate_calls
+            ),
+            generate_calls,
+        )
+        final_duration, _, _ = bot.probe_video_info(out_chunk)
+        self.assertAlmostEqual(final_duration, 2.8, delta=0.25)
+
+    @unittest.skipUnless(
+        os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
+        "ffmpeg is not available",
+    )
     # --- v5.18: measured-duration calibration (production 124.2s/113s) ---
     def test_duration_trim_lands_inside_the_window_from_measured_rate(self):
         """Regression: a 125.5s window measuring 124.2s against a 113s target
@@ -2428,7 +2634,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             scenes = []
             total_chars = 0
             index = 0
-            while total_chars < 1350:
+            while total_chars < 2000:
                 text = " ".join(
                     unique_first_person_sentence(index * 3 + offset)
                     for offset in range(3)
@@ -2482,7 +2688,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             tts_calls.append([scene["burmese"] for scene in tts_scenes])
             return [
                 np.full(
-                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 12.0)),
+                    max(1, int(bot.SAMPLE_RATE * len(scene["burmese"]) / 18.0)),
                     0.5,
                     dtype=np.float32,
                 )
@@ -2522,8 +2728,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "fast_mode": True,
         }
         # The shipped 6.5 "rate" default must mean auto (learned), not 6.5.
-        self.assertEqual(bot.script_target_chars(120, settings), 1296)
-        self.assertEqual(bot.script_target_chars(120, {**settings, "rate": 6.5}), 1296)
+        self.assertEqual(bot.script_target_chars(120, settings), 1944)
+        self.assertEqual(bot.script_target_chars(120, {**settings, "rate": 6.5}), 1944)
 
         out_chunk, summary = await bot.build_chunk_recap(
             str(chunk_path), 120, 0, 120, {}, 1, tracker, settings=settings,
@@ -2536,8 +2742,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # needed (long-but-inside-the-source narration is kept whole;
         # only an over-source excess is ever shaved).
         first_chars = sum(len(text) for text in tts_calls[0])
-        self.assertGreaterEqual(first_chars, 1200)
-        self.assertLessEqual(first_chars, 1500)
+        self.assertGreaterEqual(first_chars, 1800)
+        self.assertLessEqual(first_chars, 2100)
         self.assertLessEqual(len(tts_calls), 2)
         # Nothing was chopped mid-sentence on the way.
         for call in tts_calls:
@@ -2593,7 +2799,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             scenes = []
             total_chars = 0
             index = 0
-            while total_chars < 1350:
+            while total_chars < 2000:
                 text = " ".join(
                     unique_first_person_sentence(index * 3 + offset)
                     for offset in range(3)
@@ -2753,8 +2959,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         capped = bot._cap_scenes_to_source(scenes, 120.0, {})
         total_after = bot.script_total_chars(capped)
         self.assertLess(total_after, total_before)
-        # Cap ~= 95% of 120s at the 12 chars/s cold-start seed.
-        self.assertLessEqual(total_after, 1500)
+        # Cap ~= 95% of 120s at the 18 chars/s cold-start seed.
+        self.assertGreaterEqual(total_after, 1900)
+        self.assertLessEqual(total_after, 2100)
         # The validated minimum is a hard floor for the cap.
         floored = bot._cap_scenes_to_source(
             scenes, 120.0, {}, minimum_chars=2500
@@ -5311,7 +5518,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             script_rate = health.json()["script_length_rate"]
             self.assertEqual(script_rate["active_provider"], "edge")
             self.assertEqual(script_rate["clamp"], [1.2, 24.0])
-            self.assertEqual(script_rate["seed_by_provider"]["edge"], 12.0)
+            self.assertEqual(script_rate["seed_by_provider"]["edge"], 18.0)
             self.assertEqual(
                 script_rate["learning_source"],
                 "measured_tts_effective_chars_per_second",
