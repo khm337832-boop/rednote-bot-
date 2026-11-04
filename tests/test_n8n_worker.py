@@ -1272,6 +1272,209 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             ["ဂျွန် (အဘိုး)", "ဂျွန် (မြေး)"],
         )
 
+    def test_cast_lock_name_ladder_keeps_short_evidence_and_reveal_bridge(self):
+        upgraded_cards = bot._normalize_character_cards([
+            {
+                "spoken_name": "အနီရောင်ဂျာကင်ဝတ်ထားတဲ့ လူငယ်",
+                "identity_anchor": "အနီဂျာကင်ဝတ်လူငယ်",
+                "role": "lead",
+                "visual_cue": "red jacket",
+                "name_source": "visual_label",
+                "confidence": "descriptive",
+            },
+            {
+                "spoken_name": HERO_NAME,
+                "source_name": "Aiden",
+                "role": "lead",
+                "visual_cue": "red jacket",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+                "name_evidence_text": "Aiden",
+            },
+        ])
+
+        self.assertEqual(len(upgraded_cards), 1)
+        upgraded = upgraded_cards[0]
+        self.assertEqual(upgraded["spoken_name"], HERO_NAME)
+        self.assertEqual(upgraded["name_evidence_text"], "Aiden")
+        self.assertEqual(
+            upgraded["name_reveal_bridge"],
+            f"အရင် အနီရောင်ဂျာကင်ဝတ်ထားတဲ့ လူငယ် ရဲ့ အမည်က {HERO_NAME} ဖြစ်တယ်",
+        )
+        self.assertIn("အနီရောင်ဂျာကင်ဝတ်ထားတဲ့ လူငယ်", upgraded["aliases"])
+        self.assertIn("အနီဂျာကင်ဝတ်လူငယ်", upgraded["aliases"])
+
+        short_cards = bot._normalize_character_cards([
+            {
+                "spoken_name": "ဝမ်လင်ဖန်း",
+                "short_name": "လင်ဖန်း",
+                "source_name": "Wang Linfeng",
+                "aliases": ["လင်ဖန်း", "ဝမ်လင်"],
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+                "name_evidence_text": "Wang Linfeng",
+            },
+            {
+                "spoken_name": "မေရီ",
+                "short_name": "လင်ဖန်း",
+                "source_name": "Mary",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            },
+        ])
+        # A distinct approved short form is not an alias, but the same
+        # short form cannot safely point to two different people.
+        self.assertEqual(short_cards[0]["short_name"], "")
+        self.assertEqual(short_cards[1]["short_name"], "")
+        self.assertNotIn("လင်ဖန်း", short_cards[0]["aliases"])
+
+        story_map = {
+            "character_cards": [{
+                "spoken_name": "ဝမ်လင်ဖန်း",
+                "short_name": "လင်ဖန်း",
+                "source_name": "Wang Linfeng",
+                "aliases": ["အရင်ပုံစံ"],
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            }]
+        }
+        scenes = [{
+            "burmese": "လင်ဖန်းက တံခါးဖွင့်တယ်။ အရင်ပုံစံက အထဲဝင်တယ်။"
+        }]
+        replacements = bot._apply_cast_lock_to_scenes(scenes, story_map)
+        self.assertEqual(replacements, 1)
+        self.assertIn("လင်ဖန်းက", scenes[0]["burmese"])
+        self.assertIn("ဝမ်လင်ဖန်းက", scenes[0]["burmese"])
+        self.assertNotIn("အရင်ပုံစံ", scenes[0]["burmese"])
+
+    def test_story_map_links_name_card_evidence_and_creates_missing_card(self):
+        story_map = bot._normalize_story_map({
+            "character_cards": [{
+                "spoken_name": HERO_NAME,
+                "source_name": "Aiden",
+                "name_source": "dialogue",
+                "confidence": "uncertain",
+            }],
+            "visible_texts": [
+                {
+                    "start": 1,
+                    "end": 4,
+                    "source_text": "Aiden",
+                    "burmese_meaning": f"{HERO_NAME}လို့ရေးထားတယ်",
+                    "kind": "name_card",
+                    "related_character": HERO_NAME,
+                    "narrate": True,
+                },
+                {
+                    "start": 5,
+                    "end": 8,
+                    "source_text": "Mary",
+                    "burmese_meaning": "မေရီလို့ရေးထားတယ်",
+                    "kind": "name_card",
+                    "related_character": "မေရီ",
+                    "narrate": True,
+                },
+            ],
+        }, chunk_duration=20)
+
+        cards_by_name = {
+            card["spoken_name"]: card
+            for card in story_map["character_cards"]
+        }
+        self.assertEqual(cards_by_name[HERO_NAME]["name_source"], "on_screen")
+        self.assertEqual(cards_by_name[HERO_NAME]["confidence"], "confirmed")
+        self.assertEqual(
+            cards_by_name[HERO_NAME]["name_evidence_text"], "Aiden"
+        )
+        self.assertEqual(cards_by_name["မေရီ"]["source_name"], "Mary")
+        self.assertEqual(
+            cards_by_name["မေရီ"]["name_evidence_text"], "Mary"
+        )
+        self.assertEqual(cards_by_name["မေရီ"]["name_source"], "on_screen")
+
+    def test_story_clarity_flags_name_ladder_and_sentence_identity_gaps(self):
+        full_name = "ဝမ်လင်ဖန်း"
+        long_label = "ရွာအနောက်ဘက်က ထင်းခွဲဓားကိုင်ထားတဲ့ လယ်သမားကြီး"
+        story_map = {
+            "character_cards": [
+                {
+                    "spoken_name": full_name,
+                    "short_name": "လင်ဖန်း",
+                    "role": "ရွာထဲက သစ်ခုတ်သမားလူငယ်",
+                    "relation": "မေရီ့ရဲ့အစ်ကို",
+                    "introduction": f"{full_name}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက သစ်ခုတ်သမားဖြစ်ပြီး မေရီ့ရဲ့အစ်ကိုဖြစ်တယ်",
+                    "identity_anchor": "မေရီ့ရဲ့အစ်ကိုဖြစ်တဲ့ ဝမ်လင်ဖန်း",
+                    "aliases": ["အနီရောင်ဂျာကင်ဝတ်ထားသူ"],
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                    "name_reveal_bridge": f"အရင် အနီရောင်ဂျာကင်ဝတ်ထားသူရဲ့ အမည်က {full_name} ဖြစ်တယ်",
+                },
+                {
+                    "spoken_name": "မေရီ",
+                    "role": "ရွာရဲ့ ဆေးဆရာမ",
+                    "relation": "ဝမ်လင်ဖန်းရဲ့ညီမ",
+                    "introduction": "မေရီလို့ခေါ်တဲ့ အမျိုးသမီးက ဝမ်လင်ဖန်းရဲ့ညီမဖြစ်ပြီး ရွာရဲ့ဆေးဆရာမဖြစ်တယ်",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+                {
+                    "spoken_name": long_label,
+                    "role": "ရွာအနောက်ဘက်က လယ်သမားကြီး",
+                    "introduction": f"{long_label}က ရွာအနောက်ဘက်မှာ နေတယ်",
+                    "name_source": "visual_label",
+                    "confidence": "descriptive",
+                },
+            ],
+            "beats": [
+                {"start": 0, "end": 20, "beat": "Linfeng meets Mary"},
+                {"start": 20, "end": 50, "beat": "The farmer works"},
+            ],
+        }
+        scenes = [
+            {"start": 0, "end": 10, "burmese": "လင်ဖန်းက တံခါးဖွင့်တယ်။"},
+            {
+                "start": 10,
+                "end": 20,
+                "burmese": "မေရီလို့ခေါ်တဲ့ အမျိုးသမီးက လင်ဖန်းကို စောင့်နေတယ်။",
+            },
+            {
+                "start": 20,
+                "end": 30,
+                "burmese": "သူက တံခါးကိုပိတ်လိုက်တယ်။ သူမက ပြန်ပြောတယ်။",
+            },
+            {
+                "start": 30,
+                "end": 40,
+                "burmese": f"သူက ပြန်မေးတယ်။ {long_label}က လယ်ခင်းထဲဝင်တယ်။",
+            },
+            {"start": 40, "end": 50, "burmese": f"{long_label}က ထင်းတွေစုတယ်။"},
+            {"start": 50, "end": 60, "burmese": f"{long_label}က အိမ်ပြန်တယ်။"},
+        ]
+
+        metrics = bot._story_clarity_metrics(scenes, story_map)
+
+        self.assertEqual(
+            metrics["approved_short_names"], {full_name: "လင်ဖန်း"}
+        )
+        self.assertIn(
+            full_name, metrics["missing_character_introductions"]
+        )
+        self.assertEqual(metrics["awkward_spoken_names"], [long_label])
+        self.assertEqual(metrics["repeated_long_name_labels"], [long_label])
+        self.assertEqual(metrics["missing_name_reveal_bridges"], [full_name])
+        self.assertGreaterEqual(metrics["ambiguous_pronoun_sentences"], 2)
+        self.assertGreaterEqual(metrics["unattributed_dialogue_sentences"], 2)
+        for issue in (
+            "missing_character_introductions",
+            "awkward_spoken_names",
+            "repeated_long_name_labels",
+            "missing_name_reveal_bridges",
+            "ambiguous_pronoun_sentences",
+            "unattributed_dialogue_sentences",
+        ):
+            self.assertIn(issue, metrics["issues"])
+        self.assertTrue(metrics["needs_editor"])
+
     def test_story_clarity_flags_unnamed_actors_and_alias_variants(self):
         unnamed = [
             {
@@ -2513,6 +2716,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_send.await_count, 1)
         self.assertEqual(users["919191"]["_seen_version"], bot.BUILD_VERSION)
         self.assertIn(bot.BUILD_VERSION, fake_send.await_args.args[1])
+        self.assertIn("Name Ladder", fake_send.await_args.args[1])
         # A failed send is not marked seen (retried on next contact).
         fake_send.reset_mock()
         fake_send.return_value = None
@@ -2980,6 +3184,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                         "သစ်ခုတ်သမားဖြစ်ပြီး မေရီ့ရဲ့သားဖြစ်တယ်"
                     ),
                     "identity_anchor": "မေရီ့ရဲ့သားဖြစ်တဲ့ အေဒင်",
+                    "short_name": "အေးဒင်",
+                    "name_evidence_text": "Aiden",
+                    "name_reveal_bridge": f"အရင် သစ်ခုတ်လူငယ်ရဲ့ အမည်က {HERO_NAME} ဖြစ်တယ်",
                     "name_source": "on_screen",
                     "confidence": "confirmed",
                 },
@@ -3029,6 +3236,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         card = story_map["character_cards"][0]
         self.assertEqual(card["identity_anchor"], "မေရီ့ရဲ့သားဖြစ်တဲ့ အေဒင်")
+        self.assertEqual(card["short_name"], "အေးဒင်")
+        self.assertEqual(card["name_evidence_text"], "Aiden")
+        self.assertIn(HERO_NAME, card["name_reveal_bridge"])
         beat = story_map["beats"][0]
         self.assertIn("ဖန်သားပြင်မှာ", beat["visible_text"])
         self.assertIn("အချက်မပြည့်", beat["why_it_matters"])
@@ -3044,6 +3254,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context["terms"], story_map["terms"])
         self.assertIn("အချက်မပြည့်", " ".join(context["story_beats"]))
         prompt_lines = bot._story_context_prompt_lines(context)
+        self.assertIn("Name Ladder", prompt_lines)
+        self.assertIn("နောက်ပိုင်းနေ့တိုင်းခေါ်ရန်: အေးဒင်", prompt_lines)
+        self.assertIn("အမည်အထောက်အထားစာသား: Aiden", prompt_lines)
+        self.assertIn("အမည်ပြောင်းချိန် ယခင်အပိုင်းမှာ မပြောရသေးရင်သာ", prompt_lines)
         self.assertIn("ပြန်ပေါ်လာရင်အမှတ်ရစေရန်", prompt_lines)
         self.assertIn("Glossary Lock", prompt_lines)
         self.assertIn("ပထမအကြိမ်ရှင်းပြရန်", prompt_lines)
@@ -3333,6 +3547,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("အမည်မသိလူငယ်", guide)
         self.assertIn("ဘာကြောင့် အခုရောက်လာတာလဲ", guide)
         self.assertIn("Glossary Lock", guide)
+        self.assertIn("Name Ladder", guide)
+        self.assertIn("short_name", guide)
+        self.assertIn("name_evidence_text", guide)
+        self.assertIn("name_reveal_bridge", guide)
         self.assertIn("identity_anchor", guide)
         self.assertIn("visible_texts", guide)
         self.assertIn("first_explanation", guide)
@@ -3347,6 +3565,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("နောက်ဆုံး window ဖြစ်သည်", editor_prompt)
         self.assertIn('"introduction"', editor_prompt)
         self.assertIn('"identity_anchor"', editor_prompt)
+        self.assertIn('"short_name"', editor_prompt)
+        self.assertIn('"name_evidence_text"', editor_prompt)
+        self.assertIn('"name_reveal_bridge"', editor_prompt)
         self.assertIn('"first_explanation"', editor_prompt)
         self.assertIn('"visible_texts"', editor_prompt)
         self.assertIn('"why_it_matters"', editor_prompt)
@@ -3369,6 +3590,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("နောက်ဆုံး group ပါတယ်", worker_prompt)
         self.assertIn('"introduction"', worker_prompt)
         self.assertIn('"identity_anchor"', worker_prompt)
+        self.assertIn('"short_name"', worker_prompt)
+        self.assertIn('"name_evidence_text"', worker_prompt)
+        self.assertIn('"name_reveal_bridge"', worker_prompt)
         self.assertIn('"first_explanation"', worker_prompt)
         self.assertIn('"visible_texts"', worker_prompt)
         self.assertIn('"why_it_matters"', worker_prompt)
@@ -4948,7 +5172,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["script_style"],
-                "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
+                "pro_recap_third_person_name_ladder_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_auth"], "secret_token_header"
@@ -4968,11 +5192,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["cast_lock"],
-                "subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected",
+                "subtitle_on_screen_first_name_ladder_full_spoken_name_approved_short_form_or_stable_label_ambiguous_alias_rejected",
             )
             self.assertEqual(
                 health.json()["script_qa"],
-                "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
+                "cumulative_name_ladder_introductions_sentence_identity_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
             )
             self.assertEqual(
                 health.json()["story_clarity_contract"],
@@ -4980,7 +5204,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["story_comprehension"],
-                "natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
+                "natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
             )
             self.assertEqual(
                 health.json()["delivery_integrity"],
@@ -7008,6 +7232,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                     "name_source": "subtitle",
                     "confidence": "confirmed",
                     "visual_cue": "red jacket",
+                    "short_name": "Htet",
+                    "introduction": "Hero is Mina's brother",
+                    "identity_anchor": "Mina's brother Hero",
+                    "name_evidence_text": "Hero Source",
+                    "name_reveal_bridge": "Hero bridge",
                 }
             ],
             "summary": "ဇာတ်လမ်းအကျဉ်း " * 120,
@@ -7037,6 +7266,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("pr", payload["ctx"])
         self.assertEqual(payload["ctx"]["cc"][0]["n"], "Hero")
         self.assertEqual(payload["ctx"]["cc"][0]["s"], "subtitle")
+        self.assertEqual(payload["ctx"]["cc"][0]["h"], "Htet")
+        self.assertEqual(payload["ctx"]["cc"][0]["t"], "Hero is Mina's brother")
+        self.assertEqual(payload["ctx"]["cc"][0]["i"], "Mina's brother Hero")
+        self.assertEqual(payload["ctx"]["cc"][0]["d"], "Hero Source")
+        self.assertEqual(payload["ctx"]["cc"][0]["b"], "Hero bridge")
 
         caption = f"🎬 မူရင်းအပိုင်း 2/3 (02:00–04:00)\n♻️ RNB1.{token}"
         from_caption = bot._extract_manual_recovery_payload(caption)
@@ -7062,6 +7296,21 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "l": "door opens",
                 "p": "Hero",
                 "pr": MALE_PRONOUN,
+                "cc": [{
+                    "n": "Hero",
+                    "o": "Hero Source",
+                    "r": "lead",
+                    "e": "Mina's brother",
+                    "a": ["H"],
+                    "s": "subtitle",
+                    "f": "confirmed",
+                    "v": "red jacket",
+                    "h": "Htet",
+                    "t": "Hero is Mina's brother",
+                    "i": "Mina's brother Hero",
+                    "d": "Hero Source",
+                    "b": "Hero bridge",
+                }],
             },
         }
         extract_calls = []
@@ -7121,6 +7370,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parts[1]["message_id"], 777)
         self.assertEqual(extract_calls, [(120.0, 120.0)])
         self.assertEqual(state["story_context"]["protagonist"], "Hero")
+        restored_card = state["story_context"]["character_cards"][0]
+        self.assertEqual(restored_card["short_name"], "Htet")
+        self.assertEqual(restored_card["introduction"], "Hero is Mina's brother")
+        self.assertEqual(restored_card["identity_anchor"], "Mina's brother Hero")
+        self.assertEqual(restored_card["name_evidence_text"], "Hero Source")
+        self.assertEqual(restored_card["name_reveal_bridge"], "Hero bridge")
         self.assertEqual(state["story_context"]["summary"], "before part two")
         self.assertEqual(state["current_part_index"], 2)
         self.assertEqual(state["status"], "ready")

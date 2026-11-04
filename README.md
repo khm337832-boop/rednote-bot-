@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.33-story-glossary` is a **one-shot automatic flow**: the user
+Version `v5.34-name-ladder` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -206,10 +206,13 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
 3. **Script everything first**: write every window's third-person
    full-retelling script in order *before any audio exists*. Each
    window first builds a `story_map`, and a cumulative **story
-   bible** is carried forward — a Cast Lock with one spoken name or
-   memorable stable descriptive label per character, plus
-   source/name-evidence, role, relation, a Burmese first-mention
-   `introduction`, current `goal`/`motivation`, visual cue and aliases;
+   bible** is carried forward — a Cast Lock Name Ladder with one full
+   spoken name or memorable stable descriptive label per character,
+   plus an optional source-grounded everyday `short_name`, exact
+   `name_evidence_text`, an optional one-time `name_reveal_bridge`,
+   role, relation, a Burmese first-mention `introduction`, an
+   `identity_anchor` for returns, current `goal`/`motivation`, visual
+   cue and aliases;
    protagonist identity; ordered beats with trigger, dialogue,
    reaction and result parts; current goal/conflict, what is at stake
    if the characters fail or refuse (`conflict_stakes`), the still-open
@@ -409,7 +412,13 @@ for the whole video. Each card carries the canonical Burmese
 `spoken_name`, the original `source_name`, role, relation, the exact
 Burmese `introduction` to speak at first mention, current
 `goal`/`motivation`, visual cue, aliases, `name_source`, and
-`confidence`. Narration uses only the locked spoken form; speaker and
+`confidence`. Cards also retain the re-entry `identity_anchor`, an
+optional source-grounded routine `short_name`, exact
+`name_evidence_text`, and an optional one-time `name_reveal_bridge`
+when an earlier label is later tied to a confirmed name. Narration
+uses the locked Name Ladder — full spoken name in the first detailed
+introduction, then only the approved short form (or the full name
+when none exists), then the identity anchor on return; speaker and
 listener are named for dialogue beats, and a returning or newly acting
 character is re-identified instead of being left in an ambiguous
 `သူ`/`သူမ` chain. Exact names still cannot be guaranteed when the source
@@ -443,7 +452,7 @@ remain hard requirements.
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
 12. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 12 / 17 is an explicit manual override (the retired 5.5 / 7.5 UI values are migrated back to auto for real jobs)
-13. 👤 ပြောပြသူ ရှုထောင့် — outside third-person recap narrator always; Cast Lock fixes one Burmese name or stable label per character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
+13. 👤 ပြောပြသူ ရှုထောင့် — outside third-person recap narrator always; the Cast Lock Name Ladder fixes one full Burmese name/stable label plus any source-grounded routine short form per character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
 14. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 15. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
 16. 💬 Video Caption on/off
@@ -703,6 +712,45 @@ v5.19 makes the job registry survive that:
   repeated actor/group switches without a causal bridge, and mapped
   beat stakes that are never spoken.
 
+## v5.34 — Name Ladder: natural, memorable names without identity guesses
+
+- **Four-stage naming.** A person is first introduced with the full
+  locked `spoken_name`, role, relationship/group, and—when useful—one
+  visible memory cue. Routine references may then use an approved
+  `short_name` only when the source itself uses that shorter address
+  form, or when it is the compact unique core of a descriptive label.
+  The code never invents a nickname, never shortens a foreign name
+  arbitrarily, and a short form shared by two people is withdrawn
+  rather than risking a merge. Long descriptive facts stay in the
+  introduction/`identity_anchor` instead of being repeated as the
+  subject of every sentence. On return after an absence, window
+  boundary, or actor switch, narration re-identifies the person with
+  the identity anchor.
+- **Name evidence and reveal bridges are stored, not guessed.**
+  Character cards retain `name_evidence_text` from the subtitle, name
+  card, caption, or dialogue that supported a name. Important
+  `name_card` visible-text entries are cross-linked to a card, can
+  upgrade it to on-screen/confirmed evidence, and can create a minimal
+  card when the person exists only in the visible-text ledger. When a
+  descriptive label later becomes a confirmed real name, old forms
+  remain non-spoken aliases and a one-time `name_reveal_bridge` tells
+  the listener that the old label and new name are the same person.
+- **Cast Lock protects approved full and short forms.** The local
+  Cast Lock pass treats the full `spoken_name` and one approved
+  `short_name` as the same identity, while still normalizing unknown
+  aliases/variants only when they point to exactly one person. The
+  Name Ladder fields are carried through cumulative context, all
+  direct/editor/summary/worker/top-up card contracts, and manual
+  recovery payloads.
+- **Sentence-level identity QA.** The clarity gate now routes drafts
+  to the bounded story editor when a short form appears before its
+  full introduction, a long descriptive label is repeated like a
+  natural name, a mapped current-window reveal bridge is missing, an
+  ambiguous `သူ/သူမ` action follows two or more named people, or an
+  important dialogue/reported-speech sentence lacks a nearby named
+  speaker. These heuristics are conservative editor signals, not a
+  reason to invent names or story facts.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -734,7 +782,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.33-story-glossary"`,
+URLs must show `"version":"v5.34-name-ladder"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -745,12 +793,12 @@ URLs must show `"version":"v5.33-story-glossary"`,
 `"edit_sync":"proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze"`,
 `"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
-`"script_style":"pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock"`,
+`"script_style":"pro_recap_third_person_name_ladder_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock"`,
 `"narrator_enforcement":"third_person_quote_aware_per_scene_validated"`,
-`"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected"`,
-`"script_qa":"cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate"`,
+`"cast_lock":"subtitle_on_screen_first_name_ladder_full_spoken_name_approved_short_form_or_stable_label_ambiguous_alias_rejected"`,
+`"script_qa":"cumulative_name_ladder_introductions_sentence_identity_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate"`,
 `"story_clarity_contract":"who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending"`,
-`"story_comprehension":"natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes"`,
+`"story_comprehension":"natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes"`,
 `"delivery_integrity":"exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after"`,
 `"video_geometry":"display_sar_rotation_square_pixel_output"`,
 `"last_duration_calibration":{}`,
