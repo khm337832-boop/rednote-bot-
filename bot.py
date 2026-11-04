@@ -1480,7 +1480,7 @@ def start_features_text(chat_id=None) -> str:
             "<b>🎬 Recap လုပ်မယ်</b> ခလုတ်နဲ့ ပြန်ပို့မယ်။ Auto မ Run ဘူး။\n"
             f"4️⃣ ခလုတ်နှိပ်မှသာ အဲဒီအပိုင်းတစ်ခုတည်းအတွက် တတိယလူ Recap Script ရေးပြီး recap လုပ်မယ်။ "
             "အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က recap narrator က ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Cast Lock/Story bible</b> က subtitle/အမည်ကတ်က အတည်ပြုထားတဲ့ အမည်ကိုသာ တစ်မျိုးတည်းသုံးပြီး ပထမဆုံးအကြိမ်မှာ အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံနဲ့ မိတ်ဆက်မယ်။ အမည်မသေချာရင် အမည်အတုမလုပ်ဘဲ မှတ်မိလွယ် မရောနိုင်တဲ့ အညွှန်းတစ်ခုကို lock လုပ်မယ်။ အဓိကပြဿနာရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ တုံ့ပြန်မှုတွေရဲ့ အကြောင်းရင်း၊ ဖြစ်ရပ်တွေ တစ်ခုကနေ နောက်တစ်ခုသို့ ဘာကြောင့်ကူးတာလဲနဲ့ အရေးကြီးစကားပြော အပြန်အလှန်တွေကိုပါ ရှင်းမယ်။ ဆက်နွယ်ပုံ၊ "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Cast Lock/Story bible</b> က subtitle/အမည်ကတ်က အတည်ပြုထားတဲ့ အမည်အပြည့်ကို အရင်သုံးပြီး source ကိုယ်တိုင်သုံးထားမှသာ အမည်တိုတစ်မျိုးတည်းကို နောက်ပိုင်းဆက်သုံးမယ်။ ပထမဆုံးအကြိမ်မှာ အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံနဲ့ မိတ်ဆက်မယ်။ အမည်မသေချာရင် အမည်အတုမလုပ်ဘဲ မှတ်မိလွယ် မရောနိုင်တဲ့ အညွှန်းတစ်ခုကို lock လုပ်မယ်။ အဓိကပြဿနာရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ တုံ့ပြန်မှုတွေရဲ့ အကြောင်းရင်း၊ ဖြစ်ရပ်တွေ တစ်ခုကနေ နောက်တစ်ခုသို့ ဘာကြောင့်ကူးတာလဲနဲ့ အရေးကြီးစကားပြော အပြန်အလှန်တွေကိုပါ ရှင်းမယ်။ ဆက်နွယ်ပုံ၊ "
             "ဖြစ်ရပ်အစဉ်၊ လက်ရှိပြဿနာနဲ့ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
             "ဇာတ်လမ်းဆက်စပ်မှု အားနည်းရင် Story editor နဲ့ ထပ်စစ်ပြီးမှ အသံသွင်းမယ်။\n"
             f"5️⃣ TTS အသံကို အမှန်တိုင်းပြီး အပိုင်းတစ်ခုချင်း ကြာချိန်ကို မူရင်းအပိုင်း၏ "
@@ -1497,7 +1497,7 @@ def start_features_text(chat_id=None) -> str:
             "<b>အပိုင်းခလုတ်တွေ တစ်ခုချင်း နှိပ်စရာ လုံးဝမလိုပါ — တစ်ခါပို့ရင် အဆုံးထိ အလိုအလျောက် လုပ်မယ်။</b>\n"
             "3️⃣ <b>အရင် Script အကုန်လုံးကို အစဉ်အတိုင်း ရေးမယ်</b> — အပိုင်းတစ်ခုချင်းစီအတွက် တတိယလူ Recap Script ရေး၊ "
             "အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က recap narrator က ဇာတ်ကောင်နာမည်တွေ၊ အချိန်အစဉ်နဲ့ အဲဒီအချိန် ဘာတွေဖြစ်နေတယ်ဆိုတာကို "
-            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Cast Lock/Story bible</b> က subtitle/အမည်ကတ်က အတည်ပြုထားတဲ့ အမည်ကိုသာ တစ်မျိုးတည်းသုံးပြီး ပထမဆုံးအကြိမ်မှာ အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံနဲ့ မိတ်ဆက်မယ်။ အမည်မသေချာရင် အမည်အတုမလုပ်ဘဲ မှတ်မိလွယ် မရောနိုင်တဲ့ အညွှန်းတစ်ခုကို lock လုပ်မယ်။ အဓိကပြဿနာရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ တုံ့ပြန်မှုတွေရဲ့ အကြောင်းရင်း၊ ဖြစ်ရပ်တွေ တစ်ခုကနေ နောက်တစ်ခုသို့ ဘာကြောင့်ကူးတာလဲနဲ့ အရေးကြီးစကားပြော အပြန်အလှန်တွေကိုပါ ရှင်းမယ်။ ဆက်နွယ်ပုံ၊ "
+            "အပြည့်အစုံ ပြန်ပြောမယ်။ <b>Cast Lock/Story bible</b> က subtitle/အမည်ကတ်က အတည်ပြုထားတဲ့ အမည်အပြည့်ကို အရင်သုံးပြီး source ကိုယ်တိုင်သုံးထားမှသာ အမည်တိုတစ်မျိုးတည်းကို နောက်ပိုင်းဆက်သုံးမယ်။ ပထမဆုံးအကြိမ်မှာ အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံနဲ့ မိတ်ဆက်မယ်။ အမည်မသေချာရင် အမည်အတုမလုပ်ဘဲ မှတ်မိလွယ် မရောနိုင်တဲ့ အညွှန်းတစ်ခုကို lock လုပ်မယ်။ အဓိကပြဿနာရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ တုံ့ပြန်မှုတွေရဲ့ အကြောင်းရင်း၊ ဖြစ်ရပ်တွေ တစ်ခုကနေ နောက်တစ်ခုသို့ ဘာကြောင့်ကူးတာလဲနဲ့ အရေးကြီးစကားပြော အပြန်အလှန်တွေကိုပါ ရှင်းမယ်။ ဆက်နွယ်ပုံ၊ "
             "ဖြစ်ရပ်အစဉ်၊ လက်ရှိပြဿနာနဲ့ မဖြေရှင်းရသေးတဲ့ အချက်တွေကို နောက်အပိုင်းဆီ ဆက်သယ်မယ်။ "
             "ဇာတ်လမ်းဆက်စပ်မှု အားနည်းရင် Story editor နဲ့ ထပ်စစ်မယ်။ "
             "Script အကုန်ပြီးရင် <b>ထပ်နေတဲ့ ဝါကျတွေ တစ်ခေါက် စစ်ဖယ်</b>မယ်။\n"
@@ -5212,6 +5212,62 @@ def _character_card_spoken_name(card) -> str:
     return _clean_story_text(card, 80)
 
 
+def _character_card_short_name(card) -> str:
+    """Approved routine form after the detailed first introduction.
+
+    ``spoken_name`` remains the full canonical form.  A distinct
+    ``short_name`` is allowed only when the source itself uses that
+    shorter address form, or when a descriptive label has a compact
+    unique core; otherwise the routine form is simply the spoken
+    name.  Keeping the distinction prevents a long first-mention
+    description from being repeated as if it were a natural name.
+    """
+    spoken_name = _character_card_spoken_name(card)
+    if not isinstance(card, dict):
+        return spoken_name
+    short_name = _clean_story_text(
+        card.get("short_name")
+        or card.get("everyday_name")
+        or card.get("routine_name")
+        or card.get("address_form")
+        or "",
+        80,
+    )
+    return short_name or spoken_name
+
+
+def _character_card_name_forms(card) -> list:
+    forms = []
+    for value in (
+        _character_card_spoken_name(card),
+        _character_card_short_name(card),
+    ):
+        if value and value not in forms:
+            forms.append(value)
+    return forms
+
+
+def _spoken_name_form_is_long(value) -> bool:
+    """Whether a name/label reads like a clause, not a routine name."""
+    compact = "".join(
+        _normalize_burmese_text(value or "").split()
+    ).strip("«»\"'()[]{}")
+    if len(compact) >= 22:
+        return True
+    clause_markers = (
+        "ကိုင်ထားတဲ့",
+        "ဝတ်ထားတဲ့",
+        "နေတဲ့",
+        "ဖြစ်တဲ့",
+        "လုပ်တဲ့",
+        "ရှိတဲ့",
+        "ပါတဲ့",
+    )
+    return len(compact) >= 14 and any(
+        marker in compact for marker in clause_markers
+    )
+
+
 def _clean_protagonist_name(value) -> str:
     if isinstance(value, dict):
         value = (
@@ -5228,8 +5284,10 @@ def _clean_protagonist_name(value) -> str:
 def _normalize_character_cards(value, character_names=None) -> list:
     """Canonical cast registry shared across every narration window.
 
-    ``spoken_name`` is the one Burmese form the narrator may say for a
-    person.  A readable subtitle/name-card name is the strongest
+    ``spoken_name`` is the full Burmese form used for a person's
+    first detailed introduction; an optional distinct ``short_name``
+    is the only other routine form the narrator may use afterwards.
+    A readable subtitle/name-card name is the strongest
     evidence; unsure later guesses never replace an established form.
     If no reliable name exists, the stable descriptive label itself is
     the spoken form.  Original names and spelling variants are kept
@@ -5250,7 +5308,7 @@ def _normalize_character_cards(value, character_names=None) -> list:
     def first_text(item, keys, limit):
         return _clean_story_text(first_value(item, keys), limit)
 
-    def alias_values(item, spoken_name, source_name=""):
+    def alias_values(item, spoken_name, source_name="", short_name=""):
         aliases = []
         for key in (
             "aliases",
@@ -5268,12 +5326,13 @@ def _normalize_character_cards(value, character_names=None) -> list:
         if source_name:
             aliases.append(source_name)
         spoken_key = _normalize_burmese_text(spoken_name)
+        short_key = _normalize_burmese_text(short_name)
         return [
             alias
             for alias in _clean_story_string_list(
                 aliases, limit=8, item_limit=60
             )
-            if _normalize_burmese_text(alias) != spoken_key
+            if _normalize_burmese_text(alias) not in {spoken_key, short_key}
         ]
 
     def candidate_from_item(item):
@@ -5289,6 +5348,9 @@ def _normalize_character_cards(value, character_names=None) -> list:
                 "relation": "",
                 "introduction": "",
                 "identity_anchor": "",
+                "short_name": "",
+                "name_evidence_text": "",
+                "name_reveal_bridge": "",
                 "goal": "",
                 "motivation": "",
                 "aliases": [],
@@ -5324,6 +5386,56 @@ def _normalize_character_cards(value, character_names=None) -> list:
             ),
             name_source,
         )
+        supplied_short_name = first_text(
+            item,
+            (
+                "short_name",
+                "everyday_name",
+                "routine_name",
+                "address_form",
+                "short_form",
+            ),
+            80,
+        )
+        # Blank means "use spoken_name routinely".  A generic pronoun
+        # or kinship word is not a unique routine name, even when the
+        # characters happen to address the person that way in dialogue.
+        if (
+            not supplied_short_name
+            or _normalize_burmese_text(supplied_short_name)
+            == _normalize_burmese_text(spoken_name)
+            or _normalize_burmese_text(supplied_short_name)
+            in _CAST_GENERIC_ALIASES
+        ):
+            supplied_short_name = ""
+        identity_anchor_value = first_text(
+            item,
+            (
+                "identity_anchor",
+                "reintroduction",
+                "reintroduction_phrase",
+                "recognition_phrase",
+                "reminder_phrase",
+                "anchor_phrase",
+            ),
+            180,
+        )
+        # For a descriptive identity, a materially shorter anchor can
+        # be the compact routine label.  This derivation is deliberately
+        # not used for confirmed names: their anchor is a relationship
+        # reminder, not a nickname.
+        if (
+            not supplied_short_name
+            and confidence == "descriptive"
+            and _spoken_name_form_is_long(spoken_name)
+            and identity_anchor_value
+            and len(_normalize_burmese_text(identity_anchor_value))
+            + 4
+            <= len(_normalize_burmese_text(spoken_name))
+            and _normalize_burmese_text(identity_anchor_value)
+            not in _CAST_GENERIC_ALIASES
+        ):
+            supplied_short_name = identity_anchor_value
         return {
             "name": spoken_name,
             "spoken_name": spoken_name,
@@ -5358,17 +5470,34 @@ def _normalize_character_cards(value, character_names=None) -> list:
             # absence ("Mary's elder brother Aiden"), so re-entry does
             # not depend on the listener remembering a bare name from
             # several scenes/windows earlier.
-            "identity_anchor": first_text(
+            "identity_anchor": identity_anchor_value,
+            # Distinct routine form only; blank means spoken_name.
+            "short_name": supplied_short_name,
+            # Exact readable subtitle/name-card/dialogue wording that
+            # supports the name.  This is evidence metadata, never a
+            # form the Burmese narrator should read aloud verbatim.
+            "name_evidence_text": first_text(
                 item,
                 (
-                    "identity_anchor",
-                    "reintroduction",
-                    "reintroduction_phrase",
-                    "recognition_phrase",
-                    "reminder_phrase",
-                    "anchor_phrase",
+                    "name_evidence_text",
+                    "evidence_text",
+                    "name_quote",
+                    "evidence_quote",
+                    "evidence",
                 ),
-                180,
+                240,
+            ),
+            # One-time Burmese bridge for a deliberate later reveal:
+            # previous descriptive label -> confirmed real name.
+            "name_reveal_bridge": first_text(
+                item,
+                (
+                    "name_reveal_bridge",
+                    "reveal_bridge",
+                    "name_bridge",
+                    "rename_bridge",
+                ),
+                240,
             ),
             "goal": first_text(
                 item,
@@ -5380,7 +5509,9 @@ def _normalize_character_cards(value, character_names=None) -> list:
                 ("motivation", "reason", "why", "driving_reason"),
                 200,
             ),
-            "aliases": alias_values(item, spoken_name, source_name),
+            "aliases": alias_values(
+                item, spoken_name, source_name, supplied_short_name
+            ),
             "name_source": name_source,
             "confidence": confidence,
             "visual_cue": first_text(
@@ -5418,8 +5549,9 @@ def _normalize_character_cards(value, character_names=None) -> list:
         if not clean_alias:
             return
         spoken_key = _normalize_burmese_text(_character_card_spoken_name(card))
+        short_key = _normalize_burmese_text(card.get("short_name") or "")
         alias_key = _normalize_burmese_text(clean_alias)
-        if not alias_key or alias_key == spoken_key:
+        if not alias_key or alias_key in {spoken_key, short_key}:
             return
         existing_keys = {
             _normalize_burmese_text(item) for item in (card.get("aliases") or [])
@@ -5499,6 +5631,7 @@ def _normalize_character_cards(value, character_names=None) -> list:
             candidate.get("confidence") or "uncertain",
         )
         upgraded = False
+        old_short_name = str(existing.get("short_name") or "").strip()
         if _normalize_burmese_text(candidate_spoken_name) != _normalize_burmese_text(
             old_spoken_name
         ):
@@ -5515,7 +5648,26 @@ def _normalize_character_cards(value, character_names=None) -> list:
                     if _normalize_burmese_text(alias)
                     != _normalize_burmese_text(candidate_spoken_name)
                 ]
+                existing["short_name"] = candidate.get("short_name") or ""
+                if old_short_name:
+                    add_alias(existing, old_short_name)
                 add_alias(existing, old_spoken_name)
+                if candidate.get("name_evidence_text"):
+                    existing["name_evidence_text"] = candidate[
+                        "name_evidence_text"
+                    ]
+                if candidate.get("name_reveal_bridge"):
+                    existing["name_reveal_bridge"] = candidate[
+                        "name_reveal_bridge"
+                    ]
+                elif not existing.get("name_reveal_bridge") and existing_rank < 30:
+                    # The listener has been following the old label.
+                    # Give the narrator one explicit bridge instead of
+                    # a sudden unexplained rename.
+                    existing["name_reveal_bridge"] = (
+                        f"အရင် {old_spoken_name} ရဲ့ အမည်က "
+                        f"{candidate_spoken_name} ဖြစ်တယ်"
+                    )
                 upgraded = True
             else:
                 add_alias(existing, candidate_spoken_name)
@@ -5532,6 +5684,9 @@ def _normalize_character_cards(value, character_names=None) -> list:
             "visual_cue",
             "introduction",
             "identity_anchor",
+            "short_name",
+            "name_evidence_text",
+            "name_reveal_bridge",
         ):
             if candidate.get(key) and not existing.get(key):
                 existing[key] = candidate[key]
@@ -5549,12 +5704,16 @@ def _normalize_character_cards(value, character_names=None) -> list:
         for alias in candidate.get("aliases") or []:
             add_alias(existing, alias)
         current_key = _normalize_burmese_text(_character_card_spoken_name(existing))
+        current_short_key = _normalize_burmese_text(
+            existing.get("short_name") or ""
+        )
         existing["aliases"] = [
             alias
             for alias in _clean_story_string_list(
                 existing.get("aliases") or [], limit=8, item_limit=60
             )
-            if _normalize_burmese_text(alias) != current_key
+            if _normalize_burmese_text(alias)
+            not in {current_key, current_short_key}
         ][:8]
 
     candidates = []
@@ -5608,9 +5767,10 @@ def _normalize_character_cards(value, character_names=None) -> list:
     # such an alias would make later deterministic replacement pick
     # the wrong person even though the cards stayed separate.
     final_spoken_keys = {
-        _normalize_burmese_text(_character_card_spoken_name(card))
+        _normalize_burmese_text(form)
         for card in cards
-        if _character_card_spoken_name(card)
+        for form in _character_card_name_forms(card)
+        if form
     }
     final_alias_owner_keys = {}
     for card in cards:
@@ -5638,6 +5798,28 @@ def _normalize_character_cards(value, character_names=None) -> list:
                 <= 1
             )
         ]
+    # A routine short form is useful only when it points to one
+    # person.  If two people share it (or it is another person's full
+    # spoken name), retire it rather than letting narration swap the
+    # wrong identity in later windows.
+    short_owner_keys = {}
+    final_spoken_only_keys = {
+        _normalize_burmese_text(_character_card_spoken_name(card))
+        for card in cards
+        if _character_card_spoken_name(card)
+    }
+    for card in cards:
+        spoken_key = _normalize_burmese_text(_character_card_spoken_name(card))
+        short_key = _normalize_burmese_text(card.get("short_name") or "")
+        if spoken_key and short_key:
+            short_owner_keys.setdefault(short_key, set()).add(spoken_key)
+    for card in cards:
+        short_key = _normalize_burmese_text(card.get("short_name") or "")
+        if short_key and (
+            len(short_owner_keys.get(short_key, set())) > 1
+            or short_key in final_spoken_only_keys
+        ):
+            card["short_name"] = ""
     return cards[:16]
 
 
@@ -6090,6 +6272,73 @@ def _normalize_story_map(value, *, chunk_duration: float = 0.0) -> dict:
         or [],
         chunk_duration=chunk_duration,
     )
+    # A readable name card is evidence, not just another visible-text
+    # fact.  Link it back to Cast Lock so later windows know *why* a
+    # Burmese spoken form is trusted; if the model recorded the card
+    # but forgot the character card, create the minimal card from the
+    # ledger instead of leaving the person outside Cast Lock.
+    for entry in visible_texts:
+        if entry.get("kind") != "name_card":
+            continue
+        source_text = str(entry.get("source_text") or "").strip()
+        related_character = str(entry.get("related_character") or "").strip()
+        meaning = str(entry.get("burmese_meaning") or "").strip()
+        if not source_text or not related_character:
+            continue
+        related_key = _normalize_burmese_text(related_character)
+        matched_card = None
+        for card in cards:
+            form_keys = {
+                _normalize_burmese_text(form)
+                for form in _character_card_name_forms(card)
+                if form
+            }
+            form_keys.add(_normalize_burmese_text(card.get("source_name") or ""))
+            form_keys.update(
+                _normalize_burmese_text(alias)
+                for alias in (card.get("aliases") or [])
+            )
+            spoken_name = _character_card_spoken_name(card)
+            if related_key in form_keys or (
+                related_key == _normalize_burmese_text(source_text)
+                and spoken_name
+                and spoken_name in meaning
+            ):
+                matched_card = card
+                break
+        if matched_card is not None:
+            if not matched_card.get("name_evidence_text"):
+                matched_card["name_evidence_text"] = source_text
+            if not matched_card.get("source_name"):
+                matched_card["source_name"] = source_text
+            if (
+                _normalize_burmese_text(matched_card.get("source_name") or "")
+                == _normalize_burmese_text(source_text)
+                and matched_card.get("confidence") != "descriptive"
+                and not _cast_label_is_generic(
+                    _character_card_spoken_name(matched_card)
+                )
+            ):
+                matched_card["name_source"] = "on_screen"
+                matched_card["confidence"] = "confirmed"
+        elif any("\u1000" <= char <= "\u109f" for char in related_character):
+            generic_related = _cast_label_is_generic(related_character)
+            cards = _normalize_character_cards(
+                cards
+                + [
+                    {
+                        "spoken_name": related_character,
+                        "source_name": source_text,
+                        "name_source": (
+                            "visual_label" if generic_related else "on_screen"
+                        ),
+                        "confidence": (
+                            "descriptive" if generic_related else "confirmed"
+                        ),
+                        "name_evidence_text": source_text,
+                    }
+                ]
+            )
     story_map = {}
     if cards:
         story_map["character_cards"] = cards
@@ -6466,6 +6715,7 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
             if protagonist_key
             in {
                 _normalize_burmese_text(_character_card_spoken_name(card)),
+                _normalize_burmese_text(_character_card_short_name(card)),
                 _normalize_burmese_text(card.get("source_name") or ""),
                 _normalize_burmese_text(card.get("name") or ""),
             }
@@ -6568,6 +6818,11 @@ def _story_context_prompt_lines(story_context: dict) -> str:
             bits.append(str(card["relation"]))
         if card.get("introduction"):
             bits.append("ပထမမိတ်ဆက်ရန်: " + str(card["introduction"]))
+        short_name = str(card.get("short_name") or "").strip()
+        if short_name and _normalize_burmese_text(short_name) != _normalize_burmese_text(
+            spoken_name
+        ):
+            bits.append("နောက်ပိုင်းနေ့တိုင်းခေါ်ရန်: " + short_name)
         if card.get("identity_anchor"):
             bits.append("ပြန်ပေါ်လာရင်အမှတ်ရစေရန်: " + str(card["identity_anchor"]))
         if card.get("goal"):
@@ -6579,13 +6834,21 @@ def _story_context_prompt_lines(story_context: dict) -> str:
         name_source = str(card.get("name_source") or "unknown")
         confidence = str(card.get("confidence") or "uncertain")
         bits.append(f"အမည်အထောက်အထား: {name_source}/{confidence}")
+        if card.get("name_evidence_text"):
+            bits.append("အမည်အထောက်အထားစာသား: " + str(card["name_evidence_text"]))
+        if card.get("name_reveal_bridge"):
+            bits.append(
+                "အမည်ပြောင်းချိန် ယခင်အပိုင်းမှာ မပြောရသေးရင်သာ တစ်ခါတည်းသုံးရန်: "
+                + str(card["name_reveal_bridge"])
+            )
         if card.get("aliases"):
             bits.append("မသုံးရန် variant: " + ", ".join(card["aliases"][:3]))
         card_lines.append(" — ".join(bit for bit in bits if bit))
     if card_lines:
         lines.append(
-            "- Cast Lock (ဇာတ်ကောင်တစ်ဦးချင်းအတွက် ပထမပြောရမည့်အမည်ကိုသာ "
-            "တိတိကျကျသုံး၊ variant မသုံးရ): " + "; ".join(card_lines)
+            "- Cast Lock / Name Ladder (ပထမတစ်ခါ introduction + spoken_name အပြည့်၊ "
+            "နောက်ပိုင်း approved short_name သို့မဟုတ် spoken_name၊ ပြန်ပေါ်လာရင် identity_anchor၊ "
+            "variant မသုံးရ): " + "; ".join(card_lines)
         )
     elif context["characters"]:
         lines.append("- ဇာတ်ကောင်များ: " + ", ".join(context["characters"][:10]))
@@ -6670,8 +6933,9 @@ def _apply_cast_lock_to_scenes(
     """Replace known non-canonical name variants with locked spoken forms.
 
     Character cards may retain an original foreign name or an older
-    descriptive label for recognition, but narration should use one
-    form only.  Generic kinship/pronoun words and aliases claimed by
+    descriptive label for recognition, but narration should use only
+    the locked full form and its one approved routine short form.
+    Generic kinship/pronoun words and aliases claimed by
     more than one person are deliberately left alone.
     """
     if not scenes:
@@ -6687,9 +6951,10 @@ def _apply_cast_lock_to_scenes(
         return 0
 
     canonical_keys = {
-        _normalize_burmese_text(_character_card_spoken_name(card))
+        _normalize_burmese_text(form)
         for card in cards
-        if _character_card_spoken_name(card)
+        for form in _character_card_name_forms(card)
+        if form
     }
     alias_replacements = {}
     conflicting_alias_keys = set()
@@ -6900,9 +7165,9 @@ async def extract_story_summary(
     prompt = f"""
 အောက်ပါ မြန်မာဇာတ်လမ်းအပိုင်းကို ဖတ်ပြီး နောက်အပိုင်းရေးရာတွင် မှတ်ထားရမည့် continuity bible ထုတ်ပေးပါ။
 မှတ်ချက် — Narrator သည် ဇာတ်ကောင်မဟုတ်ဘဲ အပြင်က တတိယလူ recap ပြောပြသူဖြစ်သည်။
-Cast Lock ကို မပြောင်းပါနှင့် — ဇာတ်ကောင်တစ်ဦးစီအတွက် script/story_map မှာ သုံးထားပြီးသား spoken_name တစ်မျိုးကိုသာ ဆက်သုံးပါ။ မူရင်းအမည် သို့မဟုတ် variant ကို aliases မှာသာ ထားပါ။
+Cast Lock ကို မပြောင်းပါနှင့် — ဇာတ်ကောင်တစ်ဦးစီအတွက် script/story_map မှာ သုံးထားပြီးသား full spoken_name, approved short_name, introduction, identity_anchor, name_evidence_text နဲ့ name_reveal_bridge ကိုသာ ဆက်ထိန်းပါ။ မူရင်းအမည် သို့မဟုတ် variant ကို aliases မှာသာ ထားပါ။
 မသေချာသော ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်နှင့် အမည်ကို မတီထွင်ပါနှင့်။ Narration မှာ ပြောရမည့်အမည်များကို မြန်မာအသံထွက်ဖြင့်သာ ရေးပါ။
-ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ ပထမဆုံးမိတ်ဆက်ခဲ့တဲ့ မြန်မာစာကြောင်း (introduction)၊ ပြန်ပေါ်လာရင် အမှတ်ရစေမယ့် စာကြောင်းတို (identity_anchor)၊ လက်ရှိလိုချင်တာ (goal) နဲ့ ဘာကြောင့်လဲ (motivation)၊ အမည်ကို subtitle/name-card/dialogue/visual label ဘယ်ကရလဲနှင့် မြင်မှတ်ချက်ကို ရှင်းပါ။
+ဇာတ်ကောင်တစ်ဦးချင်းစီအတွက် ဘယ်သူလဲ၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဘယ်လို ဆက်နွယ်လဲ၊ ပထမဆုံးမိတ်ဆက်ခဲ့တဲ့ မြန်မာစာကြောင်း (introduction)၊ ပြန်ပေါ်လာရင် အမှတ်ရစေမယ့် စာကြောင်းတို (identity_anchor)၊ နောက်ပိုင်း နေ့တိုင်းခေါ်ပုံ (short_name; source သုံးထားမှသာ)၊ အမည်အတည်ပြုစာသား (name_evidence_text)၊ label ကနေ အမည်အစစ်ပြောင်းထားလျှင် bridge (name_reveal_bridge)၊ လက်ရှိလိုချင်တာ (goal) နဲ့ ဘာကြောင့်လဲ (motivation)၊ အမည်ကို subtitle/name-card/dialogue/visual label ဘယ်ကရလဲနှင့် မြင်မှတ်ချက်ကို ရှင်းပါ။
 အဓိကပြဿနာကို ရေးရာမှာ ဘယ်သူက ဘာကြောင့် ဘာကို အတိအကျ တောင်း/ဖိအားပေးနေလဲနဲ့ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ (conflict_stakes) ကိုပါ script/map ထဲ တကယ်ပါသလောက်သာ မှတ်ပါ။ မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း (central_question) ကိုလည်း တစ်ကြောင်းသိမ်းပါ။
 Story beats များကို အစဉ်အတိုင်း၊ ဖြစ်ရပ်အကြောင်းရင်း → စကားပြော/လုပ်ဆောင်ချက် → တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် → အကျိုးဆက် ပုံစံရအောင် တိုတိုရေးပါ။
 ဇာတ်လမ်းထဲက system/rank/quality/skill/level/title/အဖွဲ့/နေရာ/ပစ္စည်းအခေါ်တွေကို `terms` မှာ spoken_term တစ်မျိုးတည်း၊ source_term, ဒီဇာတ်လမ်းထဲ အမှန်အဓိပ္ပာယ်/လုပ်ဆောင်ချက်, first_explanation နဲ့ ထိန်းပါ။ အဓိပ္ပာယ်ကို genre အလေ့အထကနေ မှန်းမဖွင့်ရဘူး။ အရေးကြီးတဲ့ name card/system Panel/document လို ဖန်သားပြင်စာရဲ့ မြန်မာအဓိပ္ပာယ်ကိုလည်း important_facts ထဲ မမေ့အောင် ထိန်းပါ။
@@ -6913,7 +7178,7 @@ Script:
 {all_text}
 
 Return JSON:
-{{"characters": ["spoken_name များ"], "character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["မူရင်း/variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "protagonist": "အဓိကဇာတ်ကောင်၏ spoken_name", "narrator_perspective": "third_person", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
+{{"characters": ["spoken_name များ"], "character_cards": [{{"spoken_name": "ပထမဆုံးမိတ်ဆက်မှာ သုံးရမည့် အမည်အပြည့် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "short_name": "နောက်ပိုင်း နေ့တိုင်းပြန်ခေါ်မယ့် တိုပြီး သဘာဝကျတဲ့ အမည်ပုံစံ (source သုံးထားတဲ့ short form သာ; မရှိရင် ဗလာ)", "name_evidence_text": "အမည်ကို အတည်ပြုပေးတဲ့ subtitle/name-card/dialogue စာသား အတိအကျ", "name_reveal_bridge": "အရင် label ကနေ အမည်အစစ်သို့ ပြောင်းချိန် တစ်ကြိမ်တည်းသုံးမယ့် မြန်မာစာကြောင်း (reveal ရှိလျှင်)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["မူရင်း/variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "protagonist": "အဓိကဇာတ်ကောင်၏ spoken_name", "narrator_perspective": "third_person", "summary": "အကြောင်းရင်း၊ ဆုံးဖြတ်ချက်၊ အကျိုးဆက်ပါသော အစဉ်လိုက် အကျဉ်း ငါးကြောင်းမှ ရှစ်ကြောင်းအထိ", "story_beats": ["အစဉ်လိုက်အရေးကြီးဖြစ်ရပ်များ"], "current_goal": "လက်ရှိရည်မှန်းချက်", "current_conflict": "လက်ရှိအဓိကပြဿနာ", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "open_threads": ["မဖြေရှင်းရသေးသည့်အရာများ"], "important_facts": ["နောက်ပိုင်း မမေ့ရမည့်အချက်များ"], "setting": "လက်ရှိနေရာ/အခြေအနေ", "last_scene": "နောက်ဆုံးအခြေအနေ"}}
     """.strip()
     try:
         data = await _generate_direct_gemini_json(
@@ -7845,7 +8110,7 @@ _SPOKEN_STYLE_GUIDE = """
 
 ## Cast Lock (ဘယ်သူက ဘယ်သူလဲ မရောအောင်)
 - Narration မရေးခင် cast registry အရင်လုပ်ပါ။ အမည်အထောက်အထားကို ဒီအစဉ်နဲ့ စစ်ပါ — (၁) ဗီဒီယိုထဲ ဖတ်လို့ရတဲ့ burned-in subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်/title၊ (၂) ဇာတ်ကောင်တွေ အချင်းချင်း ရှင်းရှင်းခေါ်တာ/မိတ်ဆက်တာ၊ (၃) အထက်နှစ်ချက်လုံး မသေချာရင် အခန်းကဏ္ဍ+မြင်သာတဲ့အချက်ပါတဲ့ unique descriptive label။ မရှင်းတဲ့ နိုင်ငံခြားစကားသံကနေ အမည်မှန်းမထည့်ရ။
-- လူတစ်ဦးချင်းစီအတွက် narration မှာ ပြောရမည့် `spoken_name` တစ်မျိုးတည်းကိုသာ Burmese အသံထွက်အတိအကျသုံးပါ။ မူရင်းအမည်၊ စာလုံးပေါင်းအမျိုးမျိုး၊ nickname နဲ့ အရင်သုံးခဲ့တဲ့ label ကို `aliases` မှာသာထားပြီး narration မှာ အလှည့်ပြောင်း မသုံးရ။
+- လူတစ်ဦးချင်းစီအတွက် full canonical `spoken_name` ကို Burmese အသံထွက်အတိအကျ lock လုပ်ပါ။ ပထမဆုံး introduction ပြီးမှသာ card ထဲ approved လုပ်ထားတဲ့ `short_name` ကို နေ့တိုင်းအညွှန်းအဖြစ် သုံးနိုင်ပြီး၊ short_name မရှိရင် spoken_name ကိုသာ သုံးပါ။ မူရင်းအမည်၊ စာလုံးပေါင်းအမျိုးမျိုး၊ source မသုံးထားတဲ့ nickname နဲ့ အရင်သုံးခဲ့တဲ့ label ကို `aliases` မှာသာထားပြီး narration မှာ အလှည့်ပြောင်း မသုံးရ။
 - အရင် descriptive label သုံးထားပြီးမှ subtitle/အမည်ကတ်က အမည်အစစ်ကို အတည်ပြုနိုင်ရင် «အရင် label … ရဲ့ အမည်က … ဖြစ်တယ်» လို့ တစ်ခါတည်းသာ bridge လုပ်ပြီး နောက်ပိုင်း အမည်အစစ်တစ်မျိုးတည်းသုံးပါ။ အရင် label ကို alias ထဲထည့်ပါ။
 - လူသစ်ပထမဆုံးပါလာရင် spoken_name/label + အခန်းကဏ္ဍ + အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံကို တစ်ခါတည်း ရှင်းပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာရင် spoken_name + ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါ။
 - လူတစ်ဦး လုပ်ဆောင်/ပြောတဲ့ scene တိုင်းရဲ့ ပထမဝါကျမှာ အဓိကလုပ်ဆောင်သူကို spoken_name/label နဲ့ အရင်ရှင်းပါ။ «သူ/သူမ» ကို အမည်ကို အဲ့ဒီဝါကျ သို့မဟုတ် အနားကပ်ဝါကျမှာ ရှင်းပြီးသားဖြစ်ပြီး အခြားလူနဲ့ လုံးဝမရောနိုင်မှသာ သုံးပါ။ လူနှစ်ယောက်ထက်ပိုရင် အမည်ကိုပဲ ပြန်သုံးပါ။
@@ -7861,7 +8126,8 @@ _SPOKEN_STYLE_GUIDE = """
 - **အဆုံးသတ်ကို ဆက်ကြည့်ချင်အောင် ပိတ်ပါ (ending hook — နောက်ဆုံး window မှာသာ)** — Source video ရဲ့ နောက်ဆုံး window ဆိုလျှင် နောက်ဆုံး scene ရဲ့ နောက်ဆုံး တစ်ကြောင်း-နှစ်ကြောင်းမှာ source ထဲ **တကယ်မဖြေရှင်းရသေးတဲ့** ဆုံးဖြတ်ချက်/အန္တရာယ်/နောက်ဆုံးရက်ကို ပြန်ချိတ်ပြီး «ဒီတော့ … က လိုက်နာမှာလား၊ ငြင်းဆန်မှာလား» လို အမှန်တကယ် ကျန်နေတဲ့မေးခွန်းနဲ့ ပိတ်နိုင်တယ်။ မဖြစ်သေးတဲ့ နောက်ဖြစ်ရပ်ကို ခန့်မှန်း/ကတိပေးသလို မရေးရ၊ «နောက်အပိုင်းမှာ ဆက်ကြည့်ပါ» လို meta စကားလည်း မသုံးရ။ နောက်ဆုံး window မဟုတ်ရင်တော့ အတုအယောင် cliffhanger မလုပ်ဘဲ လက်ရှိရလဒ်/အသစ်ပေါ်လာတဲ့ ပြဿနာမှာပဲ ရပ်ပါ။
 
 ## အမည်၊ အခေါ်အဝေါ်နဲ့ ဖန်သားပြင်စာ (Glossary Lock)
-- **သဘာဝကျတဲ့ အမည်အသုံးအနှုန်း** — `spoken_name` ကို လူတစ်ယောက်တကယ်ပြောလေ့ရှိတဲ့ တိုပြီး အသံထွက်ရှင်းတဲ့ အမည်တစ်မျိုးတည်းထားပါ။ ပထမဆုံးအကြိမ်မှာသာ `introduction` နဲ့ အမည်အပြည့် + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံကို အသေးစိတ်မိတ်ဆက်ပြီး နောက်ပိုင်း တိုတဲ့အမည်ကိုသာ သုံးပါ။ အကာလကြာမှ ပြန်ပေါ်လာသူ၊ လုပ်ဆောင်သူ အကြိမ်များစွာပြောင်းသူကို `identity_anchor` (အမည် + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံတိုတို) နဲ့ ပြန်အမှတ်ရစေပါ။ ရှည်လျားတဲ့ ဖော်ပြစာကြောင်းကြီးကို နေ့တိုင်းခေါ်တဲ့ အမည်လိုထပ်ထပ်မပြောရ၊ transliteration/spelling ကိုလည်း အလှည့်ပြောင်းမသုံးရ။
+- **သဘာဝကျတဲ့ အမည်အသုံးအနှုန်း (Name Ladder)** — အမည်တစ်ခုကို အဆင့် ၄ ဆင့်နဲ့ ကိုင်ပါ။ **(၁) အထောက်အထား:** subtitle/name-card မှာ ဖတ်ရတဲ့ စာသားအတိအကျ သို့မဟုတ် ရှင်းရှင်း မိတ်ဆက်/အမည်ခေါ်တဲ့ dialogue ကိုသာ အမည်အတည်ပြုချက်အဖြစ် သုံးပြီး `name_evidence_text` ထဲ မှတ်ပါ။ အသံမရှင်းလို့ မှန်းထားတဲ့ transliteration အမျိုးမျိုးကို အမည်အတည်လို့ မပြောရ။ **(၂) ပထမဆုံး မိတ်ဆက်:** `introduction` နဲ့ အမည်အပြည့် `spoken_name` + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာကို တစ်ခါတည်း အသေးစိတ်ပြောပါ။ **(၃) နေ့တိုင်းခေါ်ပုံ:** အဲ့ဒီနောက် source ကိုယ်တိုင်သုံးထားတဲ့ `short_name` ရှိမှသာ အဲ့ဒီတိုပုံစံကို သုံးပါ; မရှိရင် `spoken_name` ကိုသာ သုံးပါ။ နိုင်ငံခြားအမည်ကို ကိုယ်တိုင် ဖြတ်/ nickname ဖန်တီးတာ မလုပ်ရ။ အမည်မသိလို့ descriptive label သုံးရရင်တော့ ပထမတစ်ခါ ဖော်ပြချက် အပြည့်ပြောပြီး နောက်ပိုင်း အဲ့ဒီဖော်ပြချက်ထဲကပဲ တိုပြီး မရောနိုင်တဲ့ core label ကို `short_name` အဖြစ် သုံးပါ။ **(၄) ပြန်အမှတ်ရစေ:** ကြာမှ ပြန်ပေါ်လာသူ/လုပ်ဆောင်သူပြောင်းသွားသူကို `identity_anchor` (အမည် + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံတိုတို) နဲ့ ပြန်မိတ်ဆက်ပါ။ ရှည်တဲ့ introduction ကိုတော့ တစ်ခါပဲ သုံးပါ။ အရင် label သုံးထားပြီးမှ အမည်အစစ် သေချာလာရင် `name_reveal_bridge` ကို **တစ်ကြိမ်တည်း** သုံးပြီး နောက်ပိုင်း အမည်အစစ်/short_name ကိုသာ ဆက်သုံးပါ။ Spelling, spacing, transliteration ကို အလှည့်ပြောင်းမသုံးရ; parentheses ပါတဲ့ စာရေးအညွှန်းကို spoken/short name မလုပ်ဘဲ သဘာဝကျကျ ပြောနိုင်တဲ့ မြန်မာ qualifier + အမည်အဖြစ် ရေးပါ။
+- **ဝါကျတိုင်းမှာ ဘယ်သူလဲ မပျောက်ရ** — လူနှစ်ယောက် သို့မဟုတ် ပိုများများ ပါဝင်နေရင် လုပ်ဆောင်/ပြောသူ ပြောင်းတဲ့ ဝါကျတိုင်းရဲ့အစောပိုင်းမှာ အမည်/short_name ကို ပြန်တပ်ပါ။ «သူ/သူမ» ကို ချက်ချင်းအရင်ဝါကျမှာ အမည်တပ်ထားပြီး ကြားမှာ အခြားလူ လုံးဝမဝင်သေးမှသာ သုံးပါ။ Quotation/reported speech ဝါကျတိုင်းမှာ ပြောသူကို အမည်တပ်ပြီး၊ နားထောင်သူ မရှင်းနိုင်ရင် နားထောင်သူကိုလည်း အမည်တပ်ပါ။ အမည်ကို တစ်ယောက်တည်းပါတဲ့ ဆက်တိုက်ဝါကျတွေမှာ စက်ရုပ်ဆန်ဆန် အပြည့်ထပ်မပြောဘဲ သဘာဝကျကျ pronoun သုံးနိုင်ပေမဲ့ scene အစနဲ့ actor ပြောင်းတိုင်းတော့ အမည်ပြန်တပ်ရပါမယ်။
 - **အသုံးအနှုန်းတိုင်းကို ပထမဆုံးအကြိမ် ရှင်းပါ** — narration မရေးခင် story_map `terms` ထဲမှာ system, အဆင့်/အရည်အသွေး, Mortal, skill, level, ရာထူး/ဘွဲ့, အဖွဲ့အစည်း, နေရာနဲ့ အထူးပစ္စည်းတွေကို မှတ်ပါ။ Term တစ်ခုစီမှာ မူရင်းစကားလုံး (`source_term`)၊ narration မှာ အမြဲသုံးရမယ့် မြန်မာပုံစံတစ်ခုတည်း (`spoken_term`)၊ ဒီဇာတ်လမ်းထဲမှာ အမှန်အဓိပ္ပာယ်/လုပ်ဆောင်ချက် (`meaning`)၊ ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာစာကြောင်း (`first_explanation`) နဲ့ variant (`aliases`) ပါရမည်။ သဘောတရားစကားလုံးဆိုရင် အသံလှယ်ရုံမကဘဲ အဓိပ္ပာယ်ပေါ်တဲ့ မြန်မာဘာသာပြန်ကို ဦးစားပေးပြီး ဘာအတွက်အသုံးဝင်လဲ/ဇာတ်ကောင်အတွက် ဘာအရေးကြီးလဲ တစ်ခါတည်း ရှင်းပါ။ Source က အဓိပ္ပာယ်ကို မဖော်သေးရင် မြင်ရတဲ့ လုပ်ဆောင်ချက်/အကျိုးသက်ရောက်မှုသာ ပြောပြီး genre အလေ့အထကနေ မှန်းမဖွင့်ရ။
 - **ဖန်သားပြင်ပေါ်က စာကို အသံနဲ့ကြားရအောင် ပြောပါ** — အမည်ကတ်, system/status Panel, ဆိုင်းဘုတ်, စာရွက်စာတမ်း, title card, မြေပုံနဲ့ message လို အရေးကြီးစာတွေတွေ့တိုင်း story_map `visible_texts` ထဲမှာ မူရင်းစာသား, အမျိုးအစား (`kind`)နဲ့ မြန်မာအဓိပ္ပာယ် (`burmese_meaning`)ကို မှတ်ပြီး ဆိုင်ရာ footage ပေါ်မှာတင် အဓိပ္ပာယ်ကို ပြောပါ။ မူရင်းစကားပြော, subtitle နဲ့ visible text သုံးခုလုံးကို တိုက်ဆိုင်စစ်ပါ။ စာက ဖတ်မရ/အဓိပ္ပာယ်ညှိမရရင် အတိအကျစာလုံးကို မှန်းမပြောဘဲ ပိုခိုင်တဲ့အထောက်အထားကိုသာ သုံးပါ။
 - **မြန်တဲ့ scene မှာလည်း အကြောင်းအကျိုးမပျက်ရ** — scene တိုရင်တောင် အကြောင်းရင်းစတင်မှု → လုပ်ဆောင်ချက်/စကားပြော → တုံ့ပြန်မှု → ရလဒ်/နောက်ဘာလိုလာလဲ ကို ထိန်းပါ။ ပြဿနာတစ်ခုပေါ်လာတိုင်း ဘယ်သူ့အတွက် ဘာကြောင့် အရေးကြီးလဲ၊ ငြင်း/နောက်ကျ/မအောင်မြင်/ပေါ်သွားရင် ဘာပြောင်းမလဲကို source က အတည်ပြုနိုင်သလောက်သာ `why_it_matters` ထဲမှတ်ပြီး narration ထဲပါ ရှင်းပါ။
@@ -7900,7 +8166,7 @@ def _direct_narrator_repair_prompt(
     return f"""
 THIRD-PERSON NARRATOR REPAIR ONLY — အောက်ပါ scenes များတွင် narrator က ဇာတ်ကောင်တစ်ဦးလို «ကျွန်တော်/ကျွန်မ» ဖြင့် ဝင်ပြောထားသည်။
 အကြောင်းအရာ၊ အစဉ်နှင့် အသေးစိတ်အားလုံးကို မလျော့ဘဲ အပြင်က professional movie-recap narrator က တတိယလူအဖြစ် ပြန်ပြောနေသလို ပြန်ရေးပါ။
-မူရင်းစာသားမှာ ပါပြီးသား လူမိတ်ဆက်/ပြန်အမှတ်ရစေတဲ့ စာကြောင်း၊ term ရဲ့ ပထမဆုံးရှင်းပြချက်၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန်၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ အဆုံးသတ် မဖြေရှင်းရသေးတဲ့ ပြဿနာကိုလည်း မပျောက်အောင် ထိန်းပါ။
+မူရင်းစာသားမှာ ပါပြီးသား လူမိတ်ဆက်/approved short_name/ပြန်အမှတ်ရစေတဲ့ identity_anchor/name-reveal bridge၊ term ရဲ့ ပထမဆုံးရှင်းပြချက်၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန်၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ အဆုံးသတ် မဖြေရှင်းရသေးတဲ့ ပြဿနာကိုလည်း မပျောက်အောင် ထိန်းပါ။
 ဇာတ်လမ်းအဆက်အစပ်ကိုပါ ထိန်းပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းအောင် လုပ်ပါ။ အချက်အသစ် မတီထွင်ပါနှင့်၊ ဖြစ်ရပ်ကို scene အချင်းချင်း မရွှေ့ပါနှင့်။
 Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ/ကျွန်တော့်» လုံးဝ မထားရ။ အဲ့ဒီစကားက အဓိကဇာတ်ကောင်ကို ဆိုလိုလျှင် သူ၏ Cast Lock spoken_name/label ကိုသုံးပါ။ အခြားဇာတ်ကောင်ကို ဆိုလိုလျှင် သက်ဆိုင်သူ၏ spoken_name/label ကိုသုံးပါ။
 တိုက်ရိုက်စကားကို quotation marks အတွင်းမှာသာ ဇာတ်ကောင်၏ကိုယ်ပိုင် «ကျွန်တော်/ကျွန်မ» အဖြစ် ထားနိုင်သည်။ Quote မတိုင်ခင် ပြောသူကို အမည်ဖြင့် အရင်ရှင်းပါ။ မဟုတ်လျှင် reported speech အဖြစ် ပြောင်းပါ။
@@ -8203,13 +8469,28 @@ def _story_clarity_metrics(
         spoken_name = _character_card_spoken_name(card)
         if spoken_name and spoken_name not in canonical_identities:
             canonical_identities.append(spoken_name)
+    card_name_forms = [_character_card_name_forms(card) for card in cards]
+    canonical_name_forms = []
+    for forms in card_name_forms:
+        for form in forms:
+            if form and form not in canonical_name_forms:
+                canonical_name_forms.append(form)
+
+    def _identities_in_text(value: str) -> list:
+        identities = []
+        for card, forms in zip(cards, card_name_forms):
+            spoken_name = _character_card_spoken_name(card)
+            if spoken_name and any(form and form in value for form in forms):
+                identities.append(spoken_name)
+        return identities
+
     canonical_keys = {
-        _normalize_burmese_text(name) for name in canonical_identities if name
+        _normalize_burmese_text(name) for name in canonical_name_forms if name
     }
     named_scene_count = sum(
         1
         for text in texts
-        if any(name in text for name in canonical_identities)
+        if any(name in text for name in canonical_name_forms)
     )
     unnamed_actor_scene_indexes = []
     for index, text in enumerate(texts):
@@ -8217,7 +8498,7 @@ def _story_clarity_metrics(
             marker in text for marker in _STORY_AMBIGUOUS_REFERENCES
         )
         has_canonical_identity = any(
-            name in text for name in canonical_identities
+            name in text for name in canonical_name_forms
         )
         if has_ambiguous_reference and not has_canonical_identity:
             unnamed_actor_scene_indexes.append(index)
@@ -8231,7 +8512,7 @@ def _story_clarity_metrics(
         # spoken sentence leaves the listener asking "who is သူ?".
         if any(
             marker in opening for marker in _STORY_AMBIGUOUS_REFERENCES
-        ) and not any(name in opening for name in canonical_identities):
+        ) and not any(name in opening for name in canonical_name_forms):
             unnamed_scene_opening_indexes.append(index)
     alias_variant_count = 0
     for card in cards:
@@ -8262,7 +8543,8 @@ def _story_clarity_metrics(
     def _identity_keys(card):
         keys = set()
         for value in (
-            [_character_card_spoken_name(card), card.get("source_name")]
+            _character_card_name_forms(card)
+            + [card.get("source_name")]
             + list(card.get("aliases") or [])
         ):
             key = _normalize_burmese_text(value or "")
@@ -8284,15 +8566,28 @@ def _story_clarity_metrics(
         spoken_name = _character_card_spoken_name(card)
         if not spoken_name:
             continue
-        occurrence_scenes = sum(1 for text in texts if spoken_name in text)
+        name_forms = _character_card_name_forms(card)
+        short_name = _character_card_short_name(card)
+        occurrence_scenes = sum(
+            1
+            for text in texts
+            if any(form and form in text for form in name_forms)
+        )
         if not occurrence_scenes:
             continue
         is_generic = _cast_label_is_generic(spoken_name)
         first_window = ""
+        first_form_is_short = False
         for text in texts:
             sentences = _split_sentences(text)
             for sentence_index, sentence in enumerate(sentences):
-                if spoken_name in sentence:
+                if any(form and form in sentence for form in name_forms):
+                    first_form_is_short = bool(
+                        short_name
+                        and short_name != spoken_name
+                        and short_name in sentence
+                        and spoken_name not in sentence
+                    )
                     first_window = sentence
                     if sentence_index + 1 < len(sentences):
                         first_window += sentences[sentence_index + 1]
@@ -8324,6 +8619,14 @@ def _story_clarity_metrics(
             or any(marker in first_window for marker in _STORY_INTRODUCTION_MARKERS)
             or any(term in first_window for term in burmese_field_terms)
         )
+        # The Name Ladder is full introduction first, routine short
+        # form only afterwards.  A first appearance under only the
+        # short form is not an introduction unless that same opening
+        # also gives the full identity facts.
+        if first_form_is_short and spoken_name not in first_window:
+            introduced = any(
+                term in first_window for term in burmese_field_terms
+            )
         # A non-Burmese role/relation in the internal map cannot be
         # matched reliably against Burmese narration, so only judge
         # introductions the local gate can actually verify (or a
@@ -8332,6 +8635,7 @@ def _story_clarity_metrics(
         can_judge_introduction = bool(
             burmese_field_terms
             or is_generic
+            or first_form_is_short
             or (not any(identity_fields) and occurrence_scenes >= 2)
         )
         if not introduced and can_judge_introduction:
@@ -8356,9 +8660,7 @@ def _story_clarity_metrics(
     dialogue_scene_count = 0
     dialogue_exchange_count = 0
     for text in texts:
-        identities_present = [
-            name for name in canonical_identities if name and name in text
-        ]
+        identities_present = _identities_in_text(text)
         has_dialogue = bool(
             any(marker in text for marker in _STORY_DIALOGUE_MARKERS)
             or _quoted_speech_segments(text)
@@ -8588,8 +8890,11 @@ def _story_clarity_metrics(
         spoken_name = _character_card_spoken_name(card)
         if not spoken_name:
             continue
+        name_forms = _character_card_name_forms(card)
         occurrence_indexes = [
-            index for index, text in enumerate(texts) if spoken_name in text
+            index
+            for index, text in enumerate(texts)
+            if any(form and form in text for form in name_forms)
         ]
         if not occurrence_indexes:
             continue
@@ -8609,13 +8914,20 @@ def _story_clarity_metrics(
         # A person already known from an earlier window has been
         # absent across the window boundary unless the immediately
         # preceding scene was still about them.
-        if in_previous_context and spoken_name not in last_scene_text:
+        if in_previous_context and not any(
+            form and form in last_scene_text for form in name_forms
+        ):
             return_indexes.append(first_index)
         for position, occurrence_index in enumerate(occurrence_indexes[1:], start=1):
             if occurrence_index - occurrence_indexes[position - 1] >= 3:
                 return_indexes.append(occurrence_index)
         for scene_index in return_indexes:
             window = _mention_window(texts[scene_index], spoken_name)
+            if not window:
+                for form in name_forms:
+                    window = _mention_window(texts[scene_index], form)
+                    if window:
+                        break
             anchored = bool(
                 _phrase_reflected(window, anchor_phrases)
                 or any(marker in window for marker in _STORY_INTRODUCTION_MARKERS)
@@ -8625,11 +8937,7 @@ def _story_clarity_metrics(
                 break
 
     scene_identity_sets = [
-        {
-            name
-            for name in canonical_identities
-            if name and name in text
-        }
+        set(_identities_in_text(text))
         for text in texts
     ]
     abrupt_scene_switch_indexes = []
@@ -8650,6 +8958,138 @@ def _story_clarity_metrics(
         )
         if not bridged:
             abrupt_scene_switch_indexes.append(index)
+
+    # --- Name Ladder and sentence-level identity tracking ---
+    approved_short_names = {}
+    awkward_spoken_names = []
+    repeated_long_name_labels = []
+    for card in cards:
+        spoken_name = _character_card_spoken_name(card)
+        routine_name = _character_card_short_name(card)
+        if not spoken_name:
+            continue
+        if _normalize_burmese_text(routine_name) != _normalize_burmese_text(
+            spoken_name
+        ):
+            approved_short_names[spoken_name] = routine_name
+        spoken_occurrences = sum(text.count(spoken_name) for text in texts)
+        if spoken_occurrences and _spoken_name_form_is_long(spoken_name):
+            if _normalize_burmese_text(routine_name) == _normalize_burmese_text(
+                spoken_name
+            ):
+                awkward_spoken_names.append(spoken_name)
+            if spoken_occurrences >= 3:
+                repeated_long_name_labels.append(spoken_name)
+
+    form_owner_keys = {}
+    for card, forms in zip(cards, card_name_forms):
+        spoken_name = _character_card_spoken_name(card)
+        if not spoken_name:
+            continue
+        for form in forms:
+            form_key = _normalize_burmese_text(form)
+            if form_key:
+                form_owner_keys.setdefault(form_key, set()).add(spoken_name)
+    ambiguous_form_keys = {
+        form_key
+        for form_key, owners in form_owner_keys.items()
+        if len(owners) > 1
+    }
+
+    def _sentence_identities(sentence: str) -> set:
+        identities = set()
+        for card, forms in zip(cards, card_name_forms):
+            spoken_name = _character_card_spoken_name(card)
+            if not spoken_name:
+                continue
+            if any(
+                form
+                and _normalize_burmese_text(form) not in ambiguous_form_keys
+                and form in sentence
+                for form in forms
+            ):
+                identities.add(spoken_name)
+        return identities
+
+    sentence_records = []
+    for scene_index, text in enumerate(texts):
+        for sentence_index, sentence in enumerate(_split_sentences(text)):
+            sentence_records.append(
+                {
+                    "scene_index": scene_index,
+                    "sentence_index": sentence_index,
+                    "sentence": sentence,
+                    "identities": _sentence_identities(sentence),
+                }
+            )
+
+    ambiguous_pronoun_sentence_refs = []
+    unattributed_dialogue_sentence_refs = []
+    for position, record in enumerate(sentence_records):
+        sentence = record["sentence"]
+        identities = record["identities"]
+        narrator_sentence = _strip_quoted_speech(sentence)
+        if not identities and any(
+            marker in narrator_sentence
+            for marker in _STORY_AMBIGUOUS_REFERENCES
+        ):
+            previous_identities = set()
+            for previous in sentence_records[max(0, position - 3):position]:
+                previous_identities.update(previous["identities"])
+            if len(previous_identities) >= 2 or (
+                record["sentence_index"] == 0
+                and card_count >= 2
+                and not previous_identities
+            ):
+                ambiguous_pronoun_sentence_refs.append(
+                    f"{record['scene_index']}:{record['sentence_index']}"
+                )
+        has_dialogue_sentence = bool(
+            any(marker in sentence for marker in _STORY_DIALOGUE_MARKERS)
+            or _quoted_speech_segments(sentence)
+        )
+        if has_dialogue_sentence:
+            dialogue_identities = set(identities)
+            if position:
+                dialogue_identities.update(
+                    sentence_records[position - 1]["identities"]
+                )
+            if not dialogue_identities:
+                unattributed_dialogue_sentence_refs.append(
+                    f"{record['scene_index']}:{record['sentence_index']}"
+                )
+
+    missing_name_reveal_bridges = []
+    for card in normalized_map.get("character_cards") or []:
+        bridge = str(card.get("name_reveal_bridge") or "").strip()
+        spoken_name = _character_card_spoken_name(card)
+        if not bridge or not spoken_name:
+            continue
+        first_position = next(
+            (
+                position
+                for position, record in enumerate(sentence_records)
+                if spoken_name in record["identities"]
+            ),
+            None,
+        )
+        if first_position is None:
+            continue
+        window = sentence_records[first_position]["sentence"]
+        if first_position + 1 < len(sentence_records):
+            window += sentence_records[first_position + 1]["sentence"]
+        old_aliases = [
+            str(alias).strip()
+            for alias in (card.get("aliases") or [])
+            if len(str(alias).strip()) >= 4
+            and str(alias).strip() != str(card.get("source_name") or "").strip()
+        ]
+        bridge_reflected = bool(
+            _phrase_reflected(window, [bridge])
+            or any(alias in window for alias in old_aliases)
+        )
+        if not bridge_reflected:
+            missing_name_reveal_bridges.append(spoken_name)
 
     issues = []
     score = 100
@@ -8691,6 +9131,21 @@ def _story_clarity_metrics(
     if len(texts) >= 3 and missing_character_reintroductions:
         issues.append("missing_character_reintroductions")
         score -= min(15, 6 + 3 * len(missing_character_reintroductions))
+    if len(texts) >= 3 and awkward_spoken_names:
+        issues.append("awkward_spoken_names")
+        score -= min(15, 6 + 3 * len(awkward_spoken_names))
+    if repeated_long_name_labels:
+        issues.append("repeated_long_name_labels")
+        score -= min(15, 6 + 3 * len(repeated_long_name_labels))
+    if missing_name_reveal_bridges:
+        issues.append("missing_name_reveal_bridges")
+        score -= min(15, 6 + 3 * len(missing_name_reveal_bridges))
+    if len(texts) >= 3 and len(ambiguous_pronoun_sentence_refs) >= 2:
+        issues.append("ambiguous_pronoun_sentences")
+        score -= min(15, 5 + 2 * len(ambiguous_pronoun_sentence_refs))
+    if len(texts) >= 3 and len(unattributed_dialogue_sentence_refs) >= 2:
+        issues.append("unattributed_dialogue_sentences")
+        score -= min(15, 5 + 2 * len(unattributed_dialogue_sentence_refs))
     if len(texts) >= 3 and missing_term_explanations:
         issues.append("missing_term_explanations")
         score -= min(20, 8 + 4 * len(missing_term_explanations))
@@ -8725,6 +9180,11 @@ def _story_clarity_metrics(
     story_quality_issues = {
         "missing_character_introductions",
         "missing_character_reintroductions",
+        "awkward_spoken_names",
+        "repeated_long_name_labels",
+        "missing_name_reveal_bridges",
+        "ambiguous_pronoun_sentences",
+        "unattributed_dialogue_sentences",
         "generic_cast_labels",
         "missing_term_explanations",
         "inconsistent_story_terms",
@@ -8767,6 +9227,20 @@ def _story_clarity_metrics(
         "reaction_markers": int(reaction_occurrences),
         "motivation_markers": int(motivation_occurrences),
         "missing_character_reintroductions": missing_character_reintroductions,
+        "approved_short_names": approved_short_names,
+        "awkward_spoken_names": awkward_spoken_names,
+        "repeated_long_name_labels": repeated_long_name_labels,
+        "missing_name_reveal_bridges": missing_name_reveal_bridges,
+        "ambiguous_pronoun_sentences": int(
+            len(ambiguous_pronoun_sentence_refs)
+        ),
+        "ambiguous_pronoun_sentence_refs": ambiguous_pronoun_sentence_refs,
+        "unattributed_dialogue_sentences": int(
+            len(unattributed_dialogue_sentence_refs)
+        ),
+        "unattributed_dialogue_sentence_refs": (
+            unattributed_dialogue_sentence_refs
+        ),
         "story_terms": int(len(all_terms)),
         "missing_term_explanations": missing_term_explanations,
         "term_alias_variant_count": int(term_alias_variant_count),
@@ -8818,13 +9292,14 @@ STORY EDITOR PASS — သင်က professional story editor ပါ။
 
 အရေးအကြီးဆုံး စည်းကမ်းများ:
 - Scene အရေအတွက်၊ အစဉ်၊ start/end အားလုံး အတိအကျထားပါ။ Scene တစ်ခုချင်းစီရဲ့ အချက်အလက်နဲ့ key beats အားလုံးကို ထိန်းပါ။
-- ဗီဒီယိုမှာ/မူရင်းစာသားမှာ မပါတဲ့ အချက်၊ အမည်၊ ဆက်နွယ်မှု၊ ရည်ရွယ်ချက် အသစ် လုံးဝ မတီထွင်ပါနဲ့။ Story_map beats/cards/context ထဲ **ရှိပြီးသား** trigger/dialogue/reaction/result/visible_text/why_it_matters, introduction, identity_anchor, terms.meaning/first_explanation, visible_texts.burmese_meaning, goal, motivation, conflict_stakes ကိုတော့ narration ထဲ ထည့်ဖို့ သုံးနိုင်တယ်။ ဖြစ်ရပ်ကို အခြား scene သို့ မရွှေ့ပါနဲ့ — footage နဲ့ ကိုက်ညီမှု ပျက်သွားမယ်။
+- ဗီဒီယိုမှာ/မူရင်းစာသားမှာ မပါတဲ့ အချက်၊ အမည်၊ ဆက်နွယ်မှု၊ ရည်ရွယ်ချက် အသစ် လုံးဝ မတီထွင်ပါနဲ့။ Story_map beats/cards/context ထဲ **ရှိပြီးသား** trigger/dialogue/reaction/result/visible_text/why_it_matters, introduction, identity_anchor, short_name, name_reveal_bridge, terms.meaning/first_explanation, visible_texts.burmese_meaning, goal, motivation, conflict_stakes ကိုတော့ narration ထဲ ထည့်ဖို့ သုံးနိုင်တယ်။ ဖြစ်ရပ်ကို အခြား scene သို့ မရွှေ့ပါနဲ့ — footage နဲ့ ကိုက်ညီမှု ပျက်သွားမယ်။
 - Scene တစ်ခုစီကို သီးခြား caption လို မရေးဘဲ ဇာတ်လမ်းတစ်ခုလုံး ဆက်တိုက်စီးဆင်းအောင် ရေးပါ။ နောက် scene အစဟာ အရင် scene ရဲ့ ရလဒ်ကနေ သဘာဝကျကျ ဆက်ရမယ်။
 - ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ၊ ဘယ်သူက ဘာလုပ်လဲ၊ ဘာကြောင့်လုပ်လဲ၊ ဘာဆက်ဖြစ်လဲဆိုတာ ရှင်းပါ။
 - လူနှစ်ယောက်ထက်ပိုပါလာရင် သို့မဟုတ် subject ပြောင်းသွားရင် «သူ/သူမ» ပဲ မထားဘဲ အမည် သို့မဟုတ် အခန်းကဏ္ဍကို ပြန်ပြောပါ။ အချိန်ကြာမှ ပြန်ပေါ်လာသူဆိုလျှင် အမည်+ဆက်နွယ်ပုံကို တိုတိုပြန်အမှတ်ရစေပါ။
-- Story map/context ရှိ `spoken_name` တစ်မျိုးတည်းကိုသာ သုံးပါ။ Aliases၊ source_name နဲ့ variant တွေကို narration မှာ မသုံးပါနဲ့။ အမည်အသစ်ကို မတီထွင်ပါနဲ့ — map က အမည်မသေချာသေးလျှင် ရှိပြီးသား stable descriptive label သို့မဟုတ် အခန်းကဏ္ဍကိုသာ ဆက်သုံးပါ။
+- Story map/context ရှိ Name Ladder ကိုသာ သုံးပါ — ပထမတစ်ခါ introduction + full `spoken_name`၊ နောက်ပိုင်း approved `short_name` (မရှိလျှင် spoken_name)၊ ပြန်ပေါ်လာရင် `identity_anchor`၊ အမည် reveal ရှိရင် `name_reveal_bridge` တစ်ကြိမ်တည်း။ Aliases၊ source_name နဲ့ variant တွေကို narration မှာ မသုံးပါနဲ့။ အမည်အသစ်ကို မတီထွင်ပါနဲ့ — map က အမည်မသေချာသေးလျှင် ရှိပြီးသား stable descriptive label သို့မဟုတ် အခန်းကဏ္ဍကိုသာ ဆက်သုံးပါ။
 - လူကို ပထမဆုံးမိတ်ဆက်တိုင်း spoken_name/label + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ ရှင်းပါ။ Card မှာ `introduction` ရှိရင် အဲဒီစာကြောင်းကိုသာ ပထမဆုံး mention မှာ သုံးပါ။ «အမည်မသိလူငယ်»၊ «အမျိုးသမီး»၊ «လယ်သမားကြီး» လို bare category label ချည်းကျန်နေရင် Cast Lock `spoken_name` ကို နောက်ထပ် form အသစ်နဲ့ မပြောင်းဘဲ map ထဲက ရှိပြီးသား role/relation/visual_cue ကိုသာ သုံးပြီး **ပထမဆုံး mention ကိုပဲ** နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက်ပါတဲ့ မှတ်မိလွယ်တဲ့ မိတ်ဆက်စာကြောင်းအဖြစ် ချဲ့ရေးပါ — အမည်အတုတော့ မဖန်တီးရ။ အချိန်ကြာမှ ပြန်ပေါ်လာရင် spoken_name + ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါ။
 - ပြန်ပေါ်လာသူတိုင်းကို card ရဲ့ `identity_anchor` နဲ့ ပြန်အမှတ်ရစေပါ။ Term အသစ်တစ်ခုကို ပထမဆုံးပြောတဲ့နေရာမှာ `terms.first_explanation` ကို သဘာဝကျကျထည့်ပြီး နောက်ပိုင်း `spoken_term` တစ်မျိုးတည်းသုံးပါ။ `visible_texts` မှာ narrate=true အရေးကြီးဖန်သားပြင်စာရှိရင် သူ့ `burmese_meaning` ကို ဆိုင်ရာ scene မှာတင် ပြောပါ။ Beat ရဲ့ `visible_text`/`why_it_matters` ကိုလည်း မချန်ပါနဲ့။
+- အမည် Ladder ကို တကယ်သုံးပါ — ပထမဆုံး mention မှာ introduction အပြည့်၊ နောက်ပိုင်း approved short_name/spoken_name၊ ပြန်ပေါ်လာရင် identity_anchor၊ အရင် label ကနေ အမည်အစစ်ပြောင်းတဲ့နေရာမှာ name_reveal_bridge တစ်ကြိမ်တည်း။ ရှည်တဲ့ descriptive spoken_name ကို ဝါကျတိုင်းမှာ ထပ်မပြောဘဲ map ထဲက short_name/identity_anchor ကို သုံးပါ။ Short form အသစ်ကို nickname လို မတီထွင်ရ။ လူနှစ်ယောက်ကျော် ပါဝင်နေရင် actor/speaker ပြောင်းတဲ့ ဝါကျတိုင်းမှာ အမည်ပြန်တပ်ပြီး dialogue ဝါကျတိုင်းမှာ ပြောသူ (လိုလျှင် နားထောင်သူ) ကို အမည်တပ်ပါ။
 - အကြောင်းရင်းကို တုံ့ပြန်မှု/ရလဒ်ထက် အရင် သို့မဟုတ် အတူဖော်ပြပါ။ Dialogue မှာ speaker နဲ့ listener ကို ရှင်းပါ။
 - အဓိကတောင်းဆိုမှု/ပြဿနာရှိတဲ့ scene တွေမှာ map ထဲ ရှိပြီးသားဆိုရင် ဘယ်သူက ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ၊ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်တာ (conflict_stakes) ကို အဲဒီ scene ထဲမှာပဲ ရှင်းပါ။ Map/စာသားမှာ မပါတဲ့ အကြောင်းရင်း/အကျိုးဆက်ကိုတော့ မတီထွင်ရ။
 - အရေးကြီးစကားပြောတွေကို report တစ်ကြောင်းတည်းနဲ့ မချန်ပါနဲ့ — map ရဲ့ dialogue/reaction အချက်ကိုသုံးပြီး ပြောသူ → နားထောင်သူရဲ့ ပြန်ဖြေ/ငြင်း/မေး → တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် ဆိုတဲ့ အပြန်အလှန်ပုံစံ ဖြစ်အောင် ပြင်ပါ။ မူရင်းစာသား/map မှာ စကားအဓိပ္ပာယ် ရှင်းနေရင် အလှည့်အပြောင်းစကား တိုတိုတစ်ခွန်းကို speaker အမည်တပ်ပြီး quotation marks နဲ့ တိုက်ရိုက်ထားနိုင်တယ်။ စကားအသစ် မဖန်တီးရ။ တုံ့ပြန်သူရဲ့ စိုးရိမ်/ဆုံးဖြတ်/သုံးသပ်ချက်မှာ map/စာသားက အတည်ပြုနိုင်တဲ့ အကြောင်းရင်းကိုပါ ထည့်ပါ။
@@ -8846,7 +9321,7 @@ Scenes:
 {json.dumps(payload, ensure_ascii=False)}
 
 JSON ကိုသာ ပြန်ပေးပါ:
-{{"narrator_perspective": "third_person", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး တတိယလူ recap စာသား"}}], "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}}}}
+{{"narrator_perspective": "third_person", "scenes": [{{"scene_index": 0, "start": 0.0, "end": 12.0, "burmese": "story editor ပြင်ရေးပြီး တတိယလူ recap စာသား"}}], "story_map": {{"character_cards": [{{"spoken_name": "ပထမဆုံးမိတ်ဆက်မှာ သုံးရမည့် အမည်အပြည့် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "short_name": "နောက်ပိုင်း နေ့တိုင်းပြန်ခေါ်မယ့် တိုပြီး သဘာဝကျတဲ့ အမည်ပုံစံ (source သုံးထားတဲ့ short form သာ; မရှိရင် ဗလာ)", "name_evidence_text": "အမည်ကို အတည်ပြုပေးတဲ့ subtitle/name-card/dialogue စာသား အတိအကျ", "name_reveal_bridge": "အရင် label ကနေ အမည်အစစ်သို့ ပြောင်းချိန် တစ်ကြိမ်တည်းသုံးမယ့် မြန်မာစာကြောင်း (reveal ရှိလျှင်)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အဟောင်း label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}}}}
 """.strip()
 
 
@@ -8979,8 +9454,8 @@ async def build_chunk_recap(
     )
     if protagonist:
         protagonist_cast_line = (
-            f"အဓိကဇာတ်ကောင်ကို narration တိုင်းမှာ «{protagonist}» ဆိုတဲ့ "
-            "spoken_name တစ်မျိုးတည်းဖြင့်သာ ညွှန်းပါ။"
+            f"အဓိကဇာတ်ကောင်ရဲ့ full spoken_name က «{protagonist}» ဖြစ်သည်။ "
+            "Cast Lock card ထဲ approved short_name ရှိမှသာ introduction ပြီးနောက် routine အဖြစ် သုံးပါ; variant မသုံးရ။"
         )
     else:
         protagonist_cast_line = (
@@ -9002,7 +9477,7 @@ async def build_chunk_recap(
         context_section = (
             "🔵 ဤသည်မှာ ဇာတ်လမ်း၏ အစဖြစ်သည်။ ပထမဝါကျကစပြီး အချိန်၊ နေရာနဲ့ "
             "အဓိကဇာတ်ကောင်ရဲ့ spoken_name/label ကို ရှင်းပြီး အပြင်က တတိယလူ recap narrator အဖြစ် ပြောပါ။ "
-            "Cast Lock registry ကို အရင်တည်ဆောက်ပြီး လူတစ်ဦးစီအတွက် spoken_name တစ်မျိုးတည်းသုံးပါ။ "
+            "Cast Lock registry ကို အရင်တည်ဆောက်ပြီး လူတစ်ဦးစီအတွက် full spoken_name, approved short_name (ရှိမှသာ), introduction နဲ့ identity_anchor ကို Name Ladder အတိုင်း သုံးပါ။ "
             "«မင်္ဂလာပါ» သို့မဟုတ် «ဇာတ်လမ်းလေး ပြောပြပါမယ်» လို meta အဖွင့် မထည့်ပါနှင့်။"
         )
     else:
@@ -9019,7 +9494,7 @@ async def build_chunk_recap(
 🔵 ယခင်အပိုင်းကို အကျဉ်းချုပ် ပြန် မပြောပါနှင့် — အထက်ပါ နောက်ဆုံးအခြေအနေကနေ
 တူညီတဲ့ တတိယလူ narrator ကပဲ ဆက်ပြောနေသလို တန်းဆက်ရေးပါ။
 ပထမ scene ရဲ့ ပထမ clause မှာ နောက်ဆုံးအခြေအနေကနေ အခု မြင်ကွင်းဆီ သဘာဝကျကျ ဆက်တဲ့ တိုတဲ့ bridge တစ်ခု ပါရမည်။
-Cast Lock spoken_name/label တွေကို လုံးဝမပြောင်းပါနှင့်။ အရင် label သုံးထားသူကို အမည်အစစ်ကို subtitle/အမည်ကတ်က အတည်ပြုနိုင်မှသာ တစ်ခါတည်း bridge လုပ်ပါ။
+Cast Lock spoken_name/label တွေကို လုံးဝမပြောင်းပါနှင့်။ Card ထဲ approved short_name/identity_anchor ရှိရင်သာ Name Ladder အတိုင်း သုံးပါ။ အရင် label သုံးထားသူကို အမည်အစစ်ကို subtitle/အမည်ကတ်က အတည်ပြုနိုင်မှသာ name_reveal_bridge ဖြင့် တစ်ခါတည်း bridge လုပ်ပါ။
 """
 
 
@@ -9043,7 +9518,7 @@ Cast Lock spoken_name/label တွေကို လုံးဝမပြောင
 
 ## ဗီဒီယိုကို အပြည့်အဝ ပြန်ပြောပုံ (အကျဉ်းချုပ် မဟုတ်ပါ)
 - အတိုချုပ် (summary) မရေးပါနှင့်။ နားထောင်နေသူက မူရင်းဗီဒီယိုကို ပြန်ပင် ကြည့်နေရသလို ထင်ရအောင် အစက အဆုံးအထိ အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပြပါ။
-- **Narration မရေးခင် Cast Lock registry + story map ကို အတိအကျ တည်ဆောက်ပါ** — လူ/အရေးကြီးအဖွဲ့ တစ်ခုချင်းစီအတွက် narration မှာ အမြဲပြောရမည့် `spoken_name` တစ်ခု၊ သိလျှင် `source_name`၊ ဘယ်သူလဲ (`role`)၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ (`relation`)၊ **ပထမဆုံးအကြိမ် ပြောရမည့် မြန်မာမိတ်ဆက်စာကြောင်း (`introduction` = spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)**၊ လက်ရှိ လိုချင်တာ (`goal`)၊ ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ (`motivation`)၊ variant အားလုံး (`aliases`)၊ အထောက်အထားအရင်းအမြစ် (`name_source`: subtitle/on_screen/dialogue/visual_label)၊ သေချာမှု (`confidence`: confirmed/descriptive/uncertain) နဲ့ မရောအောင် မှတ်လို့ရတဲ့ `visual_cue` ကို သတ်မှတ်ပါ။ အမည်မချမှတ်ခင် ဒီအပိုင်းတစ်ခုလုံးကို အစအဆုံးစကင်လုပ်ပြီး subtitle/အမည်ကတ်/အချင်းချင်းခေါ်ဆိုမှုက အမည်ကို အရင်ရှာပါ — အမည်က နောက်ပိုင်းမှသိရရင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ အမည်အတည်မပြုနိုင်ရင် «အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး» လို bare category ကို spoken_name မလုပ်ဘဲ နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက် ပါတဲ့ မှတ်မိလွယ် unique label တစ်ခု လုပ်ပါ။ ပြီးမှ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် `beat` အပြင် ဖြစ်ရပ်ကို စစေတာ (`trigger`)၊ ဘယ်သူက ဘယ်သူ့ကို ဘာပြောတာ (`dialogue`)၊ ဘယ်သူက ဘယ်လိုတုံ့ပြန်/ဆုံးဖြတ်ပြီး ဘာကြောင့်လဲ (`reaction`)၊ ဘာဆက်ဖြစ်တာ/နောက်ပြဿနာ (`result`) ကို source က ပြသလောက်သာ ဖြည့်ပါ (မသက်ဆိုင်ရင် ကွက်လပ်ထားပါ၊ မတီထွင်ရ)။ ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် `identity_anchor` တိုတိုလည်း မှတ်ပါ။ အခေါ်အဝေါ်/စည်းမျဉ်း အရေးကြီးတိုင်းအတွက် `terms` (spoken_term/source_term/meaning/first_explanation) နဲ့ အမည်ကတ်/system Panel/စာရွက်/ဆိုင်းဘုတ်လို ဖတ်လို့ရတဲ့ ဖန်သားပြင်စာတိုင်းအတွက် `visible_texts` (source_text/burmese_meaning/kind) ကိုပါ တည်ဆောက်ပြီး beat မှာလည်း သက်ဆိုင်ရင် `visible_text` နဲ့ `why_it_matters` ဖြည့်ပါ။ `current_conflict` အပြင် မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ (`conflict_stakes`) နဲ့ မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း (`central_question`) ကိုပါ မှတ်ပါ။ အဲ့ဒီ registry/map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း ပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
+- **Narration မရေးခင် Cast Lock registry + story map ကို အတိအကျ တည်ဆောက်ပါ** — လူ/အရေးကြီးအဖွဲ့ တစ်ခုချင်းစီအတွက် narration မှာ အမြဲပြောရမည့် `spoken_name` တစ်ခု၊ သိလျှင် `source_name`၊ ဘယ်သူလဲ (`role`)၊ အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ (`relation`)၊ **ပထမဆုံးအကြိမ် ပြောရမည့် မြန်မာမိတ်ဆက်စာကြောင်း (`introduction` = spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)**၊ လက်ရှိ လိုချင်တာ (`goal`)၊ ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ (`motivation`)၊ variant အားလုံး (`aliases`)၊ အထောက်အထားအရင်းအမြစ် (`name_source`: subtitle/on_screen/dialogue/visual_label)၊ သေချာမှု (`confidence`: confirmed/descriptive/uncertain) နဲ့ မရောအောင် မှတ်လို့ရတဲ့ `visual_cue` ကို သတ်မှတ်ပါ။ အမည်မချမှတ်ခင် ဒီအပိုင်းတစ်ခုလုံးကို အစအဆုံးစကင်လုပ်ပြီး subtitle/အမည်ကတ်/အချင်းချင်းခေါ်ဆိုမှုက အမည်ကို အရင်ရှာပါ — အမည်က နောက်ပိုင်းမှသိရရင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ အမည်အတည်မပြုနိုင်ရင် «အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး» လို bare category ကို spoken_name မလုပ်ဘဲ နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက် ပါတဲ့ မှတ်မိလွယ် unique label တစ်ခု လုပ်ပါ။ ပြီးမှ အချိန်အစဉ်လိုက် beat တစ်ခုစီအတွက် `beat` အပြင် ဖြစ်ရပ်ကို စစေတာ (`trigger`)၊ ဘယ်သူက ဘယ်သူ့ကို ဘာပြောတာ (`dialogue`)၊ ဘယ်သူက ဘယ်လိုတုံ့ပြန်/ဆုံးဖြတ်ပြီး ဘာကြောင့်လဲ (`reaction`)၊ ဘာဆက်ဖြစ်တာ/နောက်ပြဿနာ (`result`) ကို source က ပြသလောက်သာ ဖြည့်ပါ (မသက်ဆိုင်ရင် ကွက်လပ်ထားပါ၊ မတီထွင်ရ)။ ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် `identity_anchor` တိုတို၊ နောက်ပိုင်း နေ့တိုင်းခေါ်ရန် source အတည်ပြုထားတဲ့ `short_name` (မရှိလျှင် spoken_name နဲ့တူ)၊ အမည်ကို အတည်ပြုပေးတဲ့ စာသားအတိအကျ `name_evidence_text` နဲ့ အရင် label ကနေ အမည်အစစ်ကို နောက်မှသိရလျှင် တစ်ကြိမ်တည်းသုံးရန် `name_reveal_bridge` ကိုလည်း မှတ်ပါ။ Short form ကို ကိုယ်တိုင် nickname ဖန်တီးတာ/နိုင်ငံခြားအမည်ကို ခန့်မှန်းဖြတ်တာ မလုပ်ရပါဘူး။ အခေါ်အဝေါ်/စည်းမျဉ်း အရေးကြီးတိုင်းအတွက် `terms` (spoken_term/source_term/meaning/first_explanation) နဲ့ အမည်ကတ်/system Panel/စာရွက်/ဆိုင်းဘုတ်လို ဖတ်လို့ရတဲ့ ဖန်သားပြင်စာတိုင်းအတွက် `visible_texts` (source_text/burmese_meaning/kind) ကိုပါ တည်ဆောက်ပြီး beat မှာလည်း သက်ဆိုင်ရင် `visible_text` နဲ့ `why_it_matters` ဖြည့်ပါ။ `current_conflict` အပြင် မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ (`conflict_stakes`) နဲ့ မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း (`central_question`) ကိုပါ မှတ်ပါ။ အဲ့ဒီ registry/map ကိုသာ အခြေခံပြီး scenes ရေးပြီး JSON ရဲ့ `story_map` field မှာလည်း ပြန်ထည့်ပါ။ Beat တစ်ခု**မှ မကျန်အောင်** ပြန်ပြောပါ။ စာသား မလောက်တော့ရင် ပတ်ဝန်းကျင် ဖော်ပြချက်တွေ၊ ထပ်နေတဲ့ လှုပ်ရှားမှုတွေကို အရင် လျှော့ပါ — **beat တွေကိုတော့ ဘယ်တော့မှ မလျှော့ရ၊ မကျော်ရ**။
 - အမည်ကို ဆုံးဖြတ်ရာမှာ (၁) ဖတ်လို့ရတဲ့ burned-in subtitle နဲ့ ဖန်သားပြင်ပေါ်က အမည်ကတ်/title၊ (၂) ဇာတ်ကောင်တွေ ရှင်းရှင်း အချင်းချင်းခေါ်တာ/မိတ်ဆက်တာ၊ (၃) အဲ့ဒါတွေ မသေချာရင် အခန်းကဏ္ဍ+မြင်သာတဲ့အချက်နဲ့ unique descriptive label ဆိုတဲ့ အစဉ်နဲ့ သွားပါ။ စာလုံးပေါင်းနှစ်မျိုး ရှိနေရင် subtitle/on-screen ပုံစံကို ဦးစားပေးပြီး Burmese spoken form တစ်မျိုးတည်း lock လုပ်ပါ။ မရှင်းတဲ့ အသံကို နာမည်မှန်းမထည့်ပါနှင့်။ အခြားအချက်အလက်တွေကိုလည်း ပြောစကား/စာတန်းနဲ့ မြင်ရတဲ့ လုပ်ဆောင်ချက်က အတည်ပြုနိုင်သလောက်သာ ပြောပါ။ မသေချာလျှင် မြင်ရတဲ့လုပ်ဆောင်ချက်ကိုသာ ပြောပြီး ဆက်နွယ်မှု၊ ရည်ရွယ်ချက်၊ လျှို့ဝှက်အကြောင်းရင်းကို မှန်းမရေးပါနှင့်။
 - Scene အစမှာ အရင် scene ရဲ့ ရလဒ်ကနေ ဆက်စပ်တဲ့ anchor/bridge ကို ထားပြီး အဲ့ဒီ scene ရဲ့ key beat ကို အချိန်အစဉ်အတိုင်း စောစောဖော်ပြပါ။ အကြောင်းရင်း မသိရသေးဘဲ ရလဒ်ချည်း အရင်ပြော၍ နားထောင်သူကို လည်မနေစေပါနှင့်။
 - ခန်းတိုင်းတွင် ဘယ်သူတွေ ရှိနေလဲ၊ ဘယ်မှာလဲ၊ ဘာလုပ်နေလဲ၊ ဘာတွေ ပြောလဲ (အဓိပ္ပာယ်)၊ တစ်ဖက်က ဘယ်လို တုံ့ပြန်လဲ၊ ဘာကြောင့်လဲနှင့် ဘာဆက်ဖြစ်သည်ကို ရှင်းလင်းစွာ ဖော်ပြပါ။
@@ -9052,7 +9527,7 @@ Cast Lock spoken_name/label တွေကို လုံးဝမပြောင
 - စကားပြောချက်များကို စာလုံးချင်း ကူးစရာ မလိုသော်လည်း ဘယ်သူက ဘယ်သူ့ကို ဘာပြောခဲ့သည်ဟူသော အဓိပ္ပာယ်ကို အတိအကျ ထိန်းသိမ်းပြီး တတိယလူ reported speech အဖြစ် သဘာဝကျကျ ရေးပါ။ ဥပမာ — «မေရီက အေဒင်ကို ... လို့ ပြောလာတော့ အေဒင်က ... လို့ ပြန်ပြောတယ်»။ တိုက်ရိုက်စကားကိုသာ quotation marks ထဲထည့်ပြီး speaker ကို အရင်အမည်တပ်ပါ။
 - ဖြစ်ရပ်တစ်ခုမှ နောက်တစ်ခုသို့ «အဲဒီအချိန်မှာတော့ ...»၊ «ဒါပေမယ့် ...»၊ «အဲဒီနောက်မှာတော့ ...» စသည့် စကားဆက်များကို လိုအပ်သလို အမျိုးမျိုး သုံးပါ။ တစ်မျိုးတည်းကို ထပ်ခါထပ်ခါ မသုံးပါနှင့်။
 - Scene ခွဲခြားမှုဆိုတာ edit အမှတ်အသားသာဖြစ်ပြီး ဇာတ်လမ်းအသစ် ပြန်စခြင်း မဟုတ်ပါ။ Scene အားလုံးပေါင်းဖတ်လျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ နောက် scene ရဲ့ ပထမ clause ဟာ အရင် scene ရလဒ်ကနေ ဆက်ပြီး အချိန်/နေရာ ပြောင်းလျှင် တိုတဲ့ bridge ပါရမည်။
-- လူတစ်ဦးကို ပထမဆုံးမိတ်ဆက်တိုင်း Cast Lock spoken_name/label နဲ့အတူ ဘယ်သူလဲ/အဓိကဇာတ်ကောင် သို့မဟုတ် အခြားသူနဲ့ ဘယ်လိုဆက်နွယ်လဲ တိုတိုပြောပါ။ နောက်ပိုင်း အဲ့ဒီပုံစံ တစ်မျိုးတည်းပဲ သုံးပါ။ အချိန်ကြာကြာ ပျောက်နေပြီးမှ ပြန်ပေါ်လာလျှင် spoken_name+ဆက်နွယ်ပုံကို ပြန်အမှတ်ရစေပါ။ လုပ်ဆောင်သူ ပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အစား spoken_name/label သို့မဟုတ် အခန်းကဏ္ဍကို သုံးပါ။
+- လူတစ်ဦးကို ပထမဆုံးမိတ်ဆက်တိုင်း Cast Lock spoken_name/label နဲ့အတူ ဘယ်သူလဲ/အဓိကဇာတ်ကောင် သို့မဟုတ် အခြားသူနဲ့ ဘယ်လိုဆက်နွယ်လဲ တိုတိုပြောပါ။ နောက်ပိုင်းတော့ approved short_name ရှိမှသာ အဲ့ဒီတိုပုံစံကို သုံးပြီး မရှိရင် spoken_name/label ကိုပဲ သုံးပါ။ အချိန်ကြာကြာ ပျောက်နေပြီးမှ ပြန်ပေါ်လာလျှင် identity_anchor နဲ့ ပြန်အမှတ်ရစေပါ။ အရင် label ကနေ အမည်အစစ်သို့ ပြောင်းရရင် name_reveal_bridge ကို တစ်ကြိမ်တည်းသုံးပါ။ လုပ်ဆောင်သူ ပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အစား spoken_name/short_name သို့မဟုတ် အမည်ပါတဲ့ identity_anchor ကို သုံးပါ။
 - စကားပြောခန်းမှာ speaker နဲ့ listener ကို အမြဲရှင်းပါ။ Dialogue တစ်ခုရဲ့ အဓိပ္ပာယ်၊ ဘာလို့ပြောတယ်၊ တစ်ဖက်က ဘယ်လိုတုံ့ပြန်တယ်ဆိုတာပါ ပါရမည်။ ဘယ်သူမှန်း မရှင်းတဲ့ direct quote ချည်း မထည့်ပါနှင့်။
 - အပိုင်းရဲ့ ပထမ scene မှာ ဘယ်သူ/ဘယ်နေရာ/အခုဘာအခြေအနေလဲဆိုတာ ပထမ တစ်ကြောင်း-နှစ်ကြောင်းအတွင်း နားလည်နိုင်ရမည်။ ရှေ့အပိုင်းရှိလျှင် အကျဉ်းလုံး ပြန်မပြောဘဲ နောက်ဆုံးရလဒ်ကနေ တိုတဲ့ bridge နဲ့ ဆက်ပါ။
 - ဖယ်ပစ်နိုင်သည်မှာ ဇာတ်လမ်းနှင့် မသက်ဆိုင်သည့် ကြာညောင်းသော တိတ်ဆိတ်မှု၊ ထပ်နေသော မြင်ကွင်း/စကားနှင့် မလိုအပ်သော နားချိန်များသာ ဖြစ်သည်။ အဓိကကျသည့် မည်သည့်အရာမှ မကျန်စေရ။
@@ -9071,7 +9546,7 @@ Cast Lock spoken_name/label တွေကို လုံးဝမပြောင
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
-JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) quotation marks ပြင်ပမှာ narrator က «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးထားဘူးလား၊ လူတိုင်းအတွက် spoken_name/label တစ်မျိုးတည်းပဲ သုံးထားသလား၊ alias/variant တွေ narration ထဲ မကျန်ဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — `story_map.beats` နှင့် တစ်ခုချင်း ကိုက်ပြီး ဘာတစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ နောက်ဖြစ်ရပ်ကို ရှေ့ footage မှာ ကြိုပြောတာ သို့မဟုတ် ရှေ့ဖြစ်ရပ်ကို နောက်မှ ပြန်ပြောတာ မရှိဘူးလား။ (၇) **Audio-only test** — ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူတစ်ယောက်က scene တိုင်းမှာ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ပြောပြန်နိုင်ရဲ့လား။ မရသေးရင် အမည်ရှင်းလင်းချက်၊ အကြောင်းရင်းနဲ့ bridge တွေ ပြန်ဖြည့်ပါ။ (၈) «သူ/သူမ/အဲ့ဒီလူ» ဆိုတဲ့ မရှင်းတဲ့ အညွှန်းတွေ၊ အကြောင်းရင်းမပါတဲ့ ရုတ်တရက် တုံ့ပြန်မှုတွေ၊ အချိန်/နေရာ ရုတ်တရက် ခုန်သွားတာတွေ မရှိဘူးလား။ (၉) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ (၁၀) **ဘယ်သူက ဘယ်သူလဲ test** — အရေးကြီးလူ/အဖွဲ့တိုင်း ပထမဆုံးအကြိမ်မှာ အမည် (ရှိလျှင်) + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာနဲ့ မိတ်ဆက်ထားရဲ့လား၊ အပိုင်းတစ်ခုလုံးစကင်လုပ်ပြီးမှ အမည်ရှာထားတာလား၊ «အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး» လို bare category label ချည်း မကျန်ဘူးလား။ (၁၁) **ပြဿနာက ဘာလဲ test** — အဓိကတောင်းဆိုမှု/ခြိမ်းခြောက်မှုမှာ ဘယ်သူက ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ (ပမာဏ/နောက်ဆုံးရက်ရှိလျှင်)၊ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်တာကို source အထောက်အထားနဲ့ ရှင်းထားရဲ့လား (source မပြရင် မတီထွင်ဘူးလား)။ (၁၂) **Dialogue/reaction test** — အရေးကြီးစကားပြောကို ပြောသူ→ပြန်ဖြေ/ငြင်း/မေး→တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် အပြန်အလှန်ဖော်ထားရဲ့လား၊ တုံ့ပြန်မှု/သုံးသပ်ချက်တိုင်းမှာ မြင်ရတဲ့ အကြောင်းရင်းပါရဲ့လား။ (၁၃) **Why-next test** — နေရာ/လုပ်ရပ်အုပ်စု ပြောင်းတိုင်း အရင်ရလဒ်ကြောင့် နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲ ချိတ်ထားရဲ့လား။ နောက်ဆုံး window ဆိုလျှင် တကယ်မဖြေရှင်းရသေးတဲ့ မေးခွန်း/အန္တရာယ်နဲ့ ပိတ်ထားပြီး အနာဂတ်ကို မခန့်မှန်းထားဘူးလား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
+JSON မထုတ်ခင် အောက်ပါတို့ကို စစ်ပါ — (၁) quotation marks ပြင်ပမှာ narrator က «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးထားဘူးလား၊ လူတိုင်းအတွက် Name Ladder (full spoken_name introduction → approved short_name/spoken_name routine → identity_anchor re-entry) ကိုပဲ သုံးထားသလား၊ alias/variant တွေ narration ထဲ မကျန်ဘူးလား။ (၂) ဗီဒီယို အစကနေ အဆုံး အစဉ်လိုက် တစ်ခု မကျန် ပါပြီလား။ (၃) ဗီဒီယိုထဲ မပါသည့် အရာကို မတီထွင် ထားဘူးလား။ (၄) စုစုပေါင်း စာလုံးအရေအတွက် {request_chars} လုံး ဝန်းကျင် ပြည့်ရဲ့လား။ (၅) **အဓိကအချက် (key beats) အားလုံး** — အရေးကြီး စကားပြောချက် အဓိပ္ပာယ်တွေ၊ ဆုံးဖြတ်ချက်တွေ၊ ထုတ်ဖော်ချက်တွေ၊ အလှည့်အပြောင်းတွေ — `story_map.beats` နှင့် တစ်ခုချင်း ကိုက်ပြီး ဘာတစ်ခုမှ မကျန်ဘူးလား။ (၆) Scene တိုင်းရဲ့ start/end က မြင်ကွင်း ပြောင်းတဲ့ စက္ကန့်တွေနဲ့ ကိုက်ပြီး စာသားပမာဏက scene ကြာချိန်နဲ့ အချိုးကျရဲ့လား။ နောက်ဖြစ်ရပ်ကို ရှေ့ footage မှာ ကြိုပြောတာ သို့မဟုတ် ရှေ့ဖြစ်ရပ်ကို နောက်မှ ပြန်ပြောတာ မရှိဘူးလား။ (၇) **Audio-only test** — ရုပ်ရှင်မကြည့်ဘဲ အသံပဲ နားထောင်သူတစ်ယောက်က scene တိုင်းမှာ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ပြောပြန်နိုင်ရဲ့လား။ မရသေးရင် အမည်ရှင်းလင်းချက်၊ အကြောင်းရင်းနဲ့ bridge တွေ ပြန်ဖြည့်ပါ။ (၈) «သူ/သူမ/အဲ့ဒီလူ» ဆိုတဲ့ မရှင်းတဲ့ အညွှန်းတွေ၊ အကြောင်းရင်းမပါတဲ့ ရုတ်တရက် တုံ့ပြန်မှုတွေ၊ အချိန်/နေရာ ရုတ်တရက် ခုန်သွားတာတွေ မရှိဘူးလား။ (၉) Narration စာသားထဲမှာ အင်္ဂလိပ်အက္ခရာ၊ ဂဏန်း၊ နိုင်ငံခြားစာလုံး လုံးဝ မပါဘူးလား — အသံက မဖတ်နိုင်လို့ မြန်မာအသံထွက်/မြန်မာဂဏန်းစာလုံးနဲ့ ပြောင်းထားမှ ဖြစ်မယ်။ (၁၀) **ဘယ်သူက ဘယ်သူလဲ test** — အရေးကြီးလူ/အဖွဲ့တိုင်း ပထမဆုံးအကြိမ်မှာ အမည် (ရှိလျှင်) + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာနဲ့ မိတ်ဆက်ထားရဲ့လား၊ အပိုင်းတစ်ခုလုံးစကင်လုပ်ပြီးမှ အမည်ရှာထားတာလား၊ «အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး» လို bare category label ချည်း မကျန်ဘူးလား၊ အမည်အတည်ပြုထားသူတိုင်းမှာ name_evidence_text ပါရဲ့လား၊ short_name ကို introduction မတိုင်ခင် မသုံးထားဘူးလား၊ ပြန်ပေါ်လာသူကို identity_anchor နဲ့ ပြန်အမှတ်ရစေထားရဲ့လား၊ label ကနေ အမည်အစစ်ပြောင်းရင် name_reveal_bridge တစ်ကြိမ်တည်း သုံးထားရဲ့လား။ (၁၁) **ပြဿနာက ဘာလဲ test** — အဓိကတောင်းဆိုမှု/ခြိမ်းခြောက်မှုမှာ ဘယ်သူက ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ (ပမာဏ/နောက်ဆုံးရက်ရှိလျှင်)၊ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်တာကို source အထောက်အထားနဲ့ ရှင်းထားရဲ့လား (source မပြရင် မတီထွင်ဘူးလား)။ (၁၂) **Dialogue/reaction test** — အရေးကြီးစကားပြောကို ပြောသူ→ပြန်ဖြေ/ငြင်း/မေး→တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် အပြန်အလှန်ဖော်ထားရဲ့လား၊ တုံ့ပြန်မှု/သုံးသပ်ချက်တိုင်းမှာ မြင်ရတဲ့ အကြောင်းရင်းပါရဲ့လား။ (၁၃) **Why-next test** — နေရာ/လုပ်ရပ်အုပ်စု ပြောင်းတိုင်း အရင်ရလဒ်ကြောင့် နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲ ချိတ်ထားရဲ့လား။ နောက်ဆုံး window ဆိုလျှင် တကယ်မဖြေရှင်းရသေးတဲ့ မေးခွန်း/အန္တရာယ်နဲ့ ပိတ်ထားပြီး အနာဂတ်ကို မခန့်မှန်းထားဘူးလား။ စစ်ဆေးပြီးမှသာ JSON ထုတ်ပါ။
 
 ## အဖြေထုတ်ပုံ
 အောက်ပါပုံစံအတိုင်း JSON ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် ရှင်းလင်းချက် သို့မဟုတ် အခြားစာသား မရေးပါနှင့်။
@@ -9081,7 +9556,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
   "narrator_perspective": "third_person",
   "story_map": {{
     "character_cards": [
-      {{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}
+      {{"spoken_name": "ပထမဆုံးမိတ်ဆက်မှာ သုံးရမည့် အမည်အပြည့် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "အဓိကဇာတ်ကောင်/အခြားသူနဲ့ ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "short_name": "နောက်ပိုင်း နေ့တိုင်းပြန်ခေါ်မယ့် တိုပြီး သဘာဝကျတဲ့ အမည်ပုံစံ (source သုံးထားတဲ့ short form သာ; မရှိရင် ဗလာ)", "name_evidence_text": "အမည်ကို အတည်ပြုပေးတဲ့ subtitle/name-card/dialogue စာသား အတိအကျ", "name_reveal_bridge": "အရင် label ကနေ အမည်အစစ်သို့ ပြောင်းချိန် တစ်ကြိမ်တည်းသုံးမယ့် မြန်မာစာကြောင်း (reveal ရှိလျှင်)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}
     ],
     "beats": [
       {{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}
@@ -9214,7 +9689,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - လေသံ: {tone_line}
 - "scenes" ကို ဘယ်တော့မှ ကွက်လပ်မထားရ။ အပိုင်းအစ၏ 0.0 မှ {chunk_dur:.1f} စက္ကန့်အထိကို ခန်း {scene_count} ခန်းခန့် ဆက်တိုက်ခွဲပါ။
 - စုစုပေါင်း မြန်မာစာသား {request_chars} လုံးခန့် (ခန်းပျမ်းမျှ {request_chars_per_scene} လုံး) ရေးပါ။
-- အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က တတိယလူ recap narrator အဖြစ် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် အဓိကလုပ်ဆောင်သူကို spoken_name/label ဖြင့် ရှင်းပါ။
+- အကျဉ်းချုပ်မဟုတ်ဘဲ အပြင်က တတိယလူ recap narrator အဖြစ် ဗီဒီယိုအစကအဆုံး အစဉ်လိုက် အပြည့်အဝ ပြန်ပြောပါ။ Scene တိုင်းတွင် အဓိကလုပ်ဆောင်သူကို spoken_name/approved short_name/label ဖြင့် ရှင်းပါ။
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
 - အမည်ကို label မချခင် အပိုင်းတစ်ခုလုံးစကင်လုပ်ရှာပါ။ လူသစ်တိုင်းကို ပထမဆုံးအကြိမ်မှာ အမည် (ရှိလျှင်) + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာနဲ့ `introduction` အတိုင်း မိတ်ဆက်ပါ။ အမည်မသေချာရင် bare category («အမည်မသိလူငယ်/အမျိုးသမီး/လယ်သမားကြီး») မသုံးဘဲ နေရာ/အဖွဲ့ + အခန်းကဏ္ဍ + မြင်သာအချက်ပါတဲ့ မှတ်မိလွယ် label တစ်ခုတည်းသုံးပါ။
 - အဓိကတောင်းဆိုမှု/ပြဿနာမှာ ဘယ်သူက ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ၊ မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်တာကို source ပြသလောက်သာ ရှင်းပါ။ အရေးကြီးစကားပြောကို ပြောသူ→ပြန်ဖြေ/ငြင်း→တုံ့ပြန်မှု/ဆုံးဖြတ်ချက် အပြန်အလှန်ရေးပြီး တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းပါ ထည့်ပါ။ နေရာ/လုပ်ရပ်ပြောင်းတိုင်း အရင်ရလဒ်ကြောင့် နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲ ချိတ်ပါ။
@@ -9225,7 +9700,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {{
   "protagonist": "အဓိကဇာတ်ကောင်နာမည် သို့မဟုတ် ကွက်လပ်",
   "narrator_perspective": "third_person",
-  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}},
+  "story_map": {{"character_cards": [{{"spoken_name": "ပထမဆုံးမိတ်ဆက်မှာ သုံးရမည့် အမည်အပြည့် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "short_name": "နောက်ပိုင်း နေ့တိုင်းပြန်ခေါ်မယ့် တိုပြီး သဘာဝကျတဲ့ အမည်ပုံစံ (source သုံးထားတဲ့ short form သာ; မရှိရင် ဗလာ)", "name_evidence_text": "အမည်ကို အတည်ပြုပေးတဲ့ subtitle/name-card/dialogue စာသား အတိအကျ", "name_reveal_bridge": "အရင် label ကနေ အမည်အစစ်သို့ ပြောင်းချိန် တစ်ကြိမ်တည်းသုံးမယ့် မြန်မာစာကြောင်း (reveal ရှိလျှင်)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}},
   "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "တတိယလူ recap မြန်မာစာသား"}}]
 }}
 """.strip()
@@ -9414,9 +9889,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         extra_prompt = f"""
 မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ ကျန်ခဲ့သော သို့မဟုတ် အတိုချုပ်လွန်းသော အစိတ်အပိုင်းများကို အသေးစိတ် ဖြည့်စွက် ရေးပေးပါ။
 ယခင် ရေးပြီးသား အကြောင်းအရာများကို စကားလုံး ထပ်မရေးပါနှင့်။ ယခင် scenes များ၏ ကြားလပ်နေသော အချိန်များ၊ ကျန်ခဲ့သော ဖြစ်ရပ်များ၊ စကားပြောချက်များ၏ အဓိပ္ပာယ်၊ ဇာတ်ကောင်တို့၏ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို အစဉ်အတိုင်း ဖြည့်ရေးပါ။
-တတိယလူ recap narrator အမြင်ကိုသာ ဆက်ထိန်းပါ — quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» မသုံးရ။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို ရှိပြီးသား script/story_map ထဲက spoken_name/label တစ်မျိုးတည်းနဲ့သာ ညွှန်းပါ။
+တတိယလူ recap narrator အမြင်ကိုသာ ဆက်ထိန်းပါ — quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» မသုံးရ။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို ရှိပြီးသား script/story_map ထဲက Name Ladder (full spoken_name introduction → approved short_name/spoken_name routine → identity_anchor re-entry) နဲ့သာ ညွှန်းပါ။ Name reveal bridge ကို ကျန်နေတဲ့ reveal scene အတိအကျကိုဖြည့်မှသာ တစ်ကြိမ်တည်း သုံးပါ။
 အဓိကဇာတ်ကောင် မပါတဲ့မြင်ကွင်းဆိုလျှင် «တစ်ဖက်မှာတော့ ...» လို နေရာ/အချိန် bridge နဲ့ ဆက်ပြီး ဘာမှ မကျန်အောင် ထည့်ပါ။
-ဖြည့်စွက်ရာတွင် ကျန်နေသော လူမိတ်ဆက်/identity_anchor (အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံ)၊ term ရဲ့ first_explanation၊ အရေးကြီးဖန်သားပြင်စာရဲ့ မြန်မာအဓိပ္ပာယ်၊ အဓိကတောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/အတိအကျ လိုချင်တာ/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန် (ပြောသူ→ပြန်ဖြေ→ဆုံးဖြတ်ချက်)၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ နောက်မြင်ကွင်းသို့ အကြောင်းဆက် bridge ကို အရင် ဦးစားပေးဖြည့်ပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
+ဖြည့်စွက်ရာတွင် ကျန်နေသော လူမိတ်ဆက်/identity_anchor (အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံ)၊ approved short_name ကို introduction နောက်မှာ သုံးပုံနဲ့ ကျန်နေတဲ့ name_reveal_bridge၊ term ရဲ့ first_explanation၊ အရေးကြီးဖန်သားပြင်စာရဲ့ မြန်မာအဓိပ္ပာယ်၊ အဓိကတောင်းဆိုချက်ရဲ့ အကြောင်းရင်း/အတိအကျ လိုချင်တာ/ဆုံးရှုံးနိုင်မှု၊ စကားပြော အပြန်အလှန် (ပြောသူ→ပြန်ဖြေ→ဆုံးဖြတ်ချက်)၊ တုံ့ပြန်မှုရဲ့ အကြောင်းရင်းနဲ့ နောက်မြင်ကွင်းသို့ အကြောင်းဆက် bridge ကို အရင် ဦးစားပေးဖြည့်ပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
 မူရင်းဗီဒီယိုတွင် မပါသော အရာကို မတီထွင်ပါနှင့်။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
 🎯 အသစ်စာသားကို {missing} လုံးမှ {int(missing * 1.2)} လုံးအတွင်းသာ ထပ်ဖြည့်ပါ (အဲဒီထက် မပိုရ)။ ပေါင်းလျှင် စုစုပေါင်း {target_chars} လုံး (မူရင်း၏ {st['coverage']}%) ဝန်းကျင် ဖြစ်ရပါမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဦးစားပေး ဖြည့်ပါ။
@@ -9896,9 +10371,9 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 မူရင်းဗီဒီယိုကို ပြန်ကြည့်ပြီး ယခင် script မှာ အတိုချုပ်လွန်းသော/ကျန်ခဲ့သော အပိုင်းများကို scene အသစ်များအဖြစ် ထပ်ဖြည့်ပါ။
 ယခင် scenes များကို ပြန်မပေးပါနှင့် — အသစ်ထပ်ထည့်ရမည့် scenes များကိုသာ ပေးပါ။
 အသစ်စာသား စုစုပေါင်းကို {missing_chars} လုံးမှ {int(missing_chars * 1.2)} လုံးအတွင်းသာ ရေးပါ (အဲဒီထက် လုံးဝ မပိုရ)။ ရှိပြီးသားနှင့်ပေါင်းလျှင် {desired_total_chars} လုံး ဝန်းကျင် ဖြစ်ရမည်။ ကျန်ခဲ့တဲ့ **အဓိကအချက် (key beats)** တွေကိုသာ ဖြည့်ပါ — ပြောပြီးသားကို ပုံစံပြောင်း ပြန်မရေးရ။
-Narrator မှာ ဇာတ်လမ်းအပြင်က တတိယလူ recap narrator ဖြစ်ပြီး quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးရ။ ရှိပြီးသား script/story_map ထဲက spoken_name/label တွေကိုသာ ဆက်သုံးပါ။
-Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/label နဲ့ ရှင်းပါ။
-ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။ အထူးသဖြင့် ကျန်နေသော လူမိတ်ဆက်/identity_anchor၊ term ရဲ့ first_explanation၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ ဆုံးရှုံးနိုင်မှု၊ dialogue အပြန်အလှန်နဲ့ နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲဆိုတဲ့ bridge ကို ဦးစားပေးပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
+Narrator မှာ ဇာတ်လမ်းအပြင်က တတိယလူ recap narrator ဖြစ်ပြီး quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» လုံးဝမသုံးရ။ ရှိပြီးသား script/story_map ထဲက full spoken_name, approved short_name နဲ့ identity_anchor ကိုသာ Name Ladder အတိုင်း ဆက်သုံးပါ။
+Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/approved short_name/label နဲ့ ရှင်းပါ။
+ဗီဒီယိုထဲမပါသော အရာကို မတီထွင်ပါနှင့်။ စကားလုံးထပ်ဖြည့်ခြင်းမဟုတ်ဘဲ ကျန်ခဲ့သော ဖြစ်ရပ်၊ စကားပြောချက်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များကို ထည့်ပါ။ အထူးသဖြင့် ကျန်နေသော လူမိတ်ဆက်/identity_anchor/approved short_name/name_reveal_bridge၊ term ရဲ့ first_explanation၊ ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ်၊ တောင်းဆိုချက်ရဲ့ ဆုံးရှုံးနိုင်မှု၊ dialogue အပြန်အလှန်နဲ့ နောက်လုပ်ရပ် ဘာကြောင့်ဖြစ်လာတာလဲဆိုတဲ့ bridge ကို ဦးစားပေးပါ။ Term/visible-text အဓိပ္ပာယ်ကို story_map/context သို့မဟုတ် ဗီဒီယိုက တကယ်ပြသလောက်သာသုံးပါ။
 အသစ် scene တစ်ခုချင်းစီသည် သူ၏ အရင်/နောက် scene များနှင့် ဇာတ်လမ်းအရ ဆက်စပ်ရမည်။ ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။ သီးခြား caption လို မရေးရ၊ ဖြစ်ရပ်ကို သူ၏ မူရင်း start/end အတွင်းမှာသာ ထားပါ။
 စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် မသုံးရ၊ "…တယ်/…ခဲ့တယ်" သုံးပါ။ စာကြောင်းတိုတို ရေးပါ။ အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။ ရှိပြီးသား scene များနှင့် စာသားထပ်နေသော scene အသစ် မပေးပါနှင့်။
 
@@ -12633,8 +13108,8 @@ def _rewrite_prompt(
     )
     if protagonist:
         cast_lock_line = (
-            f"အဓိကဇာတ်ကောင်ကို «{protagonist}» ဆိုတဲ့ spoken_name "
-            "တစ်မျိုးတည်းဖြင့်သာ ညွှန်းပါ။"
+            f"အဓိကဇာတ်ကောင်ရဲ့ full spoken_name က «{protagonist}» ဖြစ်သည်။ "
+            "Card ထဲ approved short_name ရှိမှသာ introduction ပြီးနောက် routine အဖြစ် သုံးပါ။"
         )
     else:
         cast_lock_line = (
@@ -12744,8 +13219,8 @@ Cast Lock: {cast_lock_line}
 - start/end သို့မဟုတ် source_segment_ids ကို ကိုယ်တိုင် မဖန်တီးပါနှင့်။ ၎င်းတို့ကို worker က ထည့်ပေးမည်။
 - {length_line}
 - JSON မထုတ်ခင် scene တစ်ခုချင်းစီ၏ စာလုံးအရေအတွက်ကို ကိုယ့်ဘာသာစစ်ပါ။ Target မပြည့်သေးပါက source_text ထဲရှိ အရာ၊ နေရာ၊ အကြောင်းရင်း၊ စကားပြောချက်၊ တုံ့ပြန်မှုနှင့် အကျိုးဆက်များကို မထပ်ဘဲ ပိုမိုအသေးစိတ်ထည့်ပြီးမှ ထုတ်ပါ။ စကားလုံးထပ်ခြင်း၊ filler ထပ်ခြင်းဖြင့် အရှည်မဖြည့်ပါနှင့်။
-- Narrator မှာ ဇာတ်လမ်းအပြင်ကသာပြောသူဖြစ်သည်။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို Cast Lock spoken_name/label နဲ့ ညွှန်းပါ။ Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» ကို narrator အသံအဖြစ် လုံးဝမသုံးရ။
-- **Scene တိုင်း၏ ပထမဝါကျမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/label ဖြင့် ရှင်းပါ။** JSON field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
+- Narrator မှာ ဇာတ်လမ်းအပြင်ကသာပြောသူဖြစ်သည်။ အဓိကဇာတ်ကောင်အပါအဝင် လူတိုင်းကို Cast Lock Name Ladder (full spoken_name introduction → approved short_name/spoken_name routine → identity_anchor re-entry) နဲ့ ညွှန်းပါ။ Quotation marks ပြင်ပမှာ «ကျွန်တော်/ကျွန်မ» ကို narrator အသံအဖြစ် လုံးဝမသုံးရ။
+- **Scene တိုင်း၏ ပထမဝါကျမှာ အဓိကလုပ်ဆောင်သူ သို့မဟုတ် ပြောသူကို spoken_name/approved short_name/label ဖြင့် ရှင်းပါ။** JSON field ထည့်ရုံနဲ့ မလုံလောက်ပါ — burmese စာသားထဲမှာတင် ပါရပါမည်။
 - အဓိကဇာတ်ကောင် မပါဝင်သော အဖြစ်အပျက်များကို မကျော်ပါနှင့်။ «တစ်ဖက်မှာတော့ ...»၊ «အဲဒီအချိန်မှာပဲ ...မှာ» လို နေရာ/အချိန် bridge နဲ့ တတိယလူအဖြစ် ဆက်ပြောပါ။
 - Transcript တွင် မပါသော အဖြစ်အပျက်၊ အမည်၊ အကြောင်းရင်းများကို မတီထွင်ပါနှင့်။
 - Dialogue ၏ အဓိပ္ပာယ်နှင့် ပြောသူ/ကြားသူကို ထိန်းသိမ်းပါ။ တိုက်ရိုက်စာလုံးချင်း ကူးနိုင်သလောက် တိကျကျ Burmese အဖြစ် ပြန်ရေးပါ။
@@ -12754,8 +13229,8 @@ Cast Lock: {cast_lock_line}
 - တုံ့ပြန်မှု/ဆုံးဖြတ်ချက်ရေးရာမှာ transcript စကားလုံး/လေသံက အတည်ပြုနိုင်သလောက်သာ ဘယ်သူက ဘာကြောင့် စိုးရိမ်/သုံးသပ်/ဆုံးဖြတ်တာလဲ ဖော်ပါ။ မျက်နှာအမူအရာလို visual-only အချက်ကို transcript ကနေ မှန်းမရေးရ။
 - Scene အားလုံးပေါင်းလျှင် တစ်ခုတည်းသော ဆက်တိုက်ဇာတ်လမ်း ဖြစ်ရမည်။ Group တစ်ခုချင်းကို သီးခြား caption လို မရေးရ။ အရင် group ရဲ့ ရလဒ်ကနေ အကြောင်းဆက် bridge ဖြင့် ဆက်ရေးပြီး ဘယ်သူက ဘယ်သူ့ကို ဘာကြောင့် ဘာပြော/ဘာလုပ်ပြီး ဘာဆက်ဖြစ်တယ်ဆိုတာ ရှင်းပါ။
 - အကြောင်းအရာကို group တစ်ခုကနေ နောက်တစ်ခုသို့ မရွှေ့ရ။ နောက်မှ ပေါ်မည့် reveal/စကားကို ရှေ့ group မှာ ကြိုမပြောရ၊ ရှေ့ဖြစ်ရပ်ကိုလည်း နောက်မှ ပြန်မပြောရ — အသံနဲ့ footage ကိုက်ညီမှုပျက်စေတယ်။
-- လူပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အဖြာဖြာသုံးမနေဘဲ Cast Lock spoken_name/label သို့မဟုတ် အခန်းကဏ္ဍ/ဆက်နွယ်ပုံကို သုံးပါ။ လူကို ပထမဆုံးမိတ်ဆက်တိုင်း card ရဲ့ `introduction` (spoken_name + ဘယ်သူလဲ/အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ) ကို သုံးပါ။ ဒီ batch တစ်ခုလုံးကို အရင်စကင်လုပ်ပြီး နောက် group မှ အမည်ရှင်းလာသူဆိုလျှင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ `aliases` နဲ့ `source_name` ကို narration မှာ အလှည့်ပြောင်း မသုံးရ။ Transcript က အမည်မသေချာရင် bare category မသုံးဘဲ အဖွဲ့/နေရာ + အခန်းကဏ္ဍ + transcript က သိနိုင်တဲ့ ထူးခြားအချက်ပါတဲ့ မှတ်မိလွယ် stable label ပဲ ဆက်သုံးပါ။
-- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေအတွက် spoken_name/source_name/introduction/identity_anchor/goal/motivation/aliases/name_source/confidence/visual_cue, terms (spoken_term/source_term/meaning/first_explanation), transcript ထဲ တကယ်ပါတဲ့ visible_texts (source_text/burmese_meaning/kind) နဲ့ beat တွေကို မူရင်း start/end အတိုင်း ပြန်ထည့်ပါ။ Beat တိုင်းမှာ ရနိုင်လျှင် trigger/dialogue/reaction/result/visible_text/why_it_matters ကိုပါ ဖြည့်ပါ။ Term အသစ်ကို ပထမဆုံးပြောတဲ့နေရာမှာ first_explanation နဲ့ရှင်းပြီး နောက်ပိုင်း spoken_term တစ်မျိုးတည်းသုံးပါ။ Transcript က အဓိပ္ပာယ်/ဖန်သားပြင်စာကို မပြနိုင်ရင် မှန်းမရေးရဘူး။ `current_conflict` အပြင် `conflict_stakes` နဲ့ `central_question` ကိုပါ transcript ပြသလောက်သာ မှတ်ပါ။ Transcript မှာ subtitle/on-screen အထောက်အထား မပါရင် name_source ကို dialogue သုံးပြီး မသေချာမှုကို မဖုံးပါနှင့်။
+- လူပြောင်းတိုင်း၊ လူနှစ်ယောက်ထက်ပိုပါတိုင်း «သူ/သူမ/အဲ့ဒီလူ» အဖြာဖြာသုံးမနေဘဲ Cast Lock spoken_name/approved short_name သို့မဟုတ် အမည်ပါတဲ့ identity_anchor ကို သုံးပါ။ လူကို ပထမဆုံးမိတ်ဆက်တိုင်း card ရဲ့ `introduction` (spoken_name + ဘယ်သူလဲ/အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ) ကို သုံးပြီး short_name ကို အဲ့ဒီနောက်မှာသာ သုံးပါ။ ပြန်ပေါ်လာရင် identity_anchor နဲ့ ပြန်အမှတ်ရစေပါ။ ဒီ batch တစ်ခုလုံးကို အရင်စကင်လုပ်ပြီး နောက် group မှ အမည်ရှင်းလာသူဆိုလျှင် (လျှို့ဝှက်ချက်မဟုတ်လျှင်) ပထမဆုံး mention ကပင် အမည်သုံးပါ။ `aliases` နဲ့ `source_name` ကို narration မှာ အလှည့်ပြောင်း မသုံးရ။ Transcript က အမည်မသေချာရင် bare category မသုံးဘဲ အဖွဲ့/နေရာ + အခန်းကဏ္ဍ + transcript က သိနိုင်တဲ့ ထူးခြားအချက်ပါတဲ့ မှတ်မိလွယ် stable label ပဲ ဆက်သုံးပါ။
+- `story_beats_so_far` နဲ့ `character_cards` ကို ဆက်တိုက်မှုအတွက် သုံးပြီး output ရဲ့ `story_map` မှာ ဒီ batch ရဲ့ လူတွေအတွက် spoken_name/source_name/introduction/identity_anchor/short_name/name_evidence_text/name_reveal_bridge/goal/motivation/aliases/name_source/confidence/visual_cue, terms (spoken_term/source_term/meaning/first_explanation), transcript ထဲ တကယ်ပါတဲ့ visible_texts (source_text/burmese_meaning/kind) နဲ့ beat တွေကို မူရင်း start/end အတိုင်း ပြန်ထည့်ပါ။ Beat တိုင်းမှာ ရနိုင်လျှင် trigger/dialogue/reaction/result/visible_text/why_it_matters ကိုပါ ဖြည့်ပါ။ လူကို ပထမတစ်ခါ full spoken_name + introduction, နောက်ပိုင်း transcript ကိုယ်တိုင်သုံးထားတဲ့ short_name ရှိမှသာ အဲ့ဒီတိုပုံစံ, ပြန်ပေါ်လာရင် identity_anchor, label ကနေ အမည်အစစ်ကို transcript မှာ တကယ်သိရမှသာ name_reveal_bridge တစ်ကြိမ်တည်း သုံးပါ။ Short form/nickname အသစ် မတီထွင်ရ။ Term အသစ်ကို ပထမဆုံးပြောတဲ့နေရာမှာ first_explanation နဲ့ရှင်းပြီး နောက်ပိုင်း spoken_term တစ်မျိုးတည်းသုံးပါ။ Transcript က အမည်/အဓိပ္ပာယ်/ဖန်သားပြင်စာကို မပြနိုင်ရင် မှန်းမရေးရဘူး။ `current_conflict` အပြင် `conflict_stakes` နဲ့ `central_question` ကိုပါ transcript ပြသလောက်သာ မှတ်ပါ။ Transcript မှာ subtitle/on-screen အထောက်အထား မပါရင် name_source ကို dialogue သုံးပြီး မသေချာမှုကို မဖုံးပါနှင့်။
 - Visual-only အချက်ကို transcript မှ မသိနိုင်လျှင် မှန်းမရေးပါနှင့်။
 - Scene text ထဲတွင် timestamp, heading, bullet, quotation label သို့မဟုတ် ရှင်းလင်းချက် မထည့်ပါနှင့်။ TTS ဖတ်မည့် စာသားသာရေးပါ။
 
@@ -12769,7 +13244,7 @@ JSON ကိုသာ အောက်ပါပုံစံဖြင့် ပြ�
 {{
   "protagonist": "အဓိကဇာတ်ကောင်ရဲ့ spoken_name သို့မဟုတ် stable label",
   "narrator_perspective": "third_person",
-  "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}},
+  "story_map": {{"character_cards": [{{"spoken_name": "ပထမဆုံးမိတ်ဆက်မှာ သုံးရမည့် အမည်အပြည့် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "introduction": "ပထမဆုံးမိတ်ဆက်ရန် မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ/အဖွဲ့/နေရာ)", "identity_anchor": "ပြန်ပေါ်လာတိုင်း အမှတ်ရစေရန် တိုတဲ့ မြန်မာစာကြောင်း (spoken_name + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံ)", "short_name": "နောက်ပိုင်း နေ့တိုင်းပြန်ခေါ်မယ့် တိုပြီး သဘာဝကျတဲ့ အမည်ပုံစံ (source သုံးထားတဲ့ short form သာ; မရှိရင် ဗလာ)", "name_evidence_text": "အမည်ကို အတည်ပြုပေးတဲ့ subtitle/name-card/dialogue စာသား အတိအကျ", "name_reveal_bridge": "အရင် label ကနေ အမည်အစစ်သို့ ပြောင်းချိန် တစ်ကြိမ်တည်းသုံးမယ့် မြန်မာစာကြောင်း (reveal ရှိလျှင်)", "goal": "လက်ရှိ လိုချင်တာ", "motivation": "ဘာကြောင့် လိုချင်/လုပ်ရတာလဲ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ", "trigger": "ဘာက ဒီဖြစ်ရပ်ကို စစေလဲ/အကြောင်းရင်း", "dialogue": "ဘယ်သူက ဘယ်သူ့ကို ဘာပြောလဲ (စကားပြောရှိလျှင်)", "reaction": "ဘယ်သူက ဘယ်လို တုံ့ပြန်/ဆုံးဖြတ်လဲ၊ ဘာကြောင့်လဲ", "result": "ဘာဆက်ဖြစ်လဲ/နောက်ပြဿနာ", "visible_text": "ဖန်သားပြင်ပေါ်က အရေးကြီးစာရဲ့ မြန်မာအဓိပ္ပာယ် (ရှိလျှင်)", "why_it_matters": "ဘာကြောင့် အရေးကြီးလဲ/မအောင်မြင်ရင် ဘာပြောင်းမလဲ"}}], "current_goal": "", "current_conflict": "", "conflict_stakes": "မလိုက်နာ/မအောင်မြင်ရင် ဘာဆုံးရှုံးနိုင်လဲ", "central_question": "မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", "terms": [{{"spoken_term": "Narration မှာ အမြဲသုံးရမယ့် မြန်မာအခေါ်တစ်မျိုးတည်း", "source_term": "မူရင်းအခေါ်/ဖန်သားပြင်စာသား", "meaning": "ဒီဇာတ်လမ်းထဲက source အတည်ပြုနိုင်တဲ့ အဓိပ္ပာယ်/လုပ်ဆောင်ချက်", "first_explanation": "ပထမဆုံးအကြိမ် ပြောရမယ့် ရှင်းလင်းတဲ့ မြန်မာရှင်းပြချက်", "category": "system|rank|skill|level|title|organization|place|item|rule", "evidence_source": "subtitle|on_screen|dialogue|visual_label", "aliases": ["မသုံးရန် variant"]}}], "visible_texts": [{{"start": 0.0, "end": 12.0, "source_text": "ဖန်သားပြင်ပေါ်က မူရင်းစာသား", "burmese_meaning": "Narration မှာ ပြောရမယ့် မြန်မာအဓိပ္ပာယ်", "kind": "name_card|system_panel|subtitle|sign|document|title_card|message", "related_character": "ဆိုင်သူ spoken_name (ရှိလျှင်)", "narrate": true}}], "open_threads": [], "important_facts": []}},
   "scenes": [
     {{"group_id": 1, "burmese": "TTS ဖတ်မည့် Burmese တတိယလူ recap စာသား"}}
   ]
@@ -15921,6 +16396,17 @@ def _build_manual_recovery_token(
                         item["f"] = confidence[:20]
                     if card.get("visual_cue"):
                         item["v"] = str(card.get("visual_cue") or "")[:60]
+                    short_name = str(card.get("short_name") or "").strip()
+                    if short_name and short_name != spoken_name:
+                        item["h"] = short_name[:48]
+                    if card.get("introduction"):
+                        item["t"] = str(card.get("introduction") or "")[:80]
+                    if card.get("identity_anchor"):
+                        item["i"] = str(card.get("identity_anchor") or "")[:60]
+                    if card.get("name_evidence_text"):
+                        item["d"] = str(card.get("name_evidence_text") or "")[:60]
+                    if card.get("name_reveal_bridge"):
+                        item["b"] = str(card.get("name_reveal_bridge") or "")[:80]
                     compact_cards.append(item)
                 if compact_cards:
                     ctx["cc"] = compact_cards
@@ -16210,6 +16696,11 @@ async def _rebuild_manual_session_from_payload(
                 "name_source": str(item.get("s") or ""),
                 "confidence": str(item.get("f") or ""),
                 "visual_cue": str(item.get("v") or ""),
+                "short_name": str(item.get("h") or ""),
+                "introduction": str(item.get("t") or ""),
+                "identity_anchor": str(item.get("i") or ""),
+                "name_evidence_text": str(item.get("d") or ""),
+                "name_reveal_bridge": str(item.get("b") or ""),
             })
         # Legacy compact tokens may contain ``pr``; it is deliberately
         # discarded because narrator perspective is fixed third-person.
@@ -19605,7 +20096,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.33-story-glossary"
+BUILD_VERSION = "v5.34-name-ladder"
 BUILD_FEATURES = len(FEATURES)
 
 
@@ -19688,10 +20179,10 @@ async def root():
         "edit_sync": "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
-        "script_style": "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
-        "script_qa": "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
+        "script_style": "pro_recap_third_person_name_ladder_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
+        "script_qa": "cumulative_name_ladder_introductions_sentence_identity_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
         "story_clarity_contract": "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
-        "story_comprehension": "natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
+        "story_comprehension": "natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
         "delivery_integrity": "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
         "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
@@ -19701,7 +20192,7 @@ async def root():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "narrator_enforcement": "third_person_quote_aware_per_scene_validated",
-        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected",
+        "cast_lock": "subtitle_on_screen_first_name_ladder_full_spoken_name_approved_short_form_or_stable_label_ambiguous_alias_rejected",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
@@ -19815,10 +20306,10 @@ async def health():
         "edit_sync": "proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze",
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
-        "script_style": "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
-        "script_qa": "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
+        "script_style": "pro_recap_third_person_name_ladder_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
+        "script_qa": "cumulative_name_ladder_introductions_sentence_identity_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
         "story_clarity_contract": "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
-        "story_comprehension": "natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
+        "story_comprehension": "natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
         "delivery_integrity": "exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after",
         "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
@@ -19826,7 +20317,7 @@ async def health():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "narrator_enforcement": "third_person_quote_aware_per_scene_validated",
-        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected",
+        "cast_lock": "subtitle_on_screen_first_name_ladder_full_spoken_name_approved_short_form_or_stable_label_ambiguous_alias_rejected",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
@@ -20338,7 +20829,8 @@ def _update_notice_text(version: str) -> str:
         "• အဓိကတောင်းဆိုမှု/ခြိမ်းခြောက်မှုမှာ <b>ဘာကြောင့် ရောက်လာ/တောင်းတာ၊ ဘာကို အတိအကျ လိုချင်တာ၊ မလိုက်နာရင် ဘာဆုံးရှုံးနိုင်တာ</b>ကို source ပြသလောက် ရှင်းပါမယ်\n"
         "• တုံ့ပြန်မှု/ဆုံးဖြတ်ချက်တွေမှာ <b>ဘာကြောင့် အဲဒီလိုထင်/လုပ်တာလဲ</b>ဆိုတာပါ ထည့်ပြီး ဖြစ်ရပ်အုပ်စုပြောင်းတိုင်း အကြောင်းဆက် bridge နဲ့ ဆက်ပါမယ်\n"
         "• အရေးကြီးစကားပြောတွေကို report ချည်း မဟုတ်ဘဲ <b>ပြောသူ → ပြန်ဖြေ/ငြင်း → ဆုံးဖြတ်ချက်</b> အပြန်အလှန်နဲ့ ပြောပါမယ်။ ဗီဒီယိုအဆုံးမှာ တကယ်မဖြေရှင်းရသေးတဲ့ ပြဿနာနဲ့ပဲ ပိတ်ပါမယ် (အနာဂတ်ကို မခန့်မှန်းပါ)\n"
-        "• အမည်ကို ပထမတစ်ကြိမ် အသေးစိတ်မိတ်ဆက်ပြီး နောက်ပိုင်း <b>လူပြောအသံထွက် သဘာဝကျတဲ့ အမည်တိုတစ်မျိုးတည်း</b>ကိုပဲ သုံးပါမယ်။ ကြာမှ ပြန်ပေါ်လာရင် အမည် + အခန်းကဏ္ဍ/ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါမယ်\n"
+        "• အမည်ကို <b>Name Ladder</b> နဲ့ ကိုင်တွယ်ပါမယ် — ပထမတစ်ကြိမ် အမည်အပြည့် + အခန်းကဏ္ဍ + ဆက်နွယ်ပုံ၊ နောက်ပိုင်း source ကိုယ်တိုင်သုံးထားမှသာ သဘာဝကျတဲ့ အမည်တိုတစ်မျိုး (နာမည်အသစ် မတီထွင်)၊ ကြာမှ ပြန်ပေါ်လာရင် အမည် + ဆက်နွယ်ပုံတိုတိုနဲ့ ပြန်အမှတ်ရစေပါမယ်\n"
+        "• အမည်ကို subtitle/အမည်ကတ်စတဲ့ <b>အတည်ပြုစာသား</b>နဲ့ချိတ်ထားပြီး၊ အရင် အညွှန်းသုံးထားသူရဲ့ အမည်အစစ်နောက်မှသိရရင် လူတူမှန်း ရှင်းတဲ့ bridge တစ်ကြိမ်တည်းနဲ့ ဆက်ပါမယ်။ လူအများပါဝင်ရင်လည်း လုပ်ဆောင်သူ/ပြောသူကို အမည်တပ်ပြီး ဘယ်သူလုပ်တာလဲ မေးစရာကျန်မနေပါဘူး\n"
         "• <b>System, အဆင့်/အရည်အသွေး, Mortal</b> လို ဇာတ်လမ်းစည်းမျဉ်းစကားလုံးတွေကို ပထမဆုံးအကြိမ် မြန်မာလို ရိုးရိုးရှင်းရှင်း ရှင်းပြပြီး နောက်ပိုင်း အခေါ်တစ်မျိုးတည်း ဆက်သုံးပါမယ်\n"
         "• အမည်ကတ်, system/status Panel, စာရွက်, ဆိုင်းဘုတ်နဲ့ title card လို <b>ဖန်သားပြင်ပေါ်က အရေးကြီးစာ</b>ကို မူရင်းစကား/subtitle နဲ့ တိုက်စစ်ပြီး မြန်မာအဓိပ္ပာယ်ကို ဆိုင်ရာ footage ပေါ်မှာတင် ပြောပါမယ်\n"
         "• Script က အကျဉ်းချုပ်မဟုတ်ဘဲ မူရင်းရဲ့ <b>90%</b> အပြည့်နီးပါး ပြန်ပြောပြီး Final က မူရင်းထက် <b>မရှည်ပါ</b>\n"
