@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.27-freeze-span-repair` is a **one-shot automatic flow**: the user
+Version `v5.28-pro-recap-script` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -332,6 +332,16 @@ early while container duration probes (which report the audio)
 still passed — the root cause of two releases of "the video froze
 but the audio kept going" reports.
 
+The script also follows professional movie-recap structure: an
+opening hook that fixes time, place, who the narrator is and the
+immediate situation within the first sentences; beats told as
+situation -> intention/plan -> action -> result -> new problem (so
+schemes and decisions are understood *while* they happen, not
+explained afterwards); explicitly named place/time/flashback and
+parallel-storyline transitions; characters introduced by
+name-plus-role on first appearance; and scene endings that land on
+the visible result or new danger without inventing future events.
+
 Narration text is written to be *spoken and followed by ear alone*:
 everyday colloquial Burmese with meaningful storyteller connectors
 and short punchy sentences, named subjects whenever the actor
@@ -550,7 +560,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.27-freeze-span-repair"`,
+URLs must show `"version":"v5.28-pro-recap-script"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -561,6 +571,7 @@ URLs must show `"version":"v5.27-freeze-span-repair"`,
 `"edit_sync":"proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze"`,
 `"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
+`"script_style":"pro_recap_opening_hook_intention_first_named_transitions_first_person"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
 `"active_jobs":{}`, `"last_job_results":{}`,
