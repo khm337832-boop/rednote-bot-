@@ -2967,6 +2967,173 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ဆုံးရှုံးနိုင်တာ (stakes)", prompt_lines)
         self.assertIn("မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", prompt_lines)
 
+    def test_story_map_keeps_identity_anchor_glossary_and_visible_texts(self):
+        story_map = bot._normalize_story_map({
+            "character_cards": [
+                {
+                    "spoken_name": HERO_NAME,
+                    "source_name": "Aiden",
+                    "role": "ရွာထဲက သစ်ခုတ်သမားလူငယ်",
+                    "relation": "မေရီ့ရဲ့သား",
+                    "introduction": (
+                        f"{HERO_NAME}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက "
+                        "သစ်ခုတ်သမားဖြစ်ပြီး မေရီ့ရဲ့သားဖြစ်တယ်"
+                    ),
+                    "identity_anchor": "မေရီ့ရဲ့သားဖြစ်တဲ့ အေဒင်",
+                    "name_source": "on_screen",
+                    "confidence": "confirmed",
+                },
+                {
+                    "spoken_name": HERO_NAME,
+                    "identity_anchor": "နောက်ထပ် ပြောင်းထားတဲ့ anchor",
+                    "name_source": "dialogue",
+                    "confidence": "uncertain",
+                },
+            ],
+            "beats": [{
+                "start": 0,
+                "end": 12,
+                "beat": "The system panel appears",
+                "visible_text": "ဖန်သားပြင်မှာ အဆင့်မြှင့်ဖို့ အချက်လိုတယ်လို့ပြထားတယ်",
+                "why_it_matters": "အချက်မပြည့်ရင် အေဒင် ဆက်ပြီး အားကိုးစရာ မရှိသေးဘူး",
+            }],
+            "terms": [
+                {
+                    "spoken_term": "အဆင့်ပြစနစ်",
+                    "source_term": "System",
+                    "meaning": "ဇာတ်ကောင်ရဲ့ အဆင့်နဲ့ လုပ်ဆောင်နိုင်မှုကို ပြပေးတယ်",
+                    "first_explanation": (
+                        "အဆင့်ပြစနစ်ဆိုတာ အေဒင်ရဲ့ အဆင့်နဲ့ "
+                        "လုပ်ဆောင်နိုင်မှုကို ပြပေးတဲ့ စာမျက်နှာဖြစ်တယ်"
+                    ),
+                    "category": "system",
+                    "evidence_source": "on_screen",
+                    "aliases": ["စစ်စတန်"],
+                },
+                {
+                    "spoken_term": "စစ်စတန်",
+                    "meaning": "နောက်မှ ပြောင်းဖွင့်ထားတဲ့ အဓိပ္ပာယ်",
+                    "aliases": ["အခြားပုံစံ"],
+                },
+            ],
+            "visible_texts": [{
+                "start": 2,
+                "end": 8,
+                "source_text": "系统等级",
+                "burmese_meaning": "စနစ်အဆင့်ကို ပြထားတယ်",
+                "kind": "System Status Window",
+                "related_character": HERO_NAME,
+                "narrate": True,
+            }],
+        }, chunk_duration=20)
+
+        card = story_map["character_cards"][0]
+        self.assertEqual(card["identity_anchor"], "မေရီ့ရဲ့သားဖြစ်တဲ့ အေဒင်")
+        beat = story_map["beats"][0]
+        self.assertIn("ဖန်သားပြင်မှာ", beat["visible_text"])
+        self.assertIn("အချက်မပြည့်", beat["why_it_matters"])
+        self.assertEqual(len(story_map["terms"]), 1)
+        term = story_map["terms"][0]
+        self.assertEqual(term["spoken_term"], "အဆင့်ပြစနစ်")
+        self.assertIn("လုပ်ဆောင်နိုင်မှု", term["meaning"])
+        self.assertNotIn("နောက်မှ ပြောင်းဖွင့်", term["meaning"])
+        self.assertIn("စစ်စတန်", term["aliases"])
+        self.assertEqual(story_map["visible_texts"][0]["kind"], "system_panel")
+
+        context = bot._story_context_from_story_map(story_map)
+        self.assertEqual(context["terms"], story_map["terms"])
+        self.assertIn("အချက်မပြည့်", " ".join(context["story_beats"]))
+        prompt_lines = bot._story_context_prompt_lines(context)
+        self.assertIn("ပြန်ပေါ်လာရင်အမှတ်ရစေရန်", prompt_lines)
+        self.assertIn("Glossary Lock", prompt_lines)
+        self.assertIn("ပထမအကြိမ်ရှင်းပြရန်", prompt_lines)
+
+    def test_story_clarity_flags_terms_visible_text_returns_and_abrupt_switches(self):
+        story_context = {
+            "character_cards": [{
+                "spoken_name": "မေရီ",
+                "role": "ရွာရဲ့ ဆေးဆရာမ",
+                "relation": "အေဒင်ရဲ့အမေ",
+                "introduction": "မေရီလို့ခေါ်တဲ့ အမျိုးသမီးက အေဒင်ရဲ့အမေဖြစ်ပြီး ရွာရဲ့ဆေးဆရာမဖြစ်တယ်",
+                "identity_anchor": "အေဒင်ရဲ့အမေဖြစ်တဲ့ မေရီ",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            }],
+            "last_scene": "အေဒင်က သစ်တောထဲမှာ ထင်းခုတ်နေတယ်။",
+        }
+        story_map = {
+            "character_cards": [{
+                "spoken_name": HERO_NAME,
+                "role": "ရွာထဲက သစ်ခုတ်သမားလူငယ်",
+                "introduction": f"{HERO_NAME}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက သစ်ခုတ်သမားဖြစ်တယ်",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            }],
+            "beats": [
+                {
+                    "start": 0,
+                    "end": 20,
+                    "beat": "Aiden sees the sign",
+                    "why_it_matters": "အချိန်မမီရင် ရွာသားတွေ ဆန်မရနိုင်ဘူး",
+                },
+                {"start": 20, "end": 40, "beat": "Mary walks home"},
+            ],
+            "terms": [{
+                "spoken_term": "အဆင့်ပြစနစ်",
+                "source_term": "System",
+                "meaning": "ဇာတ်ကောင်၏ အဆင့်နဲ့ လုပ်ဆောင်နိုင်မှုကို ပြပေးတယ်",
+                "first_explanation": "အဆင့်ပြစနစ်ဆိုတာ အေဒင်ရဲ့ အဆင့်နဲ့ လုပ်ဆောင်နိုင်မှုကို ပြပေးတဲ့စနစ်ဖြစ်တယ်",
+                "category": "system",
+                "evidence_source": "on_screen",
+            }],
+            "visible_texts": [{
+                "start": 0,
+                "end": 10,
+                "source_text": "交粮",
+                "burmese_meaning": "ဆိုင်းဘုတ်ပေါ်မှာ ရွာသားတွေ ဆန်ပေးရမယ်လို့ရေးထားတယ်",
+                "kind": "sign",
+                "narrate": True,
+            }],
+        }
+        scenes = [
+            {
+                "start": 0,
+                "end": 10,
+                "burmese": f"{HERO_NAME}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက သစ်ခုတ်သမားဖြစ်တယ်။ အဆင့်ပြစနစ်ပေါ်လာတယ်။",
+            },
+            {"start": 10, "end": 20, "burmese": "မေရီ လယ်ခင်းဘက်ကို လျှောက်သွားတယ်။"},
+            {"start": 20, "end": 30, "burmese": f"{HERO_NAME} သစ်တောထဲမှာ ထင်းခုတ်တယ်။"},
+            {"start": 30, "end": 40, "burmese": "မေရီ အိမ်ဘက်ကို ပြန်လာတယ်။"},
+            {"start": 40, "end": 50, "burmese": f"{HERO_NAME} ရွာတံခါးဝကို ကြည့်နေတယ်။"},
+        ]
+
+        metrics = bot._story_clarity_metrics(
+            scenes,
+            story_map,
+            story_context,
+        )
+
+        self.assertEqual(
+            metrics["missing_character_reintroductions"], ["မေရီ"]
+        )
+        self.assertEqual(
+            metrics["missing_term_explanations"], ["အဆင့်ပြစနစ်"]
+        )
+        self.assertEqual(
+            metrics["missing_visible_text_meanings"],
+            ["ဆိုင်းဘုတ်ပေါ်မှာ ရွာသားတွေ ဆန်ပေးရမယ်လို့ရေးထားတယ်"],
+        )
+        self.assertGreaterEqual(metrics["abrupt_scene_switches"], 2)
+        for issue in (
+            "missing_character_reintroductions",
+            "missing_term_explanations",
+            "missing_visible_text_meanings",
+            "abrupt_scene_switches",
+            "missing_conflict_stakes",
+        ):
+            self.assertIn(issue, metrics["issues"])
+        self.assertTrue(metrics["needs_editor"])
+
     def test_story_clarity_flags_generic_labels_flat_dialogue_stakes_and_ending(self):
         story_map = {
             "character_cards": [
@@ -3165,6 +3332,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ending hook", guide)
         self.assertIn("အမည်မသိလူငယ်", guide)
         self.assertIn("ဘာကြောင့် အခုရောက်လာတာလဲ", guide)
+        self.assertIn("Glossary Lock", guide)
+        self.assertIn("identity_anchor", guide)
+        self.assertIn("visible_texts", guide)
+        self.assertIn("first_explanation", guide)
 
         editor_prompt = bot._direct_story_editor_prompt(
             [{"start": 0, "end": 10, "burmese": f"{HERO_NAME} ထိုင်နေတယ်။"}],
@@ -3175,6 +3346,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("နောက်ဆုံး window ဖြစ်သည်", editor_prompt)
         self.assertIn('"introduction"', editor_prompt)
+        self.assertIn('"identity_anchor"', editor_prompt)
+        self.assertIn('"first_explanation"', editor_prompt)
+        self.assertIn('"visible_texts"', editor_prompt)
+        self.assertIn('"why_it_matters"', editor_prompt)
         self.assertIn('"conflict_stakes"', editor_prompt)
         self.assertIn('"trigger"', editor_prompt)
         self.assertIn("ပြောသူ → နားထောင်သူရဲ့ ပြန်ဖြေ/ငြင်း/မေး", editor_prompt)
@@ -3193,6 +3368,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("နောက်ဆုံး group ပါတယ်", worker_prompt)
         self.assertIn('"introduction"', worker_prompt)
+        self.assertIn('"identity_anchor"', worker_prompt)
+        self.assertIn('"first_explanation"', worker_prompt)
+        self.assertIn('"visible_texts"', worker_prompt)
+        self.assertIn('"why_it_matters"', worker_prompt)
         self.assertIn('"central_question"', worker_prompt)
         self.assertIn("ပြောသူ မေး/တောင်း → နားထောင်သူ ပြန်ဖြေ/ငြင်း/မေး", worker_prompt)
 
@@ -4798,6 +4977,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["story_clarity_contract"],
                 "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
+            )
+            self.assertEqual(
+                health.json()["story_comprehension"],
+                "natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
             )
             self.assertEqual(
                 health.json()["delivery_integrity"],

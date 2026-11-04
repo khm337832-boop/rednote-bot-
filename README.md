@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.32-delivery-integrity` is a **one-shot automatic flow**: the user
+Version `v5.33-story-glossary` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -671,6 +671,38 @@ v5.19 makes the job registry survive that:
   show both counts separately: internal windows joined and Telegram
   files sent.
 
+## v5.33 — Natural names, glossary lock, and visible-text meanings
+
+- **Detailed first introduction, natural everyday name after that.**
+  Character cards keep one concise TTS-speakable `spoken_name`, the
+  detailed first-use `introduction`, and a short `identity_anchor`
+  (name + role/relationship) for re-entry after an absence or an actor
+  switch. Prompts forbid repeating a long descriptive identity phrase
+  as though it were a natural name and forbid alternating spellings or
+  transliterations.
+- **Story terms are locked and explained once.** Story maps and the
+  cumulative context now retain `terms`: source term, one canonical
+  Burmese `spoken_term`, the source-supported meaning/function in this
+  story, an exact `first_explanation`, category/evidence, and aliases.
+  Concepts such as System, rank/quality, Mortal, skills, levels,
+  titles, organizations, places, and special items must be explained
+  in plain Burmese at first use. If the source has not defined a term,
+  prompts require describing only its visible function/effect instead
+  of inventing a genre definition.
+- **Important visible text is accounted for.** Story maps retain
+  `visible_texts` for name cards, system/status panels, signs,
+  documents, title cards, maps, and messages: timing, original text,
+  kind, related character, and the Burmese meaning to narrate over the
+  matching footage. Beats can also carry `visible_text` and
+  `why_it_matters`; prompts require reconciling dialogue/audio,
+  subtitles, and visible text, and forbid guessing unreadable wording.
+- **The local QA gate routes comprehension gaps to the editor.** It
+  detects returning people who are not re-identified, new glossary
+  terms used without a first-use explanation, inconsistent term
+  variants, important visible-text meanings missing from narration,
+  repeated actor/group switches without a causal bridge, and mapped
+  beat stakes that are never spoken.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -702,7 +734,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.32-delivery-integrity"`,
+URLs must show `"version":"v5.33-story-glossary"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -718,6 +750,7 @@ URLs must show `"version":"v5.32-delivery-integrity"`,
 `"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected"`,
 `"script_qa":"cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate"`,
 `"story_clarity_contract":"who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending"`,
+`"story_comprehension":"natural_spoken_names_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes"`,
 `"delivery_integrity":"exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after"`,
 `"video_geometry":"display_sar_rotation_square_pixel_output"`,
 `"last_duration_calibration":{}`,
