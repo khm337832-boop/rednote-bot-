@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.37-pro-script-edit-names` is a **one-shot automatic flow**: the user
+Version `v5.38-tts-safe-repair` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -778,6 +778,30 @@ v5.19 makes the job registry survive that:
   speaker. These heuristics are conservative editor signals, not a
   reason to invent names or story facts.
 
+## v5.38 — TTS-safe foreign-script repair
+
+- **A few foreign letters no longer kill an otherwise valid script.**
+  The first live v5.37 job failed only for 16 Latin/CJK/Korean
+  characters after the whole-script story editor was rejected. The
+  pass now first replaces ledger-known forms deterministically:
+  character source names/aliases use their safe Burmese spoken or
+  approved short form, glossary source terms use the locked
+  `spoken_term`, and important on-screen source text uses its
+  recorded Burmese meaning. A foreign-script card `spoken_name` is
+  treated as evidence only, never as a TTS replacement target; when
+  no speakable name form exists, one unique Burmese identity/visual
+  label is the fallback.
+- **Unknown tokens get targeted scene repair.** Direct and worker
+  narrator-repair rounds now include TTS-unsafe scenes even when POV
+  is already correct and even when the story-editor candidate was
+  invalid. Repairs must preserve content and length, use locked
+  Burmese name/term forms first, and transliterate/translate only
+  when no locked form exists.
+- **The hard gate remains, with evidence.** Unknown foreign script
+  is not silently deleted or guessed. If bounded repairs still
+  leave it, the failure and `/healthz` `last_script_quality` now name
+  the exact remaining tokens and sanitize replacements.
+
 ## v5.37 — Professional script, edit-sync, and spoken-name gate
 
 - **Footage must cover the window it narrates.** Model scene
@@ -903,7 +927,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.37-pro-script-edit-names"`,
+URLs must show `"version":"v5.38-tts-safe-repair"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,

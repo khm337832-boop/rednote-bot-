@@ -1701,6 +1701,86 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tts_unsafe_foreign_script", metrics["issues"])
         self.assertTrue(metrics["needs_editor"])
 
+    def test_tts_sanitizer_replaces_ledger_known_foreign_forms(self):
+        story_map = {
+            "character_cards": [
+                {
+                    "spoken_name": HERO_NAME,
+                    "source_name": "Aiden",
+                    "aliases": ["艾登"],
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+                {
+                    # The foreign full form is evidence only; the
+                    # approved Burmese short form is speakable.
+                    "spoken_name": "Li Wei",
+                    "short_name": "လီဝေ",
+                    "source_name": "李伟",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+                {
+                    # No speakable name form exists, so one unique
+                    # Burmese visual identity is the locked fallback.
+                    "spoken_name": "Wang Fang",
+                    "source_name": "王芳",
+                    "visual_cue": "အပြာရောင်ဝတ်စုံဝတ်ထားသူ",
+                    "name_source": "dialogue",
+                    "confidence": "uncertain",
+                },
+            ],
+            "terms": [
+                {
+                    "spoken_term": "ကျူဇိုး",
+                    "source_term": "九州",
+                    "aliases": ["Kyushu"],
+                    "meaning": "နယ်မြေကြီး",
+                }
+            ],
+            "visible_texts": [
+                {
+                    "source_text": "神召仪式",
+                    "burmese_meaning": "နတ်ဘုရားခေါ်ယူပွဲ",
+                    "kind": "system_panel",
+                }
+            ],
+        }
+        scenes = [
+            {
+                "burmese": (
+                    "艾登 က 李伟 နဲ့ Wang Fang ကို 九州 မှာ "
+                    "神召仪式 အကြောင်း ပြောတယ်။ 未知力 က ကျန်တယ်။"
+                )
+            }
+        ]
+
+        stats = bot._sanitize_tts_unsafe_scenes(scenes, story_map, {})
+
+        self.assertEqual(stats["replacements"], 5)
+        self.assertEqual(
+            scenes[0]["burmese"],
+            (
+                f"{HERO_NAME} က လီဝေ နဲ့ အပြာရောင်ဝတ်စုံဝတ်ထားသူ ကို "
+                "ကျူဇိုး မှာ နတ်ဘုရားခေါ်ယူပွဲ အကြောင်း ပြောတယ်။ "
+                "未知力 က ကျန်တယ်။"
+            ),
+        )
+        # Unknown tokens are not silently deleted or guessed; they
+        # remain for targeted model repair and are named in stats.
+        self.assertEqual(stats["remaining_tokens"], ["未知力"])
+        self.assertEqual(bot._tts_unsafe_scene_indexes(scenes), [0])
+
+        cast_scenes = [
+            {"burmese": "李伟 က တံခါးဖွင့်တယ်။ Aiden က စောင့်တယ်။"}
+        ]
+        self.assertEqual(
+            bot._apply_cast_lock_to_scenes(cast_scenes, story_map), 2
+        )
+        self.assertNotIn("李伟", cast_scenes[0]["burmese"])
+        self.assertNotIn("Aiden", cast_scenes[0]["burmese"])
+        self.assertNotIn("Li Wei", cast_scenes[0]["burmese"])
+
     async def test_worker_gemini_json_recovers_wrapped_response_text(self):
         payload = {
             "scenes": [
@@ -4562,6 +4642,158 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             script["story_map"]["character_cards"][1]["name"], "မီနာ"
+        )
+
+    async def test_direct_tts_unsafe_scene_is_repaired_after_editor_rejection(self):
+        purposes = []
+        initial_texts = [
+            f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။ {MALE_PRONOUN} အိမ်ကနေ စောစောထွက်လာခဲ့တယ်။",
+            f"{MALE_PRONOUN} ဈေးတန်းမှာ စာအိတ်ပျောက်နေတာကို လိုက်ရှာနေခဲ့တယ်။",
+            f"{MALE_PRONOUN} မြစ်ကမ်းနား 九州 မှာ သစ်သားသေတ္တာဟောင်းတစ်ခုကို တွေ့ခဲ့တယ်။",
+            f"{MALE_PRONOUN} ကျောင်းဝင်းထဲမှာ လက်စွပ်ငယ်တစ်ခုကို ကောက်ရခဲ့တယ်။",
+            f"{MALE_PRONOUN} လယ်ကွင်းဘေးမှာ ရေဘူးချပြီး ခဏနားနေခဲ့တယ်။",
+        ]
+        safe_replacement = (
+            f"{MALE_PRONOUN} မြစ်ကမ်းနား ကျူဇိုး မှာ "
+            "သစ်သားသေတ္တာဟောင်းတစ်ခုကို တွေ့ခဲ့တယ်။"
+        )
+        initial_story_map = {
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "character_cards": [
+                {
+                    "spoken_name": HERO_NAME,
+                    "source_name": "Hero",
+                    "gender": "male",
+                    "role": "စာပေးသမား",
+                    "introduction": (
+                        f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။"
+                    ),
+                }
+            ],
+            "beats": [
+                {
+                    "start": index * 18,
+                    "end": index * 18 + 18,
+                    "beat": f"Hero event {index}",
+                }
+                for index in range(5)
+            ],
+        }
+
+        async def fake_generate(_client, _contents, **kwargs):
+            purpose = str(kwargs.get("purpose") or "")
+            purposes.append(purpose)
+            if purpose == "story editor":
+                # Simulate the live failure shape: the whole-script
+                # editor answer is incomplete, so it is rejected.
+                return {
+                    "scenes": [
+                        {
+                            "scene_index": 0,
+                            "start": 0,
+                            "end": 10,
+                            "burmese": initial_texts[0],
+                        }
+                    ]
+                }
+            if purpose == "first-person protagonist narrator repair":
+                return {
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [
+                        {
+                            "scene_index": 2,
+                            "start": 20,
+                            "end": 30,
+                            "burmese": safe_replacement,
+                        }
+                    ],
+                }
+            return {
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
+                "story_map": initial_story_map,
+                "scenes": [
+                    {
+                        "start": index * 10,
+                        "end": index * 10 + 10,
+                        "burmese": initial_texts[index],
+                    }
+                    for index in range(5)
+                ],
+                "cuts": [],
+            }
+
+        summary = bot._normalize_story_context(
+            {
+                "characters": [HERO_NAME],
+                "summary": "Hero searched and found the box.",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
+            }
+        )
+        self.start_patch(
+            patch.object(bot, "_make_gemini_client", return_value=object())
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "_upload_video_to_gemini",
+                new=AsyncMock(return_value=object()),
+            )
+        )
+        self.start_patch(
+            patch.object(bot, "_delete_gemini_file", new=AsyncMock())
+        )
+        self.start_patch(
+            patch.object(bot, "_generate_direct_gemini_json", new=fake_generate)
+        )
+        self.start_patch(
+            patch.object(
+                bot,
+                "extract_story_summary",
+                new=AsyncMock(return_value=summary),
+            )
+        )
+        self.start_patch(patch.object(bot, "SCRIPT_TOPUP_ATTEMPTS", 0))
+        tracker = SimpleNamespace(update=AsyncMock(return_value=None))
+
+        script, _summary = await bot.build_chunk_recap(
+            str(self.tmp_path / "chunk.mp4"),
+            93,
+            0,
+            93,
+            {},
+            1,
+            tracker,
+            settings={"coverage": 90, "rate": 3.6},
+            script_only=True,
+            extract_summary=True,
+            keep_source_chunk=True,
+        )
+
+        self.assertIn("story editor", purposes)
+        self.assertIn("first-person protagonist narrator repair", purposes)
+        self.assertEqual(
+            script["metrics"]["story_editor"]["editor_rejected"],
+            "invalid_or_incomplete_scenes",
+        )
+        self.assertTrue(
+            all(
+                not bot._tts_unsafe_script_chars(scene["burmese"])
+                for scene in script["scenes"]
+            )
+        )
+        self.assertIn("ကျူဇိုး", script["scenes"][2]["burmese"])
+        self.assertEqual(
+            script["metrics"]["story_editor"][
+                "professional_quality_failures"
+            ],
+            [],
         )
 
     def test_burmese_number_words_spelled_out_for_speech(self):
