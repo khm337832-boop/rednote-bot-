@@ -1,4 +1,4 @@
-# n8n Pipeline တပ်ဆင်ပုံ — Whisper First-Person Recap
+# n8n Pipeline တပ်ဆင်ပုံ — Whisper Third-Person Cast Lock Recap
 
 ဒီ workflow က လက်ရှိ Render Telegram bot ကို အစားထိုးတာ မဟုတ်ပါ။
 
@@ -17,8 +17,8 @@ Telegram user က link ပို့
   -> Worker job အတည်ပြု/ဖန်တီး
   -> download
   -> Whisper transcribe (timestamps ပါ)
-  -> Gemini Burmese first-person rewrite (coverage စစ် + top-up)
-  -> Gemini TTS (Telegram မှာ ရွေးထားသည့်အသံ)
+  -> Gemini Burmese third-person Cast Lock rewrite (coverage စစ် + top-up)
+  -> TTS (Edge my-MM-ThihaNeural အဓိက၊ Gemini Charon fallback)
   -> Render (narration ကို မညှိ၊ video ကိုပဲ ညှိ/ဖြတ်)
   -> Telegram deliver (ဖိုင်ကြီးလျှင် အပိုင်းခွဲ)
   -> n8n က worker job files ရှင်း
@@ -122,7 +122,7 @@ n8n Cloud သုံးလျှင်လည်း ဤ workflow က Execute Comma
 
 1. n8n → **Workflows** → **Import from File** ကို ရွေးပါ။
 2. `rednote-n8n-workflow.json` ကို import လုပ်ပါ။
-3. Workflow name သည် **Rednote Bot — Whisper First Person Recap (Worker API)** ဖြစ်သင့်ပါသည်။
+3. Workflow name သည် **Rednote Bot — Whisper Third-Person Cast Lock Recap (Worker API)** ဖြစ်သင့်ပါသည်။
 4. Sticky note နှင့် node connection များ ပေါ်လာ/မလာ စစ်ပါ။
 5. အရင်ဆုံး workflow ကို **Inactive** အတိုင်းပဲ ထားပါ။
 
@@ -203,19 +203,19 @@ download -> transcribe -> rewrite -> tts -> render -> deliver
 
 Stage start သည် idempotent ဖြစ်နိုင်ရန် စီစဉ်ထားပါသည်။ Stage ပြီးပြီးသားဆိုလျှင် `200`၊ ယခုမှစလျှင် သို့မဟုတ် လုပ်နေဆဲဆိုလျှင် `202` ပြန်ပါသည်။ ယခင် stage မပြီးဘဲ နောက် stage စ ခေါ်လျှင် `409` ပြန်ပါသည်။
 
-## Final Video ကြာချိန်၊ ပထမလူအပြောနှင့် Video Alignment မှတ်ချက်များ
+## Final Video ကြာချိန်၊ တတိယလူ Cast Lock အပြောနှင့် Video Alignment မှတ်ချက်များ
 
 - Gemini က Whisper timestamp များကို ကိုယ်တိုင် မတီထွင်ရပါ။ Worker က Whisper segment များကို group လုပ်ပြီး group ID/start/end ကို ထိန်းထားပါသည်။
 - Settings ထဲက percentage သည် script character အရေအတွက်ကိုသာ ဆိုလိုခြင်း မဟုတ်ဘဲ **final video ၏ အမှန်တကယ်ကြာချိန်** ကို ဆိုလိုပါသည်။ Job/link တိုင်းအတွက် အနည်းဆုံး **90%** ဖြစ်ပြီး မူရင်းက 10 မိနစ်ကြာလျှင် final ကို 9 မိနစ်ခန့် ဖြစ်အောင် ချိန်ပါသည်။ လက်ခံနိုင်သောကွာခြားချက်မှာ target ± max(0.35 စက္ကန့်, မူရင်းကြာချိန်၏ 2%) သာ ဖြစ်သည်။
 - Settings တွင် 90% အောက် သိမ်းထားသော တန်ဖိုးဟောင်း ရှိနေလျှင်လည်း worker က 90% သို့ အလိုအလျောက် မြှင့်သည်။ 95% သို့မဟုတ် 100% ရွေးထားလျှင် ၎င်းအတိုင်း သုံးသည်။ Voice speed ပြောင်းလျှင် final target ကို မပြောင်းဘဲ လိုအပ်သောစာသားပမာဏကိုသာ ပြောင်းပါသည်။
 - Rewrite အောင်မြင်ရန် script ထဲတွင် ကိုယ်စားပြုထားသည့် Whisper speech duration သည် ရွေးထားသော percentage (အနည်းဆုံး 90%) အထက် ရှိရမည်။ Scene စာသားတစ်ကြောင်းတည်း ရှိနေရုံနှင့် covered မသတ်မှတ်ပါ။
-- Scene တိုင်း၏ Burmese စာသားထဲ၌ အဓိကဇာတ်ကောင်ကိုယ်တိုင် ပြောနေသကဲ့သို့ `ကျွန်တော်` သို့မဟုတ် `ကျွန်မ` တစ်မျိုးတည်း တစ်သမတ်တည်း ပါဝင်ရပါမည်။ JSON ၏ `pronoun` field မှန်နေရုံနှင့် မလုံလောက်ပါ။ Third-person scene များကို Gemini ဖြင့် ပြန်ပြင်ပြီး မအောင်မြင်လျှင် stage ကို failed ဖြစ်စေကာ third-person recap ကို မပို့ပါ။
+- Narrator သည် ဇာတ်လမ်းအပြင်က တတိယလူ recap ပြောပြသူဖြစ်ရပါမည်။ Quotation marks ပြင်ပတွင် narrator အဖြစ် `ကျွန်တော်`/`ကျွန်မ` မသုံးရ။ လူတိုင်းကို subtitle/on-screen အမည်ကနေ အတည်ပြုထားတဲ့ Burmese `spoken_name` တစ်မျိုးတည်း၊ အမည်မသေချာလျှင် stable descriptive label တစ်မျိုးတည်းဖြင့် Cast Lock လုပ်ရပါမည်။ Scene တိုင်းကို quote-aware စစ်ပြီး မအောင်မြင်လျှင် ပြန်ပြင်ခိုင်းကာ မပြင်နိုင်လျှင် stage ကို failed ဖြစ်စေပါသည်။
 - Burmese စာသားပမာဏ target ကို source video duration (မသိလျှင်သာ Whisper speech duration)၊ final-duration percentage နှင့် Settings ထဲက characters/second ဖြင့် ပထမခန့်မှန်းပြီး group တစ်ခုစီကို source timeline အလိုက် ခွဲဝေကာ မပြည့်သေးသော group များကို top-up လုပ်ပါသည်။
 - TTS ပြီးလျှင် character အရေအတွက်ကိုသာ မယုံဘဲ တကယ့်အသံစက္ကန့်နှင့် ထို job ၏ တကယ့် chars/second ကို တိုင်းပါသည်။ တိုနေလျှင် Gemini ဖြင့် scene များကို ချဲ့ရေးပြီး ပြန်လည်အသံသွင်းကာ၊ ရှည်နေလျှင် အဆုံးပိုင်းကို မဖျက်ဘဲ scene အားလုံးကို အချိုးကျ ခ်ဳံ့၍ ပြန်အသံသွင်းပါသည်။ ဤ measured calibration ကို အများဆုံး 4 ကြိမ် လုပ်ပါသည်။
 - Render မစခင် planned duration၊ render ပြီးနောက် final MP4 duration နှင့် Telegram မပို့ခင် final MP4 duration ကို ထပ်စစ်ပါသည်။ Window အတွင်း မရှိလျှင် delivery မလုပ်ဘဲ stage ကို failed ဖြစ်စေပါသည်။
-- Final render တွင် narration ကို alignment အတွက် `atempo` သို့မဟုတ် audio stretch/pad များဖြင့် မညှိပါ။ Video ကိုပဲ scene အစနှင့် align လုပ်ပြီး ဖြတ်/ကြားခံ footage သုံး/မဖြစ်မနေလိုပါက final frame freeze လုပ်ပါသည်။
+- Final render တွင် narration ကို alignment အတွက် `atempo` သို့မဟုတ် audio stretch/pad များဖြင့် မညှိပါ။ Moving footage ကိုသာ သုံး၍ planned freeze မထည့်ပါ။ Footage ပြန်သုံးရန် မဖြစ်မနေလိုမှသာ စုစုပေါင်း အများဆုံး ၂ ကြိမ်သာ ပြန်ပြပါသည်။
 - Telegram တွင် `/start` ပို့လျှင် persistent bottom buttons နှင့် inline main menu နှစ်မျိုးလုံး ရပါသည်။ Progress message တွင်လည်း Cancel/Status/Settings/Main ခလုတ်များ ကပ်ထားပါသည်။
-- မူရင်း BGM/audio ကို V1 တွင် မထားဘဲ Gemini TTS narration တစ်ခုတည်း ထည့်ပါသည်။
+- မူရင်း BGM/audio ကို V1 တွင် မထားဘဲ Edge Thiha narration (လိုမှ Gemini Charon fallback) တစ်ခုတည်း ထည့်ပါသည်။
 - Subtitle burn-in ကို V1 တွင် မလုပ်သေးပါ။
 
 ## ပိတ်ခြင်း / မူလပုံစံသို့ ပြန်သွားခြင်း

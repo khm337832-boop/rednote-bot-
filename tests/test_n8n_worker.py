@@ -910,6 +910,20 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             places=6,
         )
 
+    def test_settings_registry_has_no_dead_cut_or_retired_rate_values(self):
+        self.assertEqual(len(bot.FEATURES), 19)
+        self.assertEqual(bot.BUILD_FEATURES, len(bot.FEATURES))
+        self.assertNotIn("cut", bot.FEATURE_BY_KEY)
+        self.assertNotIn("cut", bot.DEFAULT_SETTINGS)
+
+        rate_options = [
+            value for value, _label in bot.FEATURE_BY_KEY["rate"]["options"]
+        ]
+        self.assertEqual(rate_options, [12.0, 6.5, 17.0])
+        for retired_rate in (5.5, 7.5):
+            migrated = bot._with_required_coverage({"rate": retired_rate})
+            self.assertEqual(migrated["rate"], bot.DEFAULT_SETTINGS["rate"])
+
     def test_narration_measurements_teach_the_learned_rate(self):
         scenes = [
             {"start": i * 12, "burmese": third_person_text(30)} for i in range(5)
@@ -1197,6 +1211,66 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # Generic kinship wording is never treated as a unique identity.
         self.assertIn("အစ်ကို", scenes[0]["burmese"])
 
+    def test_cast_lock_never_merges_people_over_a_shared_alias(self):
+        raw_cards = [
+            {
+                "spoken_name": HERO_NAME,
+                "role": "older brother",
+                "visual_cue": "red jacket",
+                "aliases": ["ညီလေး"],
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            },
+            {
+                "spoken_name": "မေရီ",
+                "role": "younger sister",
+                "visual_cue": "blue dress",
+                "aliases": ["ညီလေး"],
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            },
+        ]
+
+        cards = bot._normalize_character_cards(raw_cards)
+
+        self.assertEqual(
+            [card["spoken_name"] for card in cards],
+            [HERO_NAME, "မေရီ"],
+        )
+        self.assertTrue(all("ညီလေး" not in card["aliases"] for card in cards))
+
+        scenes = [{
+            "burmese": "မေရီက တံခါးကိုဖွင့်လိုက်တယ်။ ညီလေးက အနားမှာရပ်နေတယ်။"
+        }]
+        replacements = bot._apply_cast_lock_to_scenes(
+            scenes,
+            {"character_cards": raw_cards},
+        )
+        self.assertEqual(replacements, 0)
+        self.assertTrue(scenes[0]["burmese"].startswith("မေရီ"))
+        self.assertIn("ညီလေး", scenes[0]["burmese"])
+
+        same_source_cards = bot._normalize_character_cards([
+            {
+                "spoken_name": "ဂျွန် (အဘိုး)",
+                "source_name": "John",
+                "visual_cue": "grey beard",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            },
+            {
+                "spoken_name": "ဂျွန် (မြေး)",
+                "source_name": "John",
+                "visual_cue": "school uniform",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            },
+        ])
+        self.assertEqual(
+            [card["spoken_name"] for card in same_source_cards],
+            ["ဂျွန် (အဘိုး)", "ဂျွန် (မြေး)"],
+        )
+
     def test_story_clarity_flags_unnamed_actors_and_alias_variants(self):
         unnamed = [
             {
@@ -1243,6 +1317,116 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         alias_metrics = bot._story_clarity_metrics(alias_scenes, story_map)
         self.assertEqual(alias_metrics["alias_variant_count"], 4)
         self.assertIn("cast_lock_weak", alias_metrics["issues"])
+
+    def test_story_clarity_uses_context_cast_and_scene_openings(self):
+        story_context = {
+            "characters": [HERO_NAME],
+            "character_cards": [{
+                "spoken_name": HERO_NAME,
+                "source_name": "Aiden",
+                "aliases": ["Aiden"],
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            }],
+        }
+        previous_alias_scenes = [
+            {
+                "start": index * 8,
+                "end": (index + 1) * 8,
+                "burmese": f"Aiden က တံခါးကိုဖွင့်လိုက်တယ် {index}။",
+            }
+            for index in range(4)
+        ]
+        # The current window's map omitted cards, but the cumulative
+        # Cast Lock from earlier windows still identifies the alias.
+        context_metrics = bot._story_clarity_metrics(
+            previous_alias_scenes,
+            {},
+            story_context,
+        )
+        self.assertEqual(context_metrics["cast_identities"], [HERO_NAME])
+        self.assertEqual(context_metrics["alias_variant_count"], 4)
+        self.assertIn("cast_lock_weak", context_metrics["issues"])
+
+        story_map = {
+            "character_cards": story_context["character_cards"],
+            "beats": [
+                {"start": index * 8, "end": (index + 1) * 8, "beat": f"Beat {index}"}
+                for index in range(4)
+            ],
+        }
+        late_named_scenes = [
+            {
+                "start": index * 8,
+                "end": (index + 1) * 8,
+                "burmese": (
+                    "သူက တံခါးကိုဖွင့်လိုက်တယ်။ "
+                    f"အဲဒီနောက် {HERO_NAME} က အခန်းထဲ ဝင်သွားတယ် {index}။"
+                ),
+            }
+            for index in range(4)
+        ]
+        opening_metrics = bot._story_clarity_metrics(
+            late_named_scenes,
+            story_map,
+            story_context,
+        )
+        self.assertEqual(opening_metrics["unnamed_actor_scenes"], 0)
+        self.assertEqual(opening_metrics["unnamed_scene_openings"], 4)
+        self.assertIn("cast_lock_weak", opening_metrics["issues"])
+
+    def test_story_clarity_routes_tts_unsafe_foreign_script_to_editor(self):
+        scenes = [
+            {
+                "start": index * 8,
+                "end": (index + 1) * 8,
+                "burmese": (
+                    f"အဲဒီနောက် {HERO_NAME} က Level တက်ဖို့ "
+                    f"ဆုံးဖြတ်လိုက်တယ် {index}။"
+                ),
+            }
+            for index in range(4)
+        ]
+        story_map = {
+            "character_cards": [{
+                "spoken_name": HERO_NAME,
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+            }],
+            "beats": [
+                {"start": index * 8, "end": (index + 1) * 8, "beat": f"Beat {index}"}
+                for index in range(4)
+            ],
+        }
+
+        metrics = bot._story_clarity_metrics(scenes, story_map)
+
+        self.assertEqual(metrics["tts_unsafe_scene_indexes"], [0, 1, 2, 3])
+        self.assertEqual(metrics["tts_unsafe_script_chars"], 20)
+        self.assertIn("tts_unsafe_foreign_script", metrics["issues"])
+        self.assertTrue(metrics["needs_editor"])
+
+    async def test_worker_gemini_json_recovers_wrapped_response_text(self):
+        payload = {
+            "scenes": [
+                {"group_id": 1, "burmese": third_person_text(80)}
+            ]
+        }
+        client = SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=lambda **kwargs: SimpleNamespace(
+                    text=(
+                        "model note before JSON\n"
+                        + json.dumps(payload, ensure_ascii=False)
+                        + "\nmodel note after JSON"
+                    )
+                )
+            )
+        )
+
+        data = await bot._worker_gemini_json("rewrite", client=client)
+
+        self.assertEqual(data, payload)
 
     def test_direct_gemini_json_parser_recovers_wrapped_and_truncated_scenes(self):
         fenced = "```json\n" + json.dumps(
@@ -2612,6 +2796,37 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(fallback["story_beats"])
 
+    def test_story_context_merge_prioritizes_latest_cast_and_threads(self):
+        first_cards = [{"name": "Hero", "role": "protagonist"}] + [
+            {"name": f"Old Character {index}", "role": "early walk-on"}
+            for index in range(1, 16)
+        ]
+        first = {
+            "protagonist": "Hero",
+            "character_cards": first_cards,
+            "open_threads": [f"old thread {index}" for index in range(1, 13)],
+        }
+        second = {
+            "character_cards": [
+                {"name": "Late Villain", "role": "new antagonist"}
+            ],
+            "open_threads": ["latest unresolved danger"],
+        }
+
+        merged = bot._merge_story_contexts(first, second)
+        card_names = [card["name"] for card in merged["character_cards"]]
+
+        self.assertEqual(len(card_names), 16)
+        self.assertEqual(card_names[:2], ["Hero", "Late Villain"])
+        self.assertNotIn("Old Character 15", card_names)
+        self.assertEqual(merged["open_threads"][0], "latest unresolved danger")
+        self.assertIn("old thread 1", merged["open_threads"])
+        self.assertNotIn("old thread 12", merged["open_threads"])
+
+        prompt_lines = bot._story_context_prompt_lines(merged)
+        self.assertIn("Late Villain", prompt_lines)
+        self.assertIn("Old Character 14", prompt_lines)
+
     def test_story_clarity_metrics_gate_the_editor_pass(self):
         disconnected = [
             {
@@ -2628,8 +2843,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         story_map = {
             "character_cards": [
-                {"name": "Hero", "role": "speaker"},
-                {"name": "Mina", "role": "sister"},
+                {"spoken_name": HERO_NAME, "source_name": "Hero", "role": "speaker"},
+                {"spoken_name": "မီနာ", "source_name": "Mina", "role": "sister"},
             ],
             "beats": [
                 {"start": 0, "end": 15, "beat": "Hero found the letter"},
@@ -2642,7 +2857,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "start": index * 10,
                 "end": index * 10 + 10,
                 "burmese": (
-                    f"အဲဒီနောက် {HERO_NAME} Mina ပြောတာကို နားထောင်ပြီး "
+                    f"အဲဒီနောက် {HERO_NAME} မီနာ ပြောတာကို နားထောင်ပြီး "
                     f"သော့လိုလို့ ဆုံးဖြတ်လိုက်တယ် {index}။"
                 ),
             }
@@ -2666,10 +2881,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "burmese": text,
             }
             for index, text in enumerate([
-                f"တစ်ဖက်မှာတော့ Mina က {HERO_NAME} ကို စောင့်နေတုန်း သော့ကိုရှာဖို့ ဆုံးဖြတ်လိုက်တယ် {0}။",
-                f"ခဏအကြာမှာ Mina က တံခါးပွင့်လာလို့ အခန်းထဲ ဝင်လာတယ် {1}။",
+                f"တစ်ဖက်မှာတော့ မီနာ က {HERO_NAME} ကို စောင့်နေတုန်း သော့ကိုရှာဖို့ ဆုံးဖြတ်လိုက်တယ် {0}။",
+                f"ခဏအကြာမှာ မီနာ က တံခါးပွင့်လာလို့ အခန်းထဲ ဝင်လာတယ် {1}။",
                 f"မြင်ကွင်းက ရွာဘက်ဆီ ပြောင်းသွားတယ်၊ အဖေက {HERO_NAME} ကို ခေါ်လို့ သွားလိုက်တယ် {2}။",
-                f"လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့ {HERO_NAME} Mina ပြောတာကို နားလည်လို့ ပြုံးလိုက်တယ် {3}။",
+                f"လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့ {HERO_NAME} မီနာ ပြောတာကို နားလည်လို့ ပြုံးလိုက်တယ် {3}။",
                 f"နောက်နေ့မနက်မှာ အဖေက စာအိတ်ပေးလို့ {HERO_NAME} ချက်ချင်း ဖွင့်ကြည့်လိုက်တယ် {4}။",
             ])
         ]
@@ -2956,6 +3171,20 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         plan = bot._build_alignment_plan(scenes, [5.0, 5.0, 5.0], 30.0)
         for item in plan:
             self.assertGreaterEqual(item["input_seconds"], 0.99)
+
+    def test_probe_parser_uses_display_geometry_and_square_pixels(self):
+        anamorphic = (
+            "Duration: 00:01:02.50, start: 0.000000, bitrate: 100 kb/s\n"
+            "Stream #0:0: Video: h264, yuv420p, 720x480 "
+            "[SAR 32:27 DAR 16:9], 25 fps\n"
+        )
+        self.assertEqual(bot._parse_video_info_text(anamorphic), (62.5, 853, 480))
+        self.assertEqual(bot.compute_output_dims(853, 480, 1280), (1280, 720))
+
+        rotated = anamorphic.replace("720x480 [SAR 32:27 DAR 16:9]", "1920x1080 [SAR 1:1 DAR 16:9]")
+        rotated += "Side data:\n  displaymatrix: rotation of -90.00 degrees\n"
+        self.assertEqual(bot._parse_video_info_text(rotated), (62.5, 1080, 1920))
+        self.assertIn("setsar=1", bot._worker_video_filter(1280, 720, {}))
 
     def test_video_filter_adds_setpts_only_when_stretched(self):
         stretched = bot._worker_video_filter(
@@ -3619,7 +3848,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "Cast Lock/Story bible",
             "subtitle/အမည်ကတ်",
             "အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်",
-            "လက်ရှိ Feature ၂၀",
+            "လက်ရှိ Feature ၁၉",
             "မူရင်းပိုင်းချိန်",
             "2 မိနစ်",
         ):
@@ -4099,7 +4328,15 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["cast_lock"],
-                "subtitle_on_screen_first_locked_spoken_name_or_stable_label",
+                "subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected",
+            )
+            self.assertEqual(
+                health.json()["script_qa"],
+                "cumulative_cast_lock_scene_openings_tts_safe_editor_gate",
+            )
+            self.assertEqual(
+                health.json()["video_geometry"],
+                "display_sar_rotation_square_pixel_output",
             )
             self.assertEqual(health.json()["source_segment_seconds"], 120)
             self.assertEqual(health.json()["recap_flow"], "manual_sequential_per_part")
@@ -8352,6 +8589,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, payload)
         # The dead model is not even launched on later calls.
         self.assertEqual(calls, ["ok-model-t1"])
+
+    def test_preferred_script_models_try_working_lite_before_retired_25(self):
+        self.assertLess(
+            bot.PREFERRED_MODELS.index("gemini-3.5-flash-lite"),
+            bot.PREFERRED_MODELS.index("gemini-2.5-flash"),
+        )
 
     async def test_direct_gemini_json_overload_error_not_masked_by_404(self):
         # When flash models are overloaded (503) and a trailing model

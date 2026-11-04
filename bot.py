@@ -840,8 +840,11 @@ def _spawn_background(coro, *, name: str = ""):
 PREFERRED_MODELS = [
     "gemini-3.5-flash",
     "gemini-flash-latest",
-    "gemini-2.5-flash",
+    # The lite model was the one actually answering in production;
+    # keep it ahead of the repeatedly-404ing 2.5 entry so a fresh
+    # process does not spend an attempt relearning that 2.5 is gone.
     "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
 ]
 # Current names per Google's TTS docs (the 2.5 GA models dropped
 # the "-preview" suffix).  Dead (404) and quota-exhausted entries
@@ -898,16 +901,15 @@ DEFAULT_SETTINGS = {
     "shield": True,        # 8  🛡️ Crop+Flip shield
     "color": True,         # 9  🎨 အရောင် မြှင့်တင်မှု
     "pause": 0.20,         # 10 ⏸ ခန်းကြား နားချိန် (စက္ကန့်)
-    "cut": 8,              # 11 ✂️ ဖြတ်ထုတ်ခွင့် %
-    "chunk": SOURCE_SEGMENT_SECONDS,  # 12 📦 မူရင်းကို ၂ မိနစ်စီခွဲ (fixed)
-    "rate": 6.5,           # 13 🗣 Script အလျင် (စာလုံး/စက္ကန့်)
-    "pov": "third",        # 14 👤 ပြောပြသူ ရှုထောင့်
-    "tone": "natural",     # 15 🎭 ဇာတ်ကြောင်း လေသံ
-    "split_tg": True,      # 16 📤 Telegram အတွက် ခွဲပို့ခြင်း
-    "caption": True,       # 17 💬 Video caption ထည့်ခြင်း
-    "notify": True,        # 18 🔔 ပြီးဆုံး အကြောင်းကြားခြင်း
-    "fast_mode": True,     # 19 ⚡ မြန်ဆန်မုဒ် Turbo (preset ultrafast)
-    "auto_start": True,    # 20 🚀 Link ပို့လိုက်တာနဲ့ တန်း စခြင်း
+    "chunk": SOURCE_SEGMENT_SECONDS,  # 11 📦 မူရင်းကို ၂ မိနစ်စီခွဲ (fixed)
+    "rate": 6.5,           # 12 🗣 Script အလျင် (စာလုံး/စက္ကန့်)
+    "pov": "third",        # 13 👤 ပြောပြသူ ရှုထောင့်
+    "tone": "natural",     # 14 🎭 ဇာတ်ကြောင်း လေသံ
+    "split_tg": True,      # 15 📤 Telegram အတွက် ခွဲပို့ခြင်း
+    "caption": True,       # 16 💬 Video caption ထည့်ခြင်း
+    "notify": True,        # 17 🔔 ပြီးဆုံး အကြောင်းကြားခြင်း
+    "fast_mode": True,     # 18 ⚡ မြန်ဆန်မုဒ် Turbo (preset ultrafast)
+    "auto_start": True,    # 19 🚀 Link ပို့လိုက်တာနဲ့ တန်း စခြင်း
 }
 
 FEATURES = [
@@ -939,15 +941,12 @@ FEATURES = [
     {"key": "pause", "icon": "⏸️", "label": "ခန်းကြား နားချိန်", "kind": "cycle",
      "desc": "ခန်းတစ်ခုနဲ့ တစ်ခုကြား တိတ်ဆိတ်ချိန်",
      "options": [(0.0, "မနား"), (0.2, "0.2s ⭐"), (0.5, "0.5s"), (1.0, "1.0s")]},
-    {"key": "cut", "icon": "✂️", "label": "ဖြတ်ထုတ်ခွင့်", "kind": "cycle",
-     "desc": "မလိုတဲ့ အပိုင်း ဖြတ်ထုတ်ခွင့် အများဆုံး %",
-     "options": [(0, "လုံးဝ မဖြတ်"), (5, "5%"), (8, "8% ⭐"), (15, "15%")]},
     {"key": "chunk", "icon": "📦", "label": "မူရင်းပိုင်းချိန်", "kind": "cycle",
-     "desc": "Download လုပ်ပြီး ၂ မိနစ်ပိုင်းချိန် Plan သာဆောက်မည် — ပထမအပိုင်းတစ်ခုကိုပဲ ခွဲပို့ပြီး ခလုတ်နှိပ်မှ Recap၊ ပြီးမှ နောက်တစ်ပိုင်း",
+     "desc": "မူရင်းကို ၂ မိနစ်စီ အပိုင်းချိန် Plan ဆောက်မည် — Auto mode မှာ အစဉ်လိုက် အလိုအလျောက်ဆက်လုပ်ပြီး၊ Manual mode ဖွင့်ထားမှသာ အပိုင်းတစ်ခုချင်း ခလုတ်စောင့်မည်",
      "options": [(SOURCE_SEGMENT_SECONDS, "2 မိနစ် ⭐ (အမြဲတမ်း)")]},
     {"key": "rate", "icon": "🗣️", "label": "Script အလျင် ချိန်ညှိ", "kind": "cycle",
-     "desc": "TTS ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — «6.5 ⭐» သည် အလိုအလျောက် (အသံအမှန်ကို တိုင်းပြီး ချိန်သည်၊ Edge မြန်မာအသံ ~2.3)။ 5.5/7.5 ကို ကိုယ်တိုင် ရွေးမှသာ အတင်းသတ်မှတ်မည်",
-     "options": [(5.5, "5.5 နှေး"), (6.5, "6.5 ⭐ အလိုအလျောက်"), (7.5, "7.5 မြန်")]},
+     "desc": "Script sizing အတွက် ဖတ်နှုန်း (စာလုံး/စက္ကန့်) — «အလိုအလျောက် ⭐» က တကယ်ထွက်လာတဲ့ TTS အသံကို တိုင်းပြီး သင်ယူသည်။ ကိုယ်တိုင်သတ်မှတ်ချင်ရင်သာ 12 (လုံခြုံ) သို့မဟုတ် 17 (မြန်သောအသံဝန်းကျင်) ကို ရွေးပါ",
+     "options": [(12.0, "12 လုံခြုံ"), (6.5, "အလိုအလျောက် ⭐"), (17.0, "17 မြန်")]},
     {"key": "pov", "icon": "👤", "label": "ပြောပြသူ ရှုထောင့်", "kind": "cycle",
      "desc": "ရုပ်ရှင် recap ပြောပြသူက အပြင်ကနေ တတိယလူအဖြစ် ပြောပြမည် — အမြဲတမ်း",
      "options": [("third", "တတိယလူ recap narrator ⭐")]},
@@ -1441,7 +1440,7 @@ MAIN_MENU_TEXT = (
     "ဗီဒီယို လုပ်ပေးပါတယ်။\n\n"
     "👇 ခလုတ်လေးတွေ နှိပ်ပြီး သုံးနိုင်ပါတယ်\n"
     "🎬 <b>Recap စတင်မယ်</b> — video/link ပို့ဖို့\n"
-    "⚙️ <b>ဆက်တင်များ</b> — feature ၂၀ လုံး ချိန်ညှိရန်\n"
+    "⚙️ <b>ဆက်တင်များ</b> — feature ၁၉ လုံး ချိန်ညှိရန်\n"
     "🛑 <b>ရပ်မယ်</b> — လုပ်နေတဲ့ အလုပ် ပယ်ဖျက်ရန်"
 )
 
@@ -1526,7 +1525,7 @@ def start_features_text(chat_id=None) -> str:
         "🛑 ရပ်မယ် · 📋 အကျဉ်း · ❓ အကူအညီ\n"
         "/start · /menu · /settings · /status · /cancel · /summary · /help\n"
         f"🚀 {auto_line}\n\n"
-        "<b>🎛️ လက်ရှိ Feature ၂၀ နဲ့ တန်ဖိုးများ</b>\n"
+        "<b>🎛️ လက်ရှိ Feature ၁၉ နဲ့ တန်ဖိုးများ</b>\n"
         + "\n".join(feature_lines)
         + version_line
         + (
@@ -2385,18 +2384,68 @@ async def download_telegram_file(
     return duration
 
 
-def probe_video_info(path: str) -> tuple[float, int, int]:
-    proc = run_cmd([FFMPEG_BIN, "-i", path], 30)
-    out = proc.stderr.decode(errors="ignore") + proc.stdout.decode(errors="ignore")
+def _parse_video_info_text(out: str) -> tuple[float, int, int]:
+    """Parse duration + *display* dimensions from ``ffmpeg -i`` text.
+
+    The stream line reports coded pixels.  An anamorphic source can
+    be stored as 720x480 while displaying at 16:9 (SAR 32:27), and a
+    phone video can carry a 90-degree display matrix.  Output sizing
+    must use the geometry the viewer actually sees; otherwise the
+    render filter crops/scales for the wrong aspect ratio and emits
+    non-square pixels that some players handle inconsistently.
+    """
+    text = str(out or "")
     dur = 0.0
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", out)
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
     if m:
         dur = float(m.group(1)) * 3600.0 + float(m.group(2)) * 60.0 + float(m.group(3))
     w, h = 0, 0
-    vm = re.search(r"Stream #\d+:\d+.*?Video:\s*([a-zA-Z0-9_]+).*?,\s*(\d{2,5})x(\d{2,5})", out)
+    vm = re.search(
+        r"Stream #\d+:\d+.*?Video:\s*([a-zA-Z0-9_]+).*?,\s*(\d{2,5})x(\d{2,5})",
+        text,
+    )
     if vm:
         w, h = int(vm.group(2)), int(vm.group(3))
+        stream_context = text[vm.start():vm.start() + 700]
+        ratio_match = re.search(
+            r"\[SAR\s+(\d+):(\d+)\s+DAR\s+(\d+):(\d+)\]",
+            stream_context,
+        )
+        if ratio_match:
+            sar_num, sar_den, dar_num, dar_den = (
+                int(value) for value in ratio_match.groups()
+            )
+            if sar_num > 0 and sar_den > 0:
+                sar = sar_num / sar_den
+                if 0.1 <= sar <= 10.0:
+                    w = max(1, int(round(w * sar)))
+            elif dar_num > 0 and dar_den > 0 and h > 0:
+                dar = dar_num / dar_den
+                if 0.1 <= dar <= 10.0:
+                    w = max(1, int(round(h * dar)))
+        rotation_match = re.search(
+            r"rotation of\s+(-?\d+(?:\.\d+)?)\s+degrees",
+            text,
+            flags=re.IGNORECASE,
+        ) or re.search(
+            r"\brotate\s*:\s*(-?\d+(?:\.\d+)?)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if rotation_match:
+            try:
+                rotation = int(round(float(rotation_match.group(1)))) % 360
+            except (TypeError, ValueError):
+                rotation = 0
+            if rotation in (90, 270):
+                w, h = h, w
     return dur, w, h
+
+
+def probe_video_info(path: str) -> tuple[float, int, int]:
+    proc = run_cmd([FFMPEG_BIN, "-i", path], 30)
+    out = proc.stderr.decode(errors="ignore") + proc.stdout.decode(errors="ignore")
+    return _parse_video_info_text(out)
 
 
 def compute_output_dims(src_w: int, src_h: int, long_edge_target: int = 1280) -> tuple[int, int]:
@@ -5138,6 +5187,7 @@ def _normalize_character_cards(value, character_names=None) -> list:
     """
     raw_values = value if isinstance(value, list) else []
     cards = []
+    ambiguous_alias_keys = set()
 
     def first_value(item, keys):
         for key in keys:
@@ -5244,14 +5294,26 @@ def _normalize_character_cards(value, character_names=None) -> list:
             ),
         }
 
+    def card_rank(card):
+        return _cast_evidence_rank(
+            card.get("name_source") or "unknown",
+            card.get("confidence") or "uncertain",
+        )
+
     def identity_keys(card):
         keys = set()
-        for item in (
-            [_character_card_spoken_name(card), card.get("source_name") or ""]
-            + list(card.get("aliases") or [])
-        ):
+        spoken_key = _normalize_burmese_text(_character_card_spoken_name(card))
+        if spoken_key:
+            keys.add(spoken_key)
+        source_key = _normalize_burmese_text(card.get("source_name") or "")
+        if source_key:
+            keys.add(source_key)
+        for item in card.get("aliases") or []:
             key = _normalize_burmese_text(item)
-            if key:
+            # An alias claimed for two different spoken identities is
+            # evidence of ambiguity, not evidence that the people are
+            # the same person.  Never let it collapse two cast cards.
+            if key and key not in ambiguous_alias_keys:
                 keys.add(key)
         return keys
 
@@ -5271,13 +5333,48 @@ def _normalize_character_cards(value, character_names=None) -> list:
 
     def find_match(candidate):
         candidate_keys = identity_keys(candidate)
-        for existing in cards:
-            if candidate_keys & identity_keys(existing):
-                return existing
+        candidate_spoken_key = _normalize_burmese_text(
+            _character_card_spoken_name(candidate)
+        )
         candidate_visual = _normalize_burmese_text(candidate.get("visual_cue") or "")
+        candidate_rank = card_rank(candidate)
+        for existing in cards:
+            if not (candidate_keys & identity_keys(existing)):
+                continue
+            existing_spoken_key = _normalize_burmese_text(
+                _character_card_spoken_name(existing)
+            )
+            existing_visual = _normalize_burmese_text(
+                existing.get("visual_cue") or ""
+            )
+            # Two independently confirmed identities with different
+            # visual identities must not be collapsed just because a
+            # model repeated a nickname/source name on both cards.
+            if (
+                candidate_spoken_key != existing_spoken_key
+                and candidate_rank >= 30
+                and card_rank(existing) >= 30
+                and candidate_visual
+                and existing_visual
+                and candidate_visual != existing_visual
+            ):
+                continue
+            return existing
         candidate_role = _normalize_burmese_text(candidate.get("role") or "")
         if candidate_visual:
             for existing in cards:
+                existing_spoken_key = _normalize_burmese_text(
+                    _character_card_spoken_name(existing)
+                )
+                # A shared outfit/visual cue can upgrade a descriptive
+                # label to a confirmed name, but it is not enough to
+                # merge two already-confirmed different people.
+                if (
+                    candidate_spoken_key != existing_spoken_key
+                    and candidate_rank >= 30
+                    and card_rank(existing) >= 30
+                ):
+                    continue
                 existing_visual = _normalize_burmese_text(
                     existing.get("visual_cue") or ""
                 )
@@ -5349,16 +5446,87 @@ def _normalize_character_cards(value, character_names=None) -> list:
             if _normalize_burmese_text(alias) != current_key
         ][:8]
 
+    candidates = []
     for item in raw_values:
         candidate = candidate_from_item(item)
         if candidate is not None:
-            merge_candidate(candidate)
+            candidates.append(candidate)
     for name in _clean_story_string_list(
         character_names or [], limit=16, item_limit=80
     ):
         candidate = candidate_from_item(name)
         if candidate is not None:
-            merge_candidate(candidate)
+            candidates.append(candidate)
+
+    # First pass: detect aliases that the model assigned to more than
+    # one spoken identity.  Kinship words and nicknames such as
+    # ``ညီလေး`` are routinely reused for different people; treating
+    # one as a unique identity key used to merge two confirmed cast
+    # cards and then replace the second person's name with the first.
+    alias_owner_keys = {}
+    for candidate in candidates:
+        spoken_key = _normalize_burmese_text(
+            _character_card_spoken_name(candidate)
+        )
+        source_key = _normalize_burmese_text(candidate.get("source_name") or "")
+        if not spoken_key:
+            continue
+        for alias in candidate.get("aliases") or []:
+            alias_key = _normalize_burmese_text(alias)
+            if alias_key and alias_key != source_key:
+                alias_owner_keys.setdefault(alias_key, set()).add(spoken_key)
+    ambiguous_alias_keys.update(
+        alias_key
+        for alias_key, owner_keys in alias_owner_keys.items()
+        if len(owner_keys) > 1
+    )
+    if ambiguous_alias_keys:
+        for candidate in candidates:
+            candidate["aliases"] = [
+                alias
+                for alias in (candidate.get("aliases") or [])
+                if _normalize_burmese_text(alias) not in ambiguous_alias_keys
+            ]
+
+    for candidate in candidates:
+        merge_candidate(candidate)
+
+    # Final safety pass after all merges/upgrades: a surviving card
+    # may not claim an alias that is shared with another surviving
+    # identity or that is itself another card's spoken name.  Keeping
+    # such an alias would make later deterministic replacement pick
+    # the wrong person even though the cards stayed separate.
+    final_spoken_keys = {
+        _normalize_burmese_text(_character_card_spoken_name(card))
+        for card in cards
+        if _character_card_spoken_name(card)
+    }
+    final_alias_owner_keys = {}
+    for card in cards:
+        spoken_key = _normalize_burmese_text(_character_card_spoken_name(card))
+        if not spoken_key:
+            continue
+        for alias in card.get("aliases") or []:
+            alias_key = _normalize_burmese_text(alias)
+            if alias_key:
+                final_alias_owner_keys.setdefault(alias_key, set()).add(spoken_key)
+    for card in cards:
+        spoken_key = _normalize_burmese_text(_character_card_spoken_name(card))
+        card["aliases"] = [
+            alias
+            for alias in (card.get("aliases") or [])
+            if (
+                _normalize_burmese_text(alias)
+                and _normalize_burmese_text(alias) != spoken_key
+                and _normalize_burmese_text(alias) not in final_spoken_keys
+                and len(
+                    final_alias_owner_keys.get(
+                        _normalize_burmese_text(alias), set()
+                    )
+                )
+                <= 1
+            )
+        ]
     return cards[:16]
 
 
@@ -5701,15 +5869,45 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
             fallback_context["last_scene"] = fallback_texts[-1]
         return fallback_context
 
+    # The registry is capped, so feed the newest window's active cast
+    # first.  Chronological first-seen order let walk-on characters
+    # from minute 2 permanently occupy every slot while an important
+    # person introduced at minute 70 never entered Cast Lock.  The
+    # established protagonist is moved back to the front below.
+    priority_contexts = list(reversed(normalized))
     character_names = _clean_story_string_list(
-        [name for item in normalized for name in (item.get("characters") or [])],
+        [
+            name
+            for item in priority_contexts
+            for name in (item.get("characters") or [])
+        ],
         limit=16,
         item_limit=80,
     )
     cards = _normalize_character_cards(
-        [card for item in normalized for card in (item.get("character_cards") or [])],
+        [
+            card
+            for item in priority_contexts
+            for card in (item.get("character_cards") or [])
+        ],
         character_names=character_names,
     )
+    protagonist = next(
+        (item.get("protagonist") for item in normalized if item.get("protagonist")),
+        "",
+    )
+    protagonist_key = _normalize_burmese_text(protagonist)
+    if protagonist_key and cards:
+        cards.sort(
+            key=lambda card: 0
+            if protagonist_key
+            in {
+                _normalize_burmese_text(_character_card_spoken_name(card)),
+                _normalize_burmese_text(card.get("source_name") or ""),
+                _normalize_burmese_text(card.get("name") or ""),
+            }
+            else 1
+        )
     if cards:
         character_names = _clean_story_string_list(
             [_character_card_spoken_name(card) for card in cards],
@@ -5753,7 +5951,11 @@ def _merge_story_contexts(*contexts, fallback_from_scenes=None) -> dict:
         "current_conflict": latest_value("current_conflict"),
         "setting": latest_value("setting"),
         "open_threads": _clean_story_string_list(
-            [x for item in normalized for x in (item.get("open_threads") or [])],
+            [
+                x
+                for item in priority_contexts
+                for x in (item.get("open_threads") or [])
+            ],
             limit=12,
             item_limit=240,
         ),
@@ -5782,7 +5984,7 @@ def _story_context_prompt_lines(story_context: dict) -> str:
     context = _normalize_story_context(story_context or {})
     lines = []
     card_lines = []
-    for card in context["character_cards"][:8]:
+    for card in context["character_cards"][:16]:
         spoken_name = _character_card_spoken_name(card)
         if not spoken_name:
             continue
@@ -6161,6 +6363,11 @@ def _with_required_coverage(settings: dict = None) -> dict:
     s["coverage"] = int(coverage) if coverage.is_integer() else coverage
     s["chunk"] = SOURCE_SEGMENT_SECONDS
     s["pov"] = "third"
+    try:
+        if float(s.get("rate") or 0) in (5.5, 7.5):
+            s["rate"] = DEFAULT_SETTINGS["rate"]
+    except (TypeError, ValueError):
+        s["rate"] = DEFAULT_SETTINGS["rate"]
     return s
 
 
@@ -6734,6 +6941,14 @@ _BURMESE_NUMBER_PLACES = (
 )
 _MYANMAR_DIGIT_MAP = str.maketrans("၀၁၂၃၄၅၆၇၈၉", "0123456789")
 _SPOKEN_NUMBER_RE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
+_TTS_UNSAFE_SCRIPT_RE = re.compile(
+    r"[A-Za-z\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]"
+)
+
+
+def _tts_unsafe_script_chars(text: str) -> int:
+    """Count letters the Burmese narration voices cannot speak safely."""
+    return len(_TTS_UNSAFE_SCRIPT_RE.findall(str(text or "")))
 
 
 def _burmese_number_words(value) -> str:
@@ -7134,7 +7349,11 @@ _STORY_AMBIGUOUS_REFERENCES = (
 )
 
 
-def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
+def _story_clarity_metrics(
+    scenes: list,
+    story_map: dict = None,
+    story_context: dict = None,
+) -> dict:
     """Cheap local signals for whether narration reads as a story.
 
     This cannot judge literary quality; it only detects failure
@@ -7152,6 +7371,14 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         if isinstance(scene, dict) and str(scene.get("burmese") or "").strip()
     ]
     normalized_map = _normalize_story_map(story_map)
+    tts_unsafe_scene_indexes = [
+        index
+        for index, text in enumerate(texts)
+        if _tts_unsafe_script_chars(text)
+    ]
+    tts_unsafe_chars = sum(
+        _tts_unsafe_script_chars(text) for text in texts
+    )
     normalized_texts = [_normalize_burmese_text(text) for text in texts]
     duplicate_count = len(normalized_texts) - len(set(normalized_texts))
     transition_scenes = sum(
@@ -7171,7 +7398,18 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         for marker in _STORY_AMBIGUOUS_REFERENCES
     )
     beat_count = len(normalized_map.get("beats") or [])
-    cards = normalized_map.get("character_cards") or []
+    context_cards = []
+    if story_context:
+        context_cards = (
+            _normalize_story_context(story_context).get("character_cards") or []
+        )
+    # Cast identity is cumulative across windows.  Checking only the
+    # current model's story_map made a later window look cast-less
+    # (and missed aliases from earlier chapters) whenever that one
+    # response omitted cards it had already been given in context.
+    cards = _normalize_character_cards(
+        list(context_cards) + list(normalized_map.get("character_cards") or [])
+    )
     card_count = len(cards)
     canonical_identities = []
     for card in cards:
@@ -7196,6 +7434,18 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         )
         if has_ambiguous_reference and not has_canonical_identity:
             unnamed_actor_scene_indexes.append(index)
+    unnamed_scene_opening_indexes = []
+    for index, text in enumerate(texts):
+        opening_sentences = _split_sentences(text)
+        opening = opening_sentences[0] if opening_sentences else text
+        # The script contract says each scene opens by identifying
+        # its actor/speaker.  A scene can still pass the whole-scene
+        # check above by naming someone later, while its first
+        # spoken sentence leaves the listener asking "who is သူ?".
+        if any(
+            marker in opening for marker in _STORY_AMBIGUOUS_REFERENCES
+        ) and not any(name in opening for name in canonical_identities):
+            unnamed_scene_opening_indexes.append(index)
     alias_variant_count = 0
     for card in cards:
         for alias in card.get("aliases") or []:
@@ -7214,6 +7464,8 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         and (
             (not cards and ambiguous_references >= 4)
             or len(unnamed_actor_scene_indexes)
+            >= max(2, math.ceil(len(texts) / 3))
+            or len(unnamed_scene_opening_indexes)
             >= max(2, math.ceil(len(texts) / 3))
             or alias_variant_count >= 3
         )
@@ -7242,12 +7494,22 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
     if cast_lock_weak:
         issues.append("cast_lock_weak")
         score -= 15
+    if tts_unsafe_scene_indexes:
+        # Latin/CJK leftovers are not a style issue: the Burmese
+        # voices may skip or mangle names/terms.  Route even an
+        # otherwise clear draft through the text-only editor so it
+        # transliterates/translates them before voicing.
+        issues.append("tts_unsafe_foreign_script")
+        score -= 20
     return {
         "scene_count": len(texts),
         "score": max(0, int(score)),
         "issues": issues,
         "needs_editor": bool(
-            duplicate_count or len(issues) >= 2 or "cast_lock_weak" in issues
+            duplicate_count
+            or len(issues) >= 2
+            or "cast_lock_weak" in issues
+            or tts_unsafe_scene_indexes
         ),
         "duplicate_scenes": int(duplicate_count),
         "story_beats": int(beat_count),
@@ -7259,7 +7521,11 @@ def _story_clarity_metrics(scenes: list, story_map: dict = None) -> dict:
         "named_scene_count": int(named_scene_count),
         "unnamed_actor_scenes": int(len(unnamed_actor_scene_indexes)),
         "unnamed_actor_scene_indexes": unnamed_actor_scene_indexes,
+        "unnamed_scene_openings": int(len(unnamed_scene_opening_indexes)),
+        "unnamed_scene_opening_indexes": unnamed_scene_opening_indexes,
         "alias_variant_count": int(alias_variant_count),
+        "tts_unsafe_script_chars": int(tts_unsafe_chars),
+        "tts_unsafe_scene_indexes": tts_unsafe_scene_indexes,
     }
 
 
@@ -7524,7 +7790,6 @@ Cast Lock spoken_name/label တွေကို လုံးဝမပြောင
 - **Scene တစ်ခုသည် story_map beat တစ်ခု (သို့မဟုတ် beat တစ်ခု၏ ဆက်တိုက်အစိတ်အပိုင်းတစ်ခု) နှင့်သာ ကိုက်ညီရမည်။** နောက်မှ ပေါ်လာမည့် reveal/စကားပြောချက်ကို ရှေ့ scene ထဲ ကြိုမပြောရ၊ ရှေ့က ဖြစ်ရပ်ကိုလည်း နောက် footage ရောက်မှ ပြန်မပြောရ။ Beat တစ်ခုရဲ့ စာသား မဆန့်လျှင် အဲ့ဒီ beat အတွင်းရှိ အလှ/အသေးစိတ်ကိုသာ ချုံ့ပါ — စာသားကို ကပ်လျက် မြင်ကွင်းထဲ ရွှေ့မထည့်ပါနှင့်။
 - အပိုင်းတစ်ခုစီအတွက် "start" နှင့် "end" တွင် မူရင်းဗီဒီယို၏ ဤအပိုင်းအစမှ စတွက်ထားသော စက္ကန့်ကို ထည့်ပါ။ **"start" ဆိုတာ အဲဒီ scene ရဲ့ ဖြစ်ရပ်/မြင်ကွင်း စတင်တဲ့ စက္ကန့် အတိအကျ** ဖြစ်ရပါမယ် — နေရာ ပြောင်းတိုင်း၊ စကားပြောသူ ပြောင်းတိုင်း၊ ဖြစ်ရပ်အသစ် စတိုင်း scene အသစ်တစ်ခု စပါ။ Scene တွေကို အချိန်အစဉ်အတိုင်း ဆက်တိုက် (ရှေ့ scene ရဲ့ end = နောက် scene ရဲ့ start) ထားပါ၊ အချိန် ထပ်မနေစေရ။
 - ပထမခန်း၏ "start" သည် အပိုင်းအစ (0.0 ပတ်ဝန်းကျင်) မှ စပြီး နောက်ဆုံးခန်း၏ "end" သည် အပိုင်းဆုံး ({chunk_dur:.0f} စက္ကန့် ပတ်လည်) အထိ ရောက်ရမည်။ အလယ်တွင် ဇာတ်လမ်းနှင့် ဆိုင်သည့် အချိန်ကွက် တစ်ခုမှ မလွတ်ရပါ။
-- အရေးမကြီးသောအပိုင်းကို ဖြတ်သင့်ပါက ၎င်း၏ မူရင်းစတင်ချိန်နှင့် ဆုံးချိန်ကို "cuts" စာရင်းတွင် ထည့်ပြီး ဖြတ်ရသည့်အကြောင်းကို တိုတိုရေးပါ။
 - ထိန်းသိမ်းမည့် မြင်ကွင်းများကို မူရင်းအစဉ်အတိုင်း စီပါ။ မြင်ကွင်းအချိန်များ ထပ်မနေစေရ၊ အရေးကြီးသောအပိုင်းများလည်း မကျန်ခဲ့စေရ။
 
 ## မထုတ်ခင် ကိုယ့်ဘာသာ စစ်ဆေးရန်
@@ -7553,13 +7818,6 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
       "start": 0.0,
       "end": 12.0,
       "burmese": "တတိယလူ recap narrator ဖြင့် ရေးထားသော မြန်မာဇာတ်ကြောင်း"
-    }}
-  ],
-  "cuts": [
-    {{
-      "start": 12.0,
-      "end": 15.0,
-      "reason": "ထပ်နေသော မြင်ကွင်း"
     }}
   ]
 }}
@@ -7679,14 +7937,13 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 - ဇာတ်ကောင်အမည်များ၊ နေရာ၊ လုပ်ဆောင်ချက်၊ စကားပြောချက်၏ အဓိပ္ပာယ်၊ တုံ့ပြန်မှု၊ အကြောင်းရင်းနှင့် အကျိုးဆက်များ ထည့်ပါ။ ဗီဒီယိုတွင် မပါသောအရာ မတီထွင်ရ။
 - အရင် story map တည်ဆောက်ပြီး beat အစဉ်အတိုင်း ရေးပါ။ Scene အားလုံးပေါင်းရင် ဆက်တိုက်ဇာတ်လမ်းတစ်ခုဖြစ်ရမည်။ လူပြောင်းတိုင်း အမည်/အခန်းကဏ္ဍကို ရှင်းပါ၊ dialogue မှာ speaker/listener ရှင်းပါ၊ နောက်ဖြစ်ရပ်ကို ရှေ့ scene မှာ ကြိုမပြောရ။
 - စကားပြောဟန် (အပြောမြန်မာ) နှင့်သာ ရေးပါ — "…ပါသည်/…သည်" လို ရေးသားဟန် လုံးဝ မသုံးရ၊ "…တယ်/…ခဲ့တယ်/…လို့/…ဆိုတော့" သုံးပါ။ ဝါကျတစ်ခုမှာ လုပ်ဆောင်ချက် တစ်ခုနဲ့ သူ့အကြောင်းရင်း/ရလဒ်သာ ထားပြီး စီးဆင်းညီအောင် ရေးပါ။ ဥပမာ ❌ "အေဒင် ပြန်လာခဲ့ပါသည်။" ✅ "အေဒင် ပြန်ချလာခဲ့တယ်။" အင်္ဂလိပ်အက္ခရာ/ဂဏန်း/နိုင်ငံခြားစာလုံး လုံးဝ မသုံးရ — မြန်မာလို အသံထွက်အတိုင်း ရေးပါ (Level → လယ်ဗယ်)၊ ဂဏန်းတွေကို မြန်မာစာလုံးနဲ့ ရေးပါ (ငါးဆယ်၊ တစ်ထောင်)။
-- JSON key များမှာ "protagonist", "narrator_perspective", "story_map", "scenes", "cuts" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
+- JSON key များမှာ "protagonist", "narrator_perspective", "story_map", "scenes" တို့သာ သုံးပါ။ Scene တိုင်းတွင် number "start", number "end" နှင့် string "burmese" ပါရမည်။ JSON ပြင်ပတွင် စာသား မရေးရ။
 
 {{
   "protagonist": "အဓိကဇာတ်ကောင်နာမည် သို့မဟုတ် ကွက်လပ်",
   "narrator_perspective": "third_person",
   "story_map": {{"character_cards": [{{"spoken_name": "Narration မှာ အမြဲပြောရမည့်အမည် သို့မဟုတ် label", "source_name": "မူရင်းအမည် (ရှိလျှင်)", "role": "ဘယ်သူလဲ", "relation": "ဆက်နွယ်ပုံ", "aliases": ["variant/အရင် label"], "name_source": "subtitle|on_screen|dialogue|visual_label", "confidence": "confirmed|descriptive|uncertain", "visual_cue": "မျက်မြင်မှတ်ချက်"}}], "beats": [{{"start": 0.0, "end": 12.0, "beat": "ဘယ်သူက ဘာကြောင့် ဘာလုပ်ပြီး ဘာဆက်ဖြစ်လဲ"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}},
-  "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "တတိယလူ recap မြန်မာစာသား"}}],
-  "cuts": []
+  "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "တတိယလူ recap မြန်မာစာသား"}}]
 }}
 """.strip()
             try:
@@ -7883,7 +8140,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
 {json.dumps(scenes, ensure_ascii=False)}
 
 အောက်ပါပုံစံအတိုင်း JSON object ကိုသာ ပြန်ပေးပါ။ JSON ပြင်ပတွင် မည်သည့်စာသားမှ မရေးပါနှင့်။
-{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}], "cuts": []}}
+{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "ထပ်ဖြည့်စာသား"}}]}}
         """.strip()
         try:
             extra = await _generate_direct_gemini_json(
@@ -7971,7 +8228,11 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     # hard to follow; a candidate is accepted only if every scene
     # is returned, third-person/length stay in bounds, and the
     # clarity score does not get worse.
-    story_editor_metrics = _story_clarity_metrics(scenes, story_map)
+    story_editor_metrics = _story_clarity_metrics(
+        scenes,
+        story_map,
+        story_context,
+    )
     story_editor_metrics["editor_applied"] = False
     story_editor_metrics["cast_lock_replacements"] = int(cast_lock_replacements)
     if not has_prepared_script and story_editor_metrics.get("needs_editor"):
@@ -8021,19 +8282,15 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                     old_text = str(scene.get("burmese") or "").strip()
                     old_len = len(old_text)
                     new_len = len(new_text)
-                    introduced_foreign = bool(
-                        re.search(
-                            r"[A-Za-z\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]",
-                            new_text,
-                        )
-                        and not re.search(
-                            r"[A-Za-z\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]",
-                            old_text,
-                        )
-                    )
+                    # The editor is also the repair path for an
+                    # initial draft that left a name/term in Latin or
+                    # CJK script.  Accept its candidate only when the
+                    # replacement itself is fully speakable Burmese;
+                    # merely "not newly introduced" is not enough.
+                    tts_unsafe = bool(_tts_unsafe_script_chars(new_text))
                     if (
                         not _scene_uses_third_person_narrator(new_text)
-                        or introduced_foreign
+                        or tts_unsafe
                         or (old_len and not (old_len * 0.75 <= new_len <= old_len * 1.25))
                     ):
                         valid_candidate = False
@@ -8048,6 +8305,7 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
                 candidate_metrics = _story_clarity_metrics(
                     candidate_scenes,
                     candidate_map,
+                    story_context,
                 )
                 if (
                     int(candidate_metrics.get("score") or 0)
@@ -8359,7 +8617,7 @@ Scene တိုင်းရဲ့ အစောပိုင်းမှာ အဓ
 {json.dumps(scenes, ensure_ascii=False)}
 
 JSON ကိုသာပြန်ပေးပါ:
-{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော တတိယလူ recap စာသား"}}], "cuts": []}}
+{{"narrator_perspective": "third_person", "story_map": {{"character_cards": [], "beats": [{{"start": 0.0, "end": 12.0, "beat": "အသစ်ဖြည့်သည့် beat အကျဉ်း"}}], "current_goal": "", "current_conflict": "", "open_threads": [], "important_facts": []}}, "scenes": [{{"start": 0.0, "end": 12.0, "burmese": "အသစ်ထပ်ဖြည့်သော တတိယလူ recap စာသား"}}]}}
 """.strip()
                 try:
                     if video_file is None:
@@ -9711,6 +9969,8 @@ def _make_telegram_preview_copy(
     video_bps = max(180_000, total_bps - audio_bps)
     out_w, out_h = compute_output_dims(src_w, src_h, 1280)
     video_filter = (
+        r"scale=trunc(iw*if(eq(sar\,0)\,1\,sar)/2)*2:trunc(ih/2)*2,"
+        "setsar=1,"
         f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
         f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
     )
@@ -10782,11 +11042,15 @@ async def _worker_gemini_json(prompt: str, client=None):
                     ),
                     timeout=float(GEMINI_GENERATE_TIMEOUT_SECONDS),
                 )
-                raw = str(getattr(response, "text", "") or "").strip()
-                if raw.startswith("```"):
-                    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-                    raw = re.sub(r"\s*```$", "", raw).strip()
-                data = json.loads(raw)
+                raw, diagnostics = _gemini_response_text_and_diagnostics(response)
+                try:
+                    data = _parse_gemini_json_text(raw)
+                except Exception as parse_error:
+                    if diagnostics:
+                        raise ValueError(
+                            f"{parse_error}; {diagnostics}"
+                        ) from parse_error
+                    raise
                 if isinstance(data, (dict, list)):
                     return data
                 raise ValueError("Gemini did not return a JSON object/list")
@@ -12925,6 +13189,10 @@ def _worker_video_filter(out_w: int, out_h: int, settings: dict, freeze_seconds:
         "fps=25",
         f"scale={int(out_w)}:{int(out_h)}:force_original_aspect_ratio=increase:flags=bicubic",
         f"crop={int(out_w)}:{int(out_h)}",
+        # Output dimensions are display dimensions (see
+        # _parse_video_info_text); emit square pixels instead of
+        # carrying anamorphic SAR into players that ignore it.
+        "setsar=1",
     ])
     if settings.get("color"):
         filters.append("eq=contrast=1.08:saturation=1.12:gamma=1.02")
@@ -17440,7 +17708,7 @@ async def handle_callback(cb: dict):
     if data == "menu:main":
         await show(start_features_text(chat_id), main_menu_keyboard(chat_id))
     elif data == "menu:settings":
-        await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
+        await show("⚙️ <b>ဆက်တင်များ (Feature ၁၉)</b>\n━━━━━━━━━━━━━━━\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။\n🟢 = On · 🔴 = Off", settings_keyboard(chat_id))
     elif data == "menu:recap":
         recap_intro = (
             "🎬 <b>Recap စတင်ရန်</b>\n\nTelegram video file (20MB အောက်)၊ document video သို့မဟုတ် RedNote/video link (https://...) ကို ဒီအတိုင်း ပို့လိုက်ပါ။\n✂️ Bot က download လုပ်ပြီး ၂ မိနစ်စီ Plan ဆောက်ကာ ပထမအပိုင်းတစ်ခုကိုပဲ 🎬 Recap လုပ်မယ် ခလုတ်နဲ့ ပို့ပါမယ်။ ခလုတ်နှိပ်မှ အဲဒီအပိုင်းကို Recap လုပ်ပြီး ပြီးမှ နောက်တစ်ပိုင်းပို့ပါမယ်။"
@@ -17474,7 +17742,7 @@ async def handle_callback(cb: dict):
         if feat["kind"] == "toggle":
             cur = get_user_settings(chat_id).get(key)
             set_user_setting(chat_id, key, not bool(cur))
-            await show("⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\n\n" f"{feat['icon']} {feat['label']}: <b>{feature_value_label(feat, get_user_settings(chat_id))}</b>", settings_keyboard(chat_id))
+            await show("⚙️ <b>ဆက်တင်များ (Feature ၁၉)</b>\n\n" f"{feat['icon']} {feat['label']}: <b>{feature_value_label(feat, get_user_settings(chat_id))}</b>", settings_keyboard(chat_id))
         else:
             await show(f"{feat['icon']} <b>{feat['label']}</b>\n{feat.get('desc', '')}\n\n👇 ရွေးချယ်ပါ:", feature_options_keyboard(feat, chat_id))
     elif data.startswith("set:"):
@@ -17569,7 +17837,7 @@ async def process_admin_update(update: dict):
             chat_id, reply_to=msg_id, with_persistent_keyboard=True
         )
     elif cmd == "/settings":
-        await send_text(chat_id, "⚙️ <b>ဆက်တင်များ (Feature ၂၀)</b>\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။", reply_to=msg_id, reply_markup=settings_keyboard(chat_id))
+        await send_text(chat_id, "⚙️ <b>ဆက်တင်များ (Feature ၁၉)</b>\nပြောင်းချင်တဲ့ ခလုတ်ကို နှိပ်ပါ။", reply_to=msg_id, reply_markup=settings_keyboard(chat_id))
     elif cmd == "/status":
         await send_text(chat_id, job_status_text(chat_id), reply_to=msg_id, reply_markup=_status_keyboard(chat_id))
     elif cmd == "/cancel":
@@ -17658,7 +17926,7 @@ async def _keep_awake_while_working():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     version = globals().get("BUILD_VERSION", "")
-    features = globals().get("BUILD_FEATURES", 20)
+    features = globals().get("BUILD_FEATURES", len(FEATURES))
     logger.info(
         "🚀 rednote-bot %s စတင်ပါပြီ (features=%s, public_base=%s, "
         "render_commit=%s, render_branch=%s)",
@@ -17716,8 +17984,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.29-third-person-cast-lock"
-BUILD_FEATURES = 20
+BUILD_VERSION = "v5.30-pro-qa-continuity"
+BUILD_FEATURES = len(FEATURES)
 
 
 @app.get("/")
@@ -17800,6 +18068,8 @@ async def root():
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
         "script_style": "pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock",
+        "script_qa": "cumulative_cast_lock_scene_openings_tts_safe_editor_gate",
+        "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         # Backward-compatible field name from v3.2.  Semantically this is
         # now the minimum selectable *final video duration* percentage.
@@ -17807,7 +18077,7 @@ async def root():
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "narrator_enforcement": "third_person_quote_aware_per_scene_validated",
-        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label",
+        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"
@@ -17922,12 +18192,14 @@ async def health():
         "story_continuity": "cumulative_story_bible_character_cards_ordered_beats",
         "story_editor": "clarity_gated_bounded_text_only_pass",
         "script_style": "pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock",
+        "script_qa": "cumulative_cast_lock_scene_openings_tts_safe_editor_gate",
+        "video_geometry": "display_sar_rotation_square_pixel_output",
         "last_duration_calibration": _LAST_DURATION_CALIBRATION,
         "minimum_script_coverage_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "target_final_duration_percent": MINIMUM_SCRIPT_COVERAGE_PERCENT,
         "final_duration_enforcement": "measured_tts_and_rendered_file",
         "narrator_enforcement": "third_person_quote_aware_per_scene_validated",
-        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label",
+        "cast_lock": "subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected",
         "source_segment_seconds": SOURCE_SEGMENT_SECONDS,
         "segment_pipeline": (
             "download_plan_120s_extract_one_send_click_recap_then_next_explicit_join"

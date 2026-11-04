@@ -2,11 +2,11 @@
 
 Telegram bot that accepts a directly uploaded Telegram video/document
 video or a RedNote/video link and turns it into a Burmese recap video
-(Gemini script → Gemini TTS → ffmpeg render), controlled with
+(Gemini script → Edge Thiha TTS, Gemini Charon fallback → ffmpeg render), controlled with
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.29-third-person-cast-lock` is a **one-shot automatic flow**: the user
+Version `v5.30-pro-qa-continuity` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -398,7 +398,7 @@ Gemini reason rather than a misleading `0/<target> chars` duration error.
 The measured 90%-duration and quote-aware per-scene third-person gates
 remain hard requirements.
 
-## The 20 features (⚙️ ဆက်တင်များ)
+## The 19 features (⚙️ ဆက်တင်များ)
 
 1. 🎯 Final ကြာချိန် — **actual final video duration** as % of source duration (90–100%; **90% minimum for every job**, default **90%**)
 2. 🎙️ အသံ (Voice) — Charon / Fenrir / Puck / Kore / Aoede
@@ -410,16 +410,15 @@ remain hard requirements.
 8. 🛡️ Shield (Crop+Flip) on/off
 9. 🎨 အရောင် မြှင့် (color enhance) on/off
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
-11. ✂️ ဖြတ်ထုတ်ခွင့် — max cut ratio 0–15%
-12. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
-13. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 5.5 / 7.5 is an explicit manual override
-14. 👤 ပြောပြသူ ရှုထောင့် — outside third-person recap narrator always; Cast Lock fixes one Burmese name or stable label per character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
-15. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
-16. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
-17. 💬 Video Caption on/off
-18. 🔔 ပြီး အကြောင်းကြား — completion notification on/off
-19. ⚡ မြန်ဆန်မုဒ် — faster render preset on/off
-20. 🚀 Video/Link တန်းစ — auto-start on an uploaded video or link, or ask for ✅ confirmation first
+11. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
+12. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 12 / 17 is an explicit manual override (the retired 5.5 / 7.5 UI values are migrated back to auto for real jobs)
+13. 👤 ပြောပြသူ ရှုထောင့် — outside third-person recap narrator always; Cast Lock fixes one Burmese name or stable label per character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
+14. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
+15. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
+16. 💬 Video Caption on/off
+17. 🔔 ပြီး အကြောင်းကြား — completion notification on/off
+18. ⚡ မြန်ဆန်မုဒ် — faster render preset on/off
+19. 🚀 Video/Link တန်းစ — auto-start on an uploaded video or link, or ask for ✅ confirmation first
 
 Settings are **per user**, saved to disk (`bot_settings.json` in the
 work dir), and apply from the next video.
@@ -553,6 +552,36 @@ v5.19 makes the job registry survive that:
   (✅ done / 🛑 cancelled / 🔁 interrupted by restart / ❌ failed with the
   reason) instead of a bare "nothing is running".
 
+## v5.30 — Cast Lock integrity, continuity QA, and display geometry
+
+- **Ambiguous aliases can no longer merge two people.** If a model
+  assigns the same nickname/kinship alias to two different confirmed
+  `spoken_name` cards, that alias is removed as identity evidence;
+  independently confirmed people with conflicting visual cues also stay
+  separate even when they share a source name. A descriptive label can
+  still be upgraded to its subtitle/on-screen confirmed name.
+- **Script QA uses the cumulative story bible.** The clarity gate now
+  checks the current window against Cast Lock cards from earlier
+  windows, flags scenes whose *opening sentence* leaves the actor as
+  an unexplained `သူ/သူမ`, and routes Latin/CJK leftovers to the
+  text-only story editor so names/terms are Burmese and TTS-safe before
+  voicing. An editor candidate containing any such script is rejected.
+- **Long-video memory prioritizes the active cast.** Context merging
+  keeps the protagonist first, then the latest window's cast and
+  unresolved threads, instead of letting early walk-on characters fill
+  every capped slot on a 90-minute source. Prompts now receive all 16
+  retained Cast Lock cards.
+- **Display geometry is normalized.** Probing derives display size
+  from SAR/DAR and a 90/270-degree display matrix, and rendering emits
+  square pixels (`setsar=1`) at that display aspect instead of sizing
+  from coded anamorphic pixels.
+- **Operational honesty fixes.** The working `gemini-3.5-flash-lite`
+  now precedes the production-404 `gemini-2.5-flash`; worker Gemini
+  calls use the same wrapped/truncated-JSON recovery as direct calls;
+  the unused “cut %” setting and model `cuts` request were removed;
+  stale manual-rate values migrate to measured auto; and the n8n docs
+  now describe the current third-person Cast Lock contract.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -584,7 +613,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.29-third-person-cast-lock"`,
+URLs must show `"version":"v5.30-pro-qa-continuity"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -597,7 +626,9 @@ URLs must show `"version":"v5.29-third-person-cast-lock"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
 `"script_style":"pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock"`,
 `"narrator_enforcement":"third_person_quote_aware_per_scene_validated"`,
-`"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label"`,
+`"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected"`,
+`"script_qa":"cumulative_cast_lock_scene_openings_tts_safe_editor_gate"`,
+`"video_geometry":"display_sar_rotation_square_pixel_output"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
 `"active_jobs":{}`, `"last_job_results":{}`,
