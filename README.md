@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.34-name-ladder` is a **one-shot automatic flow**: the user
+Version `v5.35-first-person-protagonist` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -55,7 +55,7 @@ slow/queued request cannot stall the cascade. The script stage is also leaner:
 the first prompt asks for ~15% more text than the target (models
 undershoot counts; overshoot is trimmed locally for free), the
 second full-script retry is skipped when the first call itself
-failed on every model, third-person narrator repairs are text-only (no video
+failed on every model, first-person protagonist narrator repairs are text-only (no video
 re-processing), and two TTS batches run concurrently. The default TTS
 voice is the original **Charon** with the Deep pitch-shift filter off
 by default and a neutral reading style (no "deep/slow" instructions).
@@ -92,10 +92,12 @@ per-clip loudnorm made the speech stop-start with jumping
 loudness. Final part joins re-encode audio so AAC priming
 cannot leave a gap at each seam. Scripts are prompted in
 spoken Burmese register (စကားပြောဟန်, short sentences -- written
-"book" Burmese made the narration sound read-aloud; an outside
-third-person narrator names the speaker and listener for reported
-dialogue, and any short direct quote stays clearly quoted, closer
-to popular recap-channel storytelling), and Gemini
+"book" Burmese made the narration sound read-aloud; the protagonist
+narrates in first person with one locked self-pronoun, introduces
+themself by full spoken name and role at the opening, and every other
+speaker/listener is named for reported dialogue while any short direct
+quote stays clearly quoted, matching lived-story recap-channel
+storytelling rather than a report), and Gemini
 Charon is the fallback if Edge ever fails. (In production
 the free-tier key's Gemini TTS plan quota was exhausted, which is
 what put Edge first.) Set `TTS_PROVIDER_ORDER=gemini,edge` to put
@@ -156,7 +158,7 @@ exposed on `/healthz` as `script_length_rate`. Trimming is now
 whole trailing sentences are removed (scenes whose only sentence cannot
 be split are dropped whole rather than chopped), so the TTS never reads
 half a clause. The 90%-of-source final-duration gates and the
-per-scene third-person narrator gates remain in force: the target is reached by
+per-scene first-person protagonist narrator gates remain in force: the target is reached by
 writing the right amount of text, not by shredding it.
 
 It
@@ -203,7 +205,7 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
 2. Split the source internally into fixed 2-minute windows in
    chronological order (1:30 → 45 windows, 3:00 → 90; only the last may
    be shorter). The full original is then deleted to save disk.
-3. **Script everything first**: write every window's third-person
+3. **Script everything first**: write every window's first-person-protagonist
    full-retelling script in order *before any audio exists*. Each
    window first builds a `story_map`, and a cumulative **story
    bible** is carried forward — a Cast Lock Name Ladder with one full
@@ -226,7 +228,7 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
    narration, or a final window with no unresolved-question close), a
    bounded text-only **story-editor** pass may rewrite that window without
    moving events across scene boundaries; it is accepted only if
-   scene count/order, third-person narration, Cast Lock identities,
+   scene count/order, first-person protagonist narration, Cast Lock identities,
    length, and clarity hold up. Only then voice
    and edit each window from its finished script: speech-shaped
    polish (breath points for runaway sentences), a pre-TTS cap so a
@@ -285,7 +287,7 @@ opt-in `N8N_TELEGRAM_HANDOFF=1` (see below), so a stale
 `PIPELINE_MODE=n8n` cannot reroute or stall ordinary Telegram recaps;
 the worker API remains available to n8n independently.
 
-## Final-duration and third-person Cast Lock guarantees
+## Final-duration and first-person protagonist Cast Lock guarantees
 
 The percentage setting means the **actual final video duration**, not merely
 an estimated number of script characters. At the default 90%, a 10-minute
@@ -354,46 +356,66 @@ early while container duration probes (which report the audio)
 still passed — the root cause of two releases of "the video froze
 but the audio kept going" reports.
 
-The script also follows professional movie-recap structure: an
-opening hook that fixes time, place, who the protagonist is and the
-immediate situation within the first sentences; beats told as
-situation -> intention/plan -> action -> result -> new problem (so
-schemes and decisions are understood *while* they happen, not
-explained afterwards); explicitly named place/time/flashback and
-parallel-storyline transitions; characters introduced by one locked
-Burmese spoken name or stable descriptive label plus role/relation on
-first appearance; and scene endings that land on
-the visible result or new danger without inventing future events.
+The script also follows professional movie-recap structure: the
+protagonist opens by introducing themself and fixing time, place, the
+key relationship, and the immediate problem within the first
+sentences; beats are told as previous result -> what I or the named
+actor wants -> obstacle/spoken demand -> action -> the other person's
+reaction or decision -> consequence/new problem (so schemes and
+decisions are understood *while* they happen, not explained
+afterwards); explicitly named place/time/flashback and
+parallel-storyline transitions; every other character is introduced by
+one locked Burmese spoken name or stable descriptive label plus
+role/relation on first appearance; and scene endings land on the
+visible result or new danger without inventing future events.
 
 Narration text is written to be *spoken and followed by ear alone*:
-everyday colloquial Burmese with meaningful storyteller connectors
-and short punchy sentences, named subjects whenever the actor
-changes, a first-mention introduction (confirmed name + role +
-relation/group/place, or one memorable descriptive label when no
-name is supported), explicit speaker/listener dialogue exchanges for
-important demands/questions/decisions, reactions with their visible
-or spoken reasons, the central conflict's source-supported reason
-and stakes, and a clear cause→decision/action→consequence chain with
-short “why next?” bridges across scene and window boundaries. Only
-the source's final window may close by restating its genuinely
-unresolved decision/danger as a question; future events are never
-predicted — no bookish endings, no
-Latin/foreign script or digits (foreign words are transliterated
-into Burmese sound and numbers are spelled out as Burmese words —
-enforced deterministically before synthesis), so the voice never
-stumbles over unreadable tokens and a listener who never sees the
-picture can still retell who did/said what to whom, why, and what
-happened next.
+everyday colloquial Burmese storytelling rather than book/report
+prose — mostly one action plus its reason or result per sentence,
+varied sentence lengths, natural connectors, and occasional short
+impact sentences. The protagonist uses the locked “I” after the
+opening self-introduction; every other actor is named whenever the
+subject changes or a pronoun could confuse. Every other important
+person receives a first-mention introduction (confirmed name + role +
+relation/group/place, or one memorable descriptive label when no name
+is supported). Important demands/questions/decisions are rendered as
+speaker → listener answer/refusal/question → pressure/explanation →
+decision/result, with short direct quotes only when the source meaning
+is reliable and precise reported speech otherwise. Reactions carry
+their visible or spoken reasons, the central conflict's
+source-supported reason and stakes stay explicit, exact and
+near-duplicate retellings are removed, and each scene must advance
+who is involved, what changed, why it matters, and what problem
+follows. Only the source's final window may close by restating its
+genuinely unresolved decision/danger as a question; future events are
+never predicted — no `…ပါသည်/…သည်` bookish endings or report
+nominalizations, and no Latin/foreign script or digits (foreign words
+are transliterated into Burmese sound and numbers are spelled out as
+Burmese words — enforced deterministically before synthesis), so the
+voice never stumbles over unreadable tokens and a listener who never
+sees the picture can still retell who did/said what to whom, why, and
+what happened next.
 
-An outside narrator tells every scene in third person: the protagonist
-and other characters are identified by their Cast Lock name or label,
-never as the narrator. Unquoted narrator text may not use the
-first-person forms `ကျွန်တော်` or `ကျွန်မ` (including possessive variants);
-first-person wording is allowed only inside a short, clearly quoted line
-of character dialogue. Scenes that leak first-person narration go through
-bounded text-only repair, and every direct, worker, rewrite, top-up,
-render, and delivery path refuses the job rather than shipping the wrong
-narrator perspective.
+The protagonist is the narrator and tells the story in first person,
+exactly like a lived-story recap. At the opening they introduce
+themself once with their full spoken name (or locked stable label),
+identity/role, the key relationship/other central person, the
+time/place/current situation, and the inciting problem; later windows
+resume from the previous result without mechanically repeating that
+introduction. Their own actions, source-supported thoughts, and
+reactions then use one source-supported locked pronoun —
+`ကျွန်တော်` or `ကျွန်မ`, including its possessive variants — while the
+wrong-gender pronoun, another character becoming an unquoted “I”, or
+the protagonist repeatedly calling themself by name as a third-person
+subject is rejected. Other characters may address the protagonist by
+name/title in dialogue, and every other important person still follows
+the Cast Lock Name Ladder. A protagonist-absent cutaway must open with
+the named actor/place and a bridge back to the protagonist's story.
+Quote-aware validation and bounded text-only repair run on direct,
+worker, rewrite, top-up, calibration, render, and delivery paths; a
+protagonist-present script with no established first-person voice, a
+mixed/wrong pronoun, or a missing opening self-introduction is refused
+rather than shipped.
 
 Cast Lock name evidence is ranked so aliases stop drifting between
 windows. Before a descriptive label is accepted, the whole window is
@@ -415,14 +437,18 @@ Burmese `introduction` to speak at first mention, current
 `confidence`. Cards also retain the re-entry `identity_anchor`, an
 optional source-grounded routine `short_name`, exact
 `name_evidence_text`, and an optional one-time `name_reveal_bridge`
-when an earlier label is later tied to a confirmed name. Narration
-uses the locked Name Ladder — full spoken name in the first detailed
-introduction, then only the approved short form (or the full name
-when none exists), then the identity anchor on return; speaker and
-listener are named for dialogue beats, and a returning or newly acting
-character is re-identified instead of being left in an ambiguous
-`သူ`/`သူမ` chain. Exact names still cannot be guaranteed when the source
-contains no readable name evidence, but identity remains stable.
+when an earlier label is later tied to a confirmed name. The
+protagonist is the one deliberate exception to routine name
+repetition: after the one full self-introduction, they normally call
+themself by the locked pronoun, while other people may address them by
+name/title in dialogue. Every other character uses the locked Name
+Ladder — full spoken name in the first detailed introduction, then
+only the approved short form (or the full name when none exists), then
+the identity anchor on return; speaker and listener are named for
+dialogue beats, and a returning or newly acting character is
+re-identified instead of being left in an ambiguous `သူ`/`သူမ` chain.
+Exact names still cannot be guaranteed when the source contains no
+readable name evidence, but identity remains stable.
 
 ## Direct script-generation recovery
 
@@ -435,7 +461,7 @@ no usable scenes—requests a complete replacement script with a shorter,
 strict prompt instead of trying to “fill gaps” in an empty list. If every
 attempt still returns no usable scenes, the part fails with that specific
 Gemini reason rather than a misleading `0/<target> chars` duration error.
-The measured 90%-duration and quote-aware per-scene third-person gates
+The measured 90%-duration and quote-aware per-scene first-person protagonist gates
 remain hard requirements.
 
 ## The 19 features (⚙️ ဆက်တင်များ)
@@ -452,7 +478,7 @@ remain hard requirements.
 10. ⏸️ ခန်းကြား နားချိန် — pause between scenes 0–1.0s
 11. 📦 မူရင်းပိုင်းချိန် — source is always planned into fixed 2-minute windows and extracted one at a time
 12. 🗣️ Script အလျင် ချိန်ညှိ — script chars/sec. The shipped 6.5 default now means **auto**: the bot learns the real rate of the voice in use (free Edge `my-MM-ThihaNeural` ~14-17 measured) from measured TTS and sizes every script with it; choosing 12 / 17 is an explicit manual override (the retired 5.5 / 7.5 UI values are migrated back to auto for real jobs)
-13. 👤 ပြောပြသူ ရှုထောင့် — outside third-person recap narrator always; the Cast Lock Name Ladder fixes one full Burmese name/stable label plus any source-grounded routine short form per character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
+13. 👤 ပြောပြသူ ရှုထောင့် — the protagonist is always the first-person narrator with a source-supported locked `ကျွန်တော်`/`ကျွန်မ`; the protagonist self-introduces once by full spoken name/role, then uses that pronoun for their own actions, while the Cast Lock Name Ladder fixes one full Burmese name/stable label plus any source-grounded routine short form for every other character, every scene is quote-aware validated/repaired, and the script retells the whole video in order, scene by scene, no summarizing
 14. 🎭 ဇာတ်ကြောင်း လေသံ — natural / dramatic / emotional / calm tone
 15. 📤 Telegram ခွဲပို့ — split files over 45MB on/off
 16. 💬 Video Caption on/off
@@ -620,7 +646,8 @@ v5.19 makes the job registry survive that:
   calls use the same wrapped/truncated-JSON recovery as direct calls;
   the unused “cut %” setting and model `cuts` request were removed;
   stale manual-rate values migrate to measured auto; and the n8n docs
-  now describe the current third-person Cast Lock contract.
+  then described that release's third-person Cast Lock contract
+  (superseded by v5.35's first-person protagonist contract).
 
 ## v5.31 — Who is who, conflict stakes, dialogue life, and ending hooks
 
@@ -751,6 +778,44 @@ v5.19 makes the job registry survive that:
   speaker. These heuristics are conservative editor signals, not a
   reason to invent names or story facts.
 
+## v5.35 — First-person protagonist lived-story recap
+
+- **The protagonist tells their own story.** This release supersedes
+  the former outside-third-person rule. The opening self-introduces
+  the protagonist by full spoken name/stable label, identity/role,
+  key relationship, time/place/current situation, and inciting
+  problem. Later parts resume from the prior result instead of
+  repeating that introduction. The protagonist then uses one
+  source-supported locked `ကျွန်တော်`/`ကျွန်မ`; wrong/mixed pronouns,
+  another person's unquoted “I”, and protagonist-name subject drift
+  are quote-aware validated and repaired or refused.
+- **Everyone else keeps the Name Ladder.** Non-protagonists still get
+  a detailed full-name introduction, a source-approved routine short
+  form only, an identity anchor on return, retained name evidence,
+  and a one-time reveal bridge. Other people may address the
+  protagonist by name/title in dialogue without turning the
+  protagonist back into a third-person subject.
+- **Spoken storytelling, not a book/report.** Shared direct, worker,
+  editor, repair, top-up, and calibration prompts now require the
+  lived chain previous result → want → obstacle/demand → action →
+  reaction/decision → consequence/new problem. Source-supported
+  protagonist thoughts are allowed; invented inner monologue is not.
+  Deterministic safeguards convert common written-register endings,
+  flag bookish/report-like style for the editor, and require named
+  dialogue exchanges rather than “they discussed it.”
+- **No repeated retelling.** Exact and conservative near-duplicate
+  sentence/scene cleanup runs inside windows as well as across the
+  joined script, with actor, quantity, negation, and opposite-action
+  safeguards. A protagonist-present script without an established
+  first-person voice—or an opening without the self-introduction—is
+  rejected before voicing/rendering/delivery.
+- **Length and edit guarantees are unchanged.** This is not a short
+  summary mode: the full ~90% retelling, final-never-longer-than-
+  source rule, whole-sentence measured calibration, Edge Thiha first
+  with Gemini Charon fallback, Turbo, script-first processing,
+  input-side `-t`, no planned freeze, and replay-at-most-twice rules
+  remain in force.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -782,7 +847,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.34-name-ladder"`,
+URLs must show `"version":"v5.35-first-person-protagonist"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -793,12 +858,12 @@ URLs must show `"version":"v5.34-name-ladder"`,
 `"edit_sync":"proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze"`,
 `"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
-`"script_style":"pro_recap_third_person_name_ladder_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock"`,
-`"narrator_enforcement":"third_person_quote_aware_per_scene_validated"`,
+`"script_style":"pro_recap_first_person_protagonist_spoken_storytelling_name_ladder_near_duplicate_cleanup_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock"`,
+`"narrator_enforcement":"first_person_protagonist_locked_pronoun_quote_aware_per_scene_validated"`,
 `"cast_lock":"subtitle_on_screen_first_name_ladder_full_spoken_name_approved_short_form_or_stable_label_ambiguous_alias_rejected"`,
 `"script_qa":"cumulative_name_ladder_introductions_sentence_identity_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate"`,
 `"story_clarity_contract":"who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending"`,
-`"story_comprehension":"natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes"`,
+`"story_comprehension":"protagonist_self_introduction_locked_pronoun_natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes"`,
 `"delivery_integrity":"exact_source_window_count_split_duration_coverage_preflight_streamed_upload_retry_after"`,
 `"video_geometry":"display_sar_rotation_square_pixel_output"`,
 `"last_duration_calibration":{}`,

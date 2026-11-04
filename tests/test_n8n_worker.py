@@ -42,13 +42,78 @@ FEMALE_PRONOUN = "\u1000\u103b\u103d\u1014\u103a\u1019"
 HERO_NAME = "အေဒင်"
 
 
+def _padded_sentence(prefix: str, length: int) -> str:
+    text = (prefix + ("\u1000" * length))[:length]
+    if length >= 2:
+        return text[:-1] + "။"
+    return text
+
+
 def first_person_text(length: int) -> str:
-    """Deliberately invalid narrator text for repair/gate fixtures."""
-    return (MALE_PRONOUN + ("\u1000" * length))[:length]
+    """Valid male protagonist-narrator filler of an exact length."""
+    return _padded_sentence(MALE_PRONOUN, length)
 
 
 def third_person_text(length: int) -> str:
-    return (HERO_NAME + " " + ("\u1000" * length))[:length]
+    """Protagonist-name/third-person drift filler of an exact length."""
+    return _padded_sentence(HERO_NAME + " ", length)
+
+
+def unique_first_person_sentence(index: int) -> str:
+    """A distinct spoken first-person sentence for duration fixtures.
+
+    Duration tests need hundreds/thousands of characters, but production
+    correctly removes repeated retellings.  Rotating several content
+    words at coprime strides keeps every fixture sentence lexically
+    distinct without using digits or foreign script.
+    """
+    places = (
+        "ရွာလမ်းဆုံ", "ဈေးတန်း", "မြစ်ကမ်းနား", "ကျောင်းဝင်း",
+        "လယ်ကွင်း", "ရွာဦးဘုရား", "တံတားစပ်", "အိမ်ရှေ့ကွင်း",
+        "သစ်တောစ", "စတိုးဆိုင်", "ရထားဂိတ်", "ဆေးခန်းရှေ့",
+        "ရေတွင်းနား", "တောင်ခြေ", "လှေဆိပ်", "စာကြည့်တိုက်",
+    )
+    objects = (
+        "စာအိတ်", "သော့တွဲ", "ဓာတ်ပုံဟောင်း", "ပိုက်ဆံအိတ်",
+        "မြေပုံစာရွက်", "လက်ပတ်နာရီ", "သစ်သားသေတ္တာ", "ထီးအနီ",
+        "စာအုပ်နီ", "လက်စွပ်ငယ်", "မီးအိမ်", "အကျီအိတ်",
+        "ရေဘူး", "ဆေးဗူး", "လက်နှိပ်ဓာတ်မီး", "အိတ်ဆွဲသိုင်း",
+    )
+    actions = (
+        "ရှာဖွေ", "ပြန်ပေး", "ဖွင့်ကြည့်", "သိမ်းထား",
+        "စစ်ဆေး", "လဲလှယ်", "ပြန်ယူ", "သယ်ဆောင်",
+        "စောင့်ကြည့်", "ပြသချင်", "အပ်နှံ", "တွေ့ရှိ",
+    )
+    companions = (
+        "မီနာ", "အစ်ကို", "အဖေ", "သူငယ်ချင်း",
+        "အစ်မ", "ဆရာ", "အဖွား", "ညီလေး",
+    )
+    explanations = (
+        "အသေးစိတ်ရှင်းပြ", "ဂရုတစိုက်သတိပေး", "ပြန်မေးမြန်း",
+        "သေချာအောင်အတည်ပြု", "စိတ်ရှည်စွာပြောပြ", "ချက်ချင်းသတိပေး",
+        "အကြောင်းရင်းရှင်းပြ", "နားလည်အောင်ပြောဆို",
+    )
+    decisions = (
+        "ချက်ချင်းဆက်သွား", "ခဏရပ်စောင့်", "ပြန်စဉ်းစား",
+        "နောက်လမ်းကိုရှာ", "အကူအညီထပ်တောင်း", "စိတ်ချစွာပြန်လာ",
+        "သေချာစွာနားထောင်", "အရေးတကြီးလိုက်ရှာ",
+    )
+    place = places[index % len(places)]
+    item = objects[(index * 3) % len(objects)]
+    action = actions[(index * 5) % len(actions)]
+    companion = companions[(index * 3) % len(companions)]
+    explanation = explanations[(index * 5) % len(explanations)]
+    decision = decisions[(index * 7) % len(decisions)]
+    if index % 2:
+        return (
+            f"{companion}က {place}မှာ {item}အကြောင်းကို "
+            f"{MALE_PRONOUN}ကို {explanation}လိုက်လို့ "
+            f"{MALE_PRONOUN}က {decision}ဖို့ ဆုံးဖြတ်လိုက်တယ်။"
+        )
+    return (
+        f"{MALE_PRONOUN}က {place}ရောက်သွားပြီး {item}ကို "
+        f"{action}ဖို့ {companion}နဲ့ အတူသွားခဲ့တယ်။"
+    )
 
 
 class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
@@ -280,7 +345,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             chat_id=10002,
             settings={"coverage": 90, "rate": 10.0, "voice": "Charon", "pov": "third"},
         )
-        self.assertEqual(state["settings"]["pov"], "third")
+        self.assertEqual(state["settings"]["pov"], "first")
         self.write_job_json(
             state,
             "transcript.json",
@@ -852,7 +917,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "group_id": 1,
                 "start": 0,
                 "burmese": (
-                    HERO_NAME + " ဇာတ်လမ်းကို အစကနေ ပြန်ပြောပြမယ်။ "
+                    MALE_PRONOUN + " ဇာတ်လမ်းကို အစကနေ ပြန်ပြောမယ်။ "
                     "မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။"
                 ),
             },
@@ -860,7 +925,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "group_id": 2,
                 "start": 10,
                 "burmese": (
-                    HERO_NAME + " ရုံးမှာ အလုပ်တွေ အများကြီး ရှိခဲ့တယ်။ "
+                    MALE_PRONOUN + " ရုံးမှာ အလုပ်တွေ အများကြီး ရှိခဲ့တယ်။ "
                     "ညနေမှာ အိမ်ပြန်ရောက်ခဲ့တယ်။"
                 ),
             },
@@ -871,7 +936,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(bot.script_total_chars(trimmed), original_total)
         for scene in trimmed:
             self.assertTrue(
-                bot._scene_uses_third_person_narrator(scene["burmese"])
+                bot._scene_uses_first_person_protagonist_narrator(
+                    scene["burmese"],
+                    expected_pronoun=MALE_PRONOUN,
+                    protagonist_forms=[HERO_NAME],
+                )
             )
             self.assertIn(
                 scene["burmese"].strip()[-1], bot.SCRIPT_SENTENCE_END_CHARS
@@ -1011,12 +1080,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     def test_trim_cuts_only_at_sentence_boundaries(self):
         sentences = [
-            HERO_NAME + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။",
+            MALE_PRONOUN + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။",
             "လမ်းမှာ မိုးက သည်းသည်းမည်းမည်း ရွာနေတယ်။",
-            HERO_NAME + " ထီးမပါလို့ တစ်ကိုယ်လုံး စိုးရွှဲသွားတယ်။",
-            "ဒါပေမယ့် " + HERO_NAME + " ရုံးကို အချိန်မီ ရောက်ခဲ့တယ်။",
-            "ညနေမှာ " + HERO_NAME + " သူငယ်ချင်းနဲ့ ပြန်ဆုံဖြစ်တယ်။",
-            "အဲဒီနောက် သူတို့ အတူ ထမင်းစားဖြစ်တယ်။",
+            MALE_PRONOUN + " ထီးမပါလို့ တစ်ကိုယ်လုံး စိုးရွှဲသွားတယ်။",
+            "ဒါပေမယ့် " + MALE_PRONOUN + " ရုံးကို အချိန်မီ ရောက်ခဲ့တယ်။",
+            "ညနေမှာ " + MALE_PRONOUN + " သူငယ်ချင်းနဲ့ ပြန်ဆုံဖြစ်တယ်။",
+            "အဲဒီနောက် ကျွန်တော်တို့ အတူ ထမင်းစားဖြစ်တယ်။",
         ]
         # Each scene identifies its actor up front, so trimming trailing
         # sentences never leaves an anonymous fragment behind.
@@ -1052,7 +1121,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                     f"trimmed text is not a prefix of its source: {text!r}",
                 )
             self.assertNotIn(core[-1], bot._BURMESE_TRAILING_JUNK)
-            self.assertTrue(bot._scene_uses_third_person_narrator(text))
+            self.assertTrue(
+                bot._scene_uses_first_person_protagonist_narrator(
+                    text,
+                    expected_pronoun=MALE_PRONOUN,
+                    protagonist_forms=[HERO_NAME],
+                )
+            )
             for sentence in bot._split_sentences(core):
                 self.assertTrue(
                     any(sentence in source for source in source_texts)
@@ -1085,7 +1160,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(bot.script_total_chars(trimmed), 1)
 
     def test_unpunctuated_text_falls_back_to_a_word_boundary(self):
-        unstructured = HERO_NAME + " ဒီအကြောင်းကို အစကနေ အဆုံးထိ"
+        unstructured = MALE_PRONOUN + " ဒီအကြောင်းကို အစကနေ အဆုံးထိ"
         scenes = [{"start": 0, "burmese": unstructured}]
         trimmed = bot.trim_scenes_proportionally(scenes, 20)
         cut = trimmed[0]["burmese"].strip()
@@ -1098,32 +1173,48 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             bot.script_total_chars(trimmed), bot.script_total_chars(scenes)
         )
         self.assertGreaterEqual(bot.script_total_chars(trimmed), 15)
-        self.assertTrue(bot._scene_uses_third_person_narrator(cut))
+        self.assertTrue(
+            bot._scene_uses_first_person_protagonist_narrator(
+                cut,
+                expected_pronoun=MALE_PRONOUN,
+                protagonist_forms=[HERO_NAME],
+            )
+        )
 
-    def test_third_person_narrator_validation_is_quote_aware(self):
-        invalid_possessive = "ကျွန်တော့်အတွေ့အကြုံကို အစကနေပြန်ပြောပါမယ်။"
-        invalid_female = FEMALE_PRONOUN + " အစကနေပြန်ပြောပါမယ်။"
-        valid_named = f"{HERO_NAME} အိမ်ပြန်သွားပြီး တံခါးဖွင့်လိုက်တယ်။"
+    def test_first_person_protagonist_validation_is_quote_aware(self):
+        valid_possessive = "ကျွန်တော့်အတွေ့အကြုံကို အစကနေပြန်ပြောမယ်။"
+        invalid_female = FEMALE_PRONOUN + " အစကနေပြန်ပြောမယ်။"
+        valid_named_cutaway = "မေရီက အိမ်ပြန်သွားပြီး တံခါးဖွင့်လိုက်တယ်။"
         valid_quote = (
-            f"{HERO_NAME}က မေရီကို “{MALE_PRONOUN} အခုသွားတော့မယ်” "
+            f"မေရီက {MALE_PRONOUN}ကို “{FEMALE_PRONOUN} အခုသွားတော့မယ်” "
             "လို့ ပြောလိုက်တယ်။"
         )
-        invalid_mixed = valid_named + " " + invalid_female
+        invalid_self_name = f"{HERO_NAME}က အိမ်ပြန်သွားပြီး တံခါးဖွင့်လိုက်တယ်။"
+        invalid_mixed = valid_named_cutaway + " " + invalid_female
 
-        self.assertFalse(
-            bot._scene_uses_third_person_narrator(invalid_possessive)
-        )
-        self.assertFalse(bot._scene_uses_third_person_narrator(invalid_female))
-        self.assertFalse(bot._scene_uses_third_person_narrator(invalid_mixed))
-        self.assertTrue(bot._scene_uses_third_person_narrator(valid_named))
-        self.assertTrue(bot._scene_uses_third_person_narrator(valid_quote))
+        def uses_locked_voice(text):
+            return bot._scene_uses_first_person_protagonist_narrator(
+                text,
+                expected_pronoun=MALE_PRONOUN,
+                protagonist_forms=[HERO_NAME],
+            )
 
-        metrics = bot._third_person_metrics(
-            [valid_named, invalid_female, valid_quote]
+        self.assertTrue(uses_locked_voice(valid_possessive))
+        self.assertFalse(uses_locked_voice(invalid_female))
+        self.assertFalse(uses_locked_voice(invalid_mixed))
+        self.assertFalse(uses_locked_voice(invalid_self_name))
+        self.assertTrue(uses_locked_voice(valid_named_cutaway))
+        self.assertTrue(uses_locked_voice(valid_quote))
+
+        metrics = bot._first_person_metrics(
+            [valid_named_cutaway, invalid_female, valid_quote],
+            expected_pronoun=MALE_PRONOUN,
+            protagonist_forms=[HERO_NAME],
         )
         self.assertEqual(metrics["bad_scene_indexes"], [1])
-        self.assertFalse(metrics["all_scenes_third_person"])
+        self.assertFalse(metrics["all_scenes_first_person_compatible"])
         self.assertEqual(metrics["quoted_first_person_count"], 1)
+        self.assertTrue(metrics["pov_established"])
 
     def test_cast_lock_upgrades_only_on_strong_name_evidence(self):
         cards = bot._normalize_character_cards([
@@ -1681,13 +1772,13 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             chunk_duration=120,
         )
         self.assertEqual(normalized["protagonist"], "Hero")
-        self.assertEqual(normalized["narrator_perspective"], "third_person")
+        self.assertEqual(normalized["narrator_perspective"], "first_person_protagonist")
         self.assertNotIn("pronoun", normalized)
         self.assertEqual(normalized["scenes"][0]["start"], 0.0)
         self.assertEqual(normalized["scenes"][0]["end"], 120.0)
         self.assertEqual(len(normalized["scenes"][0]["burmese"]), 702)
 
-    async def test_worker_narrator_repair_rewrites_first_person_scene(self):
+    async def test_worker_narrator_repair_rewrites_mixed_pronoun_scene(self):
         groups = [
             {
                 "group_id": 1,
@@ -1699,16 +1790,25 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "source_text": "The hero walks home and opens the door.",
             }
         ]
-        scenes_by_group = {1: first_person_text(80)}
-        story_context = {"pronoun": MALE_PRONOUN, "protagonist": "Hero"}
+        # Equal male/female narrator pronouns cannot be locked safely by
+        # the deterministic pass, so this must reach model POV repair.
+        scenes_by_group = {
+            1: (
+                MALE_PRONOUN + " အိမ်ပြန်သွားခဲ့တယ်။ "
+                + FEMALE_PRONOUN + " တံခါးဖွင့်လိုက်တယ်။"
+            )
+        }
+        story_context = {"protagonist": HERO_NAME}
 
         async def fake_gemini(prompt, client):
-            self.assertIn("THIRD-PERSON NARRATOR REPAIR", prompt)
+            self.assertIn("FIRST-PERSON PROTAGONIST NARRATOR REPAIR", prompt)
             return {
-                "protagonist": "Hero",
-                "narrator_perspective": "third_person",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
                 "scenes": [
-                    {"group_id": 1, "burmese": third_person_text(200)}
+                    {"group_id": 1, "burmese": first_person_text(200)}
                 ],
             }
 
@@ -1730,7 +1830,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(perspective, bot.NARRATOR_PERSPECTIVE)
         self.assertEqual(bad, [])
         self.assertTrue(
-            bot._scene_uses_third_person_narrator(scenes_by_group[1])
+            bot._scene_uses_first_person_protagonist_narrator(
+                scenes_by_group[1],
+                expected_pronoun=MALE_PRONOUN,
+                protagonist_forms=[HERO_NAME],
+            )
         )
 
     async def test_worker_duration_adjustment_accepts_third_person_expansion(self):
@@ -1851,7 +1955,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         os.path.exists(bot.FFMPEG_BIN) or shutil.which(bot.FFMPEG_BIN),
         "ffmpeg is not available",
     )
-    async def test_direct_recap_repairs_first_person_leak_and_renders_90_percent(self):
+    async def test_direct_recap_converts_third_person_drift_and_renders_90_percent(self):
         # This test counts generate calls to verify the recap logic;
         # pin racing off (covered separately) for a deterministic 1:1
         # call mapping.
@@ -1885,8 +1989,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             state=SimpleNamespace(name="ACTIVE"),
             name="files/test-video",
         )
-        first_person_leak = first_person_text(27)
-        repaired = third_person_text(27)
+        third_person_drift = third_person_text(27)
+        repaired = first_person_text(27)
         generate_calls = []
 
         def fake_generate(model, contents, config):
@@ -1897,9 +2001,21 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "",
             )
             generate_calls.append(prompt)
-            if "THIRD-PERSON NARRATOR REPAIR ONLY" in prompt:
+            if "FIRST-PERSON PROTAGONIST NARRATOR REPAIR ONLY" in prompt:
                 payload = {
-                    "narrator_perspective": "third_person",
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [
+                        {
+                            "scene_index": 0,
+                            "start": 0,
+                            "end": 3,
+                            "burmese": repaired,
+                        }
+                    ],
+                }
+            elif "STORY EDITOR PASS" in prompt:
+                payload = {
+                    "narrator_perspective": "first_person_protagonist",
                     "scenes": [
                         {
                             "scene_index": 0,
@@ -1911,22 +2027,36 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 }
             elif "ယခင် scenes များကို ပြန်မပေးပါနှင့်" in prompt:
                 payload = {
-                    "narrator_perspective": "third_person",
+                    "narrator_perspective": "first_person_protagonist",
                     "scenes": [
                         {
                             "start": 1.5,
                             "end": 3,
-                            "burmese": third_person_text(28),
+                            "burmese": first_person_text(28),
+                        }
+                    ],
+                    "cuts": [],
+                }
+            elif "ယခင် script:" in prompt:
+                payload = {
+                    "narrator_perspective": "first_person_protagonist",
+                    "scenes": [
+                        {
+                            "start": 1.5,
+                            "end": 3,
+                            "burmese": first_person_text(28),
                         }
                     ],
                     "cuts": [],
                 }
             else:
                 payload = {
-                    "protagonist": "Hero",
-                    "narrator_perspective": "third_person",
+                    "protagonist": HERO_NAME,
+                    "protagonist_gender": "male",
+                    "protagonist_pronoun": MALE_PRONOUN,
+                    "narrator_perspective": "first_person_protagonist",
                     "scenes": [
-                        {"start": 0, "end": 3, "burmese": first_person_leak}
+                        {"start": 0, "end": 3, "burmese": third_person_drift}
                     ],
                     "cuts": [],
                 }
@@ -1983,8 +2113,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                         "summary": "done",
                         "characters": [],
                         "last_scene": "end",
-                        "protagonist": "Hero",
-                        "narrator_perspective": "third_person",
+                        "protagonist": HERO_NAME,
+                        "protagonist_gender": "male",
+                        "protagonist_pronoun": MALE_PRONOUN,
+                        "narrator_perspective": "first_person_protagonist",
                     }
                 ),
             )
@@ -2013,9 +2145,9 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertEqual(summary["narrator_perspective"], "third_person")
-        self.assertNotIn("pronoun", summary)
-        self.assertEqual(len(generate_calls), 3)
+        self.assertEqual(summary["narrator_perspective"], "first_person_protagonist")
+        self.assertEqual(summary["protagonist_pronoun"], MALE_PRONOUN)
+        self.assertGreaterEqual(len(generate_calls), 2)
         # Narration is spoken: every script prompt must demand the
         # spoken register (user: written-style script sounds like
         # reading a book aloud).
@@ -2023,8 +2155,16 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             all("စကားပြောဟန်" in p for p in generate_calls),
             generate_calls,
         )
-        self.assertIn("THIRD-PERSON NARRATOR REPAIR ONLY", generate_calls[1])
-        self.assertIn("ယခင် scenes များကို ပြန်မပေးပါနှင့်", generate_calls[2])
+        self.assertFalse(
+            any("THIRD-PERSON NARRATOR REPAIR" in p for p in generate_calls)
+        )
+        self.assertTrue(
+            any(
+                "ယခင် scenes များကို ပြန်မပေးပါနှင့်" in p
+                for p in generate_calls
+            ),
+            generate_calls,
+        )
         final_duration, _, _ = bot.probe_video_info(out_chunk)
         self.assertAlmostEqual(final_duration, 2.75, delta=0.2)
 
@@ -2271,18 +2411,6 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         if result.returncode != 0:
             self.skipTest("could not generate a local MP4 fixture")
 
-        sentences = [
-            HERO_NAME + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။",
-            "လမ်းမှာ မိုးက သည်းသည်းမည်းမည်း ရွာနေတယ်။",
-            HERO_NAME + " ထီးမပါလို့ စိုးရွှဲသွားတယ်။",
-            "ရုံးကို အချိန်မီ ရောက်ခဲ့တယ်။",
-            HERO_NAME + " ရုံးမှာ အစည်းအေး တစ်ခု ရှိတယ်။",
-            "အဲဒီမှာ သူငယ်ချင်းနဲ့ ပြန်ဆုံဖြစ်တယ်။",
-            HERO_NAME + " သူနဲ့ စကားအများကြီး ပြောဖြစ်တယ်။",
-            "ညနေမှာ အိမ်ပြန်ရောက်ခဲ့တယ်။",
-            HERO_NAME + " ဒီနေ့က စိတ်ဝင်စားစရာ ကောင်းတဲ့ နေ့တစ်နေ့ ဖြစ်တယ်။",
-            "အိပ်ရာဝင်တော့ ပင်ပန်းပေမယ့် ပျော်တယ်။",
-        ]
         video_file = SimpleNamespace(
             state=SimpleNamespace(name="ACTIVE"),
             name="files/test-video",
@@ -2301,11 +2429,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             total_chars = 0
             index = 0
             while total_chars < 1350:
-                text = " ".join([
-                    sentences[index % len(sentences)],
-                    sentences[(index + 3) % len(sentences)],
-                    sentences[(index + 7) % len(sentences)],
-                ])
+                text = " ".join(
+                    unique_first_person_sentence(index * 3 + offset)
+                    for offset in range(3)
+                )
                 scenes.append({
                     "start": index * 10.0,
                     "end": (index + 1) * 10.0,
@@ -2314,8 +2441,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 total_chars += len(text)
                 index += 1
             payload = {
-                "protagonist": "Hero",
-                "narrator_perspective": "third_person",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
                 "scenes": scenes,
                 "cuts": [],
             }
@@ -2372,8 +2501,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                         "summary": "done",
                         "characters": [],
                         "last_scene": "end",
-                        "protagonist": "Hero",
-                        "narrator_perspective": "third_person",
+                        "protagonist": HERO_NAME,
+                        "protagonist_gender": "male",
+                        "protagonist_pronoun": MALE_PRONOUN,
+                        "narrator_perspective": "first_person_protagonist",
                     }
                 ),
             )
@@ -2398,8 +2529,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             str(chunk_path), 120, 0, 120, {}, 1, tracker, settings=settings,
         )
 
-        self.assertEqual(summary["narrator_perspective"], "third_person")
-        self.assertNotIn("pronoun", summary)
+        self.assertEqual(summary["narrator_perspective"], "first_person_protagonist")
+        self.assertEqual(summary["protagonist_pronoun"], MALE_PRONOUN)
         # The first script handed to TTS was already the right size for
         # the voice's measured speed, so no expand/shave round was
         # needed (long-but-inside-the-source narration is kept whole;
@@ -2453,18 +2584,6 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         if result.returncode != 0:
             self.skipTest("could not generate a local MP4 fixture")
 
-        sentences = [
-            HERO_NAME + " မနက်စောစော အိမ်ကနေ ထွက်လာခဲ့တယ်။",
-            "လမ်းမှာ မိုးက သည်းသည်းမည်းမည်း ရွာနေတယ်။",
-            HERO_NAME + " ထီးမပါလို့ စိုးရွှဲသွားတယ်။",
-            "ရုံးကို အချိန်မီ ရောက်ခဲ့တယ်။",
-            HERO_NAME + " ရုံးမှာ အစည်းအေး တစ်ခု ရှိတယ်။",
-            "အဲဒီမှာ သူငယ်ချင်းနဲ့ ပြန်ဆုံဖြစ်တယ်။",
-            HERO_NAME + " သူနဲ့ စကားအများကြီး ပြောဖြစ်တယ်။",
-            "ညနေမှာ အိမ်ပြန်ရောက်ခဲ့တယ်။",
-            HERO_NAME + " ဒီနေ့က စိတ်ဝင်စားစရာ ကောင်းတဲ့ နေ့တစ်နေ့ ဖြစ်တယ်။",
-            "အိပ်ရာဝင်တော့ ပင်ပန်းပေမယ့် ပျော်တယ်။",
-        ]
         video_file = SimpleNamespace(
             state=SimpleNamespace(name="ACTIVE"),
             name="files/test-video",
@@ -2475,11 +2594,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             total_chars = 0
             index = 0
             while total_chars < 1350:
-                text = " ".join([
-                    sentences[index % len(sentences)],
-                    sentences[(index + 3) % len(sentences)],
-                    sentences[(index + 7) % len(sentences)],
-                ])
+                text = " ".join(
+                    unique_first_person_sentence(index * 3 + offset)
+                    for offset in range(3)
+                )
                 scenes.append({
                     "start": index * 10.0,
                     "end": (index + 1) * 10.0,
@@ -2488,8 +2606,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 total_chars += len(text)
                 index += 1
             payload = {
-                "protagonist": "Hero",
-                "narrator_perspective": "third_person",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
                 "scenes": scenes,
                 "cuts": [],
             }
@@ -2544,8 +2664,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                         "summary": "done",
                         "characters": [],
                         "last_scene": "end",
-                        "protagonist": "Hero",
-                        "narrator_perspective": "third_person",
+                        "protagonist": HERO_NAME,
+                        "protagonist_gender": "male",
+                        "protagonist_pronoun": MALE_PRONOUN,
+                        "narrator_perspective": "first_person_protagonist",
                     }
                 ),
             )
@@ -2567,8 +2689,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             str(chunk_path), 120, 0, 120, {}, 1, tracker, settings=settings,
         )
 
-        self.assertEqual(summary["narrator_perspective"], "third_person")
-        self.assertNotIn("pronoun", summary)
+        self.assertEqual(summary["narrator_perspective"], "first_person_protagonist")
+        self.assertEqual(summary["protagonist_pronoun"], MALE_PRONOUN)
         # The over-source measurement triggered a shave + re-voice.
         self.assertGreaterEqual(len(tts_calls), 2)
         first_chars = sum(len(text) for text in tts_calls[0])
@@ -2970,7 +3092,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         merged = bot._merge_story_contexts(first, second)
 
         self.assertEqual(merged["protagonist"], "Hero")
-        self.assertEqual(merged["narrator_perspective"], "third_person")
+        self.assertEqual(merged["narrator_perspective"], "first_person_protagonist")
         self.assertNotIn("pronoun", merged)
         self.assertEqual(merged["summary"], "first chapter second chapter")
         self.assertIn("Hero", merged["characters"])
@@ -3057,18 +3179,27 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 {"start": 30, "end": 50, "beat": "Hero opened the door"},
             ],
         }
+        clear_texts = [
+            f"{MALE_PRONOUN}အမည်က {HERO_NAME} ဖြစ်တယ်။ {MALE_PRONOUN}က စာအိတ်ကို တွေ့ပြီး မီနာဆီ သွားမေးလိုက်တယ်။",
+            f"အဲဒီနောက် {MALE_PRONOUN}က မီနာကို သော့ရဲ့အဓိပ္ပာယ်ကို မေးတော့ မီနာက တံခါးဖွင့်ဖို့လိုတဲ့သော့လို့ ပြန်ဖြေတယ်။",
+            f"မီနာ ပြောတာကို နားလည်သွားလို့ {MALE_PRONOUN}က တံခါးကို ဖွင့်ကြည့်ဖို့ ဆုံးဖြတ်လိုက်တယ်။",
+            f"ဒါပေမဲ့ တံခါးက မပွင့်သေးတာမို့ {MALE_PRONOUN}က နောက်နည်းလမ်းကို ရှာရတော့တယ်။",
+            f"အဲဒီနောက် မီနာက {MALE_PRONOUN}ကို နောက်နည်းလမ်းကို မေးတော့ {MALE_PRONOUN}က ပြန်စဉ်းစားကြည့်မယ်လို့ ပြန်ပြောလိုက်တယ်။",
+        ]
         clear = [
             {
                 "start": index * 10,
                 "end": index * 10 + 10,
-                "burmese": (
-                    f"အဲဒီနောက် {HERO_NAME} မီနာ ပြောတာကို နားထောင်ပြီး "
-                    f"သော့လိုလို့ ဆုံးဖြတ်လိုက်တယ် {index}။"
-                ),
+                "burmese": text,
             }
-            for index in range(5)
+            for index, text in enumerate(clear_texts)
         ]
-        strong = bot._story_clarity_metrics(clear, story_map)
+        strong = bot._story_clarity_metrics(
+            clear,
+            story_map,
+            protagonist=HERO_NAME,
+            is_opening_window=True,
+        )
         self.assertFalse(strong["needs_editor"])
         self.assertGreater(strong["score"], weak["score"])
 
@@ -3086,14 +3217,18 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                 "burmese": text,
             }
             for index, text in enumerate([
-                f"တစ်ဖက်မှာတော့ မီနာ က {HERO_NAME} ကို စောင့်နေတုန်း သော့ကိုရှာဖို့ ဆုံးဖြတ်လိုက်တယ် {0}။",
-                f"ခဏအကြာမှာ မီနာ က တံခါးပွင့်လာလို့ အခန်းထဲ ဝင်လာတယ် {1}။",
-                f"မြင်ကွင်းက ရွာဘက်ဆီ ပြောင်းသွားတယ်၊ အဖေက {HERO_NAME} ကို ခေါ်လို့ သွားလိုက်တယ် {2}။",
-                f"လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့ {HERO_NAME} မီနာ ပြောတာကို နားလည်လို့ ပြုံးလိုက်တယ် {3}။",
-                f"နောက်နေ့မနက်မှာ အဖေက စာအိတ်ပေးလို့ {HERO_NAME} ချက်ချင်း ဖွင့်ကြည့်လိုက်တယ် {4}။",
+                f"တစ်ဖက်မှာတော့ မီနာက {MALE_PRONOUN}ကို စောင့်နေတုန်းမှာပဲ သော့ကိုရှာဖို့ ဆုံးဖြတ်လိုက်တယ်။",
+                f"ခဏအကြာမှာ မီနာက တံခါးပွင့်လာတာနဲ့ {MALE_PRONOUN}ကို သော့တွေ့ပြီလို့ ပြောရင်း အခန်းထဲ ဝင်လာတယ်။",
+                f"မြင်ကွင်းက ရွာဘက်ဆီ ပြောင်းသွားတယ်။ အဲဒီမှာ အဖေက {MALE_PRONOUN}ကို အကူအညီတောင်းဖို့ ခေါ်လိုက်တယ်။",
+                f"လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့ မီနာက {MALE_PRONOUN}ကို အကြောင်းရင်းရှင်းပြပြီး {MALE_PRONOUN}က နားလည်သွားလို့ ပြုံးလိုက်မိတယ်။",
+                f"နောက်နေ့မနက်မှာ အဖေက စာအိတ်ပေးလာတော့ {MALE_PRONOUN}က ချက်ချင်း ဖွင့်ကြည့်လိုက်တယ်။",
             ])
         ]
-        pro_metrics = bot._story_clarity_metrics(pro_style, story_map)
+        pro_metrics = bot._story_clarity_metrics(
+            pro_style,
+            story_map,
+            protagonist=HERO_NAME,
+        )
         self.assertEqual(pro_metrics["transition_scene_ratio"], 1.0)
         self.assertFalse(pro_metrics["needs_editor"])
 
@@ -3720,14 +3855,68 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_direct_story_editor_repairs_disconnected_script(self):
         purposes = []
-        number_words = ["တစ်", "နှစ်", "သုံး", "လေး", "ငါး"]
+        disconnected_texts = [
+            f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်။ {MALE_PRONOUN} အိမ်ကနေ စောစောထွက်လာခဲ့တယ်။",
+            f"{MALE_PRONOUN} ဈေးတန်းမှာ စာအိတ်ပျောက်နေတာကို လိုက်ရှာနေခဲ့တယ်။",
+            f"{MALE_PRONOUN} မြစ်ကမ်းနားမှာ သစ်သားသေတ္တာဟောင်းတစ်ခုကို တွေ့ခဲ့တယ်။",
+            f"{MALE_PRONOUN} ကျောင်းဝင်းထဲမှာ လက်စွပ်ငယ်တစ်ခုကို ကောက်ရခဲ့တယ်။",
+            f"{MALE_PRONOUN} လယ်ကွင်းဘေးမှာ ရေဘူးချပြီး ခဏနားနေခဲ့တယ်။",
+        ]
+        edited_texts = [
+            f"{MALE_PRONOUN}က {HERO_NAME}ဖြစ်တယ်၊ မီနာ့အစ်ကိုပါ။ မီနာကို စာအိတ်အကြောင်း မေးခဲ့တယ်။",
+            f"အဲဒီနောက် မီနာက ဈေးဘက်သွားဖို့ ပြောတော့ {MALE_PRONOUN}က လိုက်သွားခဲ့တယ်။",
+            f"ခဏအကြာမှာ မီနာက သေတ္တာကိုတွေ့လို့ {MALE_PRONOUN}ကို ခေါ်လိုက်တယ်။",
+            f"နောက်ပိုင်းမှာ မီနာက လက်စွပ်အကြောင်းမေးတော့ {MALE_PRONOUN}က ပြန်ဖြေခဲ့တယ်။",
+            f"နောက်တော့ မီနာက ပြန်ဖို့ပြောလို့ {MALE_PRONOUN}က ပြန်လာခဲ့တယ်။",
+        ]
+        initial_story_map = {
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "character_cards": [
+                {
+                    "spoken_name": HERO_NAME,
+                    "source_name": "Hero",
+                    "gender": "male",
+                    "role": "စာပေးသမား",
+                    "relation": "မီနာရဲ့ အစ်ကို",
+                    "introduction": f"{MALE_PRONOUN}အမည်က {HERO_NAME}ဖြစ်တယ်၊ မီနာရဲ့ အစ်ကိုပါ။",
+                },
+                {
+                    "spoken_name": "မီနာ",
+                    "source_name": "Mina",
+                    "role": "ညီမ",
+                    "relation": f"{HERO_NAME}ရဲ့ ညီမ",
+                    "introduction": f"မီနာက {MALE_PRONOUN}ရဲ့ ညီမဖြစ်တယ်။",
+                },
+            ],
+            "beats": [
+                {
+                    "start": 0,
+                    "end": 20,
+                    "beat": "Hero met Mina",
+                    "dialogue": "Hero asked Mina about the letter",
+                },
+                {
+                    "start": 20,
+                    "end": 50,
+                    "beat": "Mina warned Hero",
+                    "dialogue": "Mina warned Hero",
+                },
+                {
+                    "start": 50,
+                    "end": 93,
+                    "beat": "Hero decided to leave",
+                    "dialogue": "Hero answered Mina",
+                },
+            ],
+        }
 
         async def fake_generate(_client, _contents, **kwargs):
             purpose = str(kwargs.get("purpose") or "")
             purposes.append(purpose)
             if purpose == "story editor":
                 return {
-                    "narrator_perspective": "third_person",
+                    "narrator_perspective": "first_person_protagonist",
                     "story_map": {
                         "character_cards": [
                             {"name": "Hero", "role": "speaker"},
@@ -3744,22 +3933,22 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
                             "scene_index": index,
                             "start": index * 10,
                             "end": index * 10 + 10,
-                            "burmese": (
-                                f"အဲဒီနောက် {HERO_NAME} မီနာ ကိုတွေ့ဖို့ "
-                                f"ဆုံးဖြတ်လိုက်တယ် {number_words[index]}။"
-                            ),
+                            "burmese": edited_texts[index],
                         }
                         for index in range(5)
                     ],
                 }
             return {
-                "protagonist": "Hero",
-                "narrator_perspective": "third_person",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
+                "story_map": initial_story_map,
                 "scenes": [
                     {
                         "start": index * 10,
                         "end": index * 10 + 10,
-                        "burmese": third_person_text(50),
+                        "burmese": disconnected_texts[index],
                     }
                     for index in range(5)
                 ],
@@ -3768,10 +3957,12 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         summary = bot._normalize_story_context(
             {
-                "characters": ["Hero", "Mina"],
+                "characters": [HERO_NAME, "မီနာ"],
                 "summary": "Hero met Mina and decided to leave.",
-                "protagonist": "Hero",
-                "narrator_perspective": "third_person",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
             }
         )
         self.start_patch(
@@ -3808,7 +3999,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             {},
             1,
             tracker,
-            settings={"coverage": 90, "rate": 3.0},
+            settings={"coverage": 90, "rate": 3.6},
             script_only=True,
             extract_summary=True,
             keep_source_chunk=True,
@@ -3820,7 +4011,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             all("မီနာ" in scene["burmese"] for scene in script["scenes"])
         )
         self.assertEqual(
-            script["story_map"]["character_cards"][1]["name"], "Mina"
+            script["story_map"]["character_cards"][1]["name"], "မီနာ"
         )
 
     def test_burmese_number_words_spelled_out_for_speech(self):
@@ -4121,7 +4312,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         # One TTS pass per calibration round (+1 for the expand), so two
         # rounds is exactly the fast, converging path.
         self.assertGreaterEqual(len(tts_calls), 2)
-        self.assertTrue(script["coverage"]["third_person"]["all_scenes_third_person"])
+        self.assertTrue(script["coverage"]["first_person"]["all_scenes_first_person_compatible"])
         self.assertEqual(state["stages"]["tts"]["status"], "done")
 
     async def test_split_for_telegram_recursively_resplits_oversized_parts(self):
@@ -4707,8 +4898,8 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             "🎬 Recap လုပ်မယ်",
             "Auto မ Run ဘူး",
             "20MB အောက်",
-            "ဇာတ်ကောင်နာမည်တွေ",
-            "တတိယလူ Recap Script",
+            "အခြားသူတွေရဲ့ အမည်တွေ",
+            "အဓိကဇာတ်ကောင် ကိုယ်တိုင်ပြန်ပြောဟန် Recap Script",
             "Cast Lock/Story bible",
             "subtitle/အမည်ကတ်",
             "အားလုံးကို အစဉ်အတိုင်း ပြန်ဆက်",
@@ -5172,7 +5363,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["script_style"],
-                "pro_recap_third_person_name_ladder_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
+                "pro_recap_first_person_protagonist_spoken_storytelling_name_ladder_near_duplicate_cleanup_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_auth"], "secret_token_header"
@@ -5188,7 +5379,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["narrator_enforcement"],
-                "third_person_quote_aware_per_scene_validated",
+                "first_person_protagonist_locked_pronoun_quote_aware_per_scene_validated",
             )
             self.assertEqual(
                 health.json()["cast_lock"],
@@ -5204,7 +5395,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["story_comprehension"],
-                "natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
+                "protagonist_self_introduction_locked_pronoun_natural_name_ladder_full_introductions_approved_short_forms_name_evidence_reveal_bridges_identity_anchors_glossary_first_explanations_visible_text_meanings_causal_bridges_stakes",
             )
             self.assertEqual(
                 health.json()["delivery_integrity"],
@@ -5395,7 +5586,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(created.json()["job_id"], "job-api-1")
             self.assertEqual(created.json()["selected_settings"]["voice"], "Kore")
             state = bot._load_worker_job("job-api-1")
-            self.assertEqual(state["settings"]["pov"], "third")
+            self.assertEqual(state["settings"]["pov"], "first")
 
             duplicate = await client.post(
                 "/api/v1/jobs",
@@ -6137,7 +6328,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(script["protagonist"], "Hero")
-        self.assertEqual(script["narrator_perspective"], "third_person")
+        self.assertEqual(script["narrator_perspective"], "first_person_protagonist")
         self.assertNotIn("pronoun", script)
         self.assertEqual(script["story_context_after"]["summary"], "opening")
         self.assertEqual(script["metrics"]["actual_chars"], 27)
@@ -7056,24 +7247,34 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         self.start_patch(patch.object(bot, "synthesize_tts", new=fake_tts))
+        def joined_unique(start_index, count):
+            return " ".join(
+                unique_first_person_sentence(start_index + offset)
+                for offset in range(count)
+            )
+
         prepared = {
             "version": 1,
             "part_index": 1,
             "scenes": [
-                {"start": 0, "end": 8, "burmese": third_person_text(192)},
-                {"start": 8, "end": 16, "burmese": third_person_text(192)},
-                {"start": 16, "end": 120, "burmese": third_person_text(912)},
+                {"start": 0, "end": 8, "burmese": joined_unique(0, 3)},
+                {"start": 8, "end": 16, "burmese": joined_unique(3, 3)},
+                {"start": 16, "end": 120, "burmese": joined_unique(6, 10)},
             ],
             "cuts": [],
-            "protagonist": "Hero",
-            "narrator_perspective": "third_person",
+            "protagonist": HERO_NAME,
+            "protagonist_gender": "male",
+            "protagonist_pronoun": MALE_PRONOUN,
+            "narrator_perspective": "first_person_protagonist",
             "story_context_before": {},
             "story_context_after": {
-                "characters": ["Hero"],
+                "characters": [HERO_NAME],
                 "summary": "done",
                 "last_scene": "end",
-                "protagonist": "Hero",
-                "narrator_perspective": "third_person",
+                "protagonist": HERO_NAME,
+                "protagonist_gender": "male",
+                "protagonist_pronoun": MALE_PRONOUN,
+                "narrator_perspective": "first_person_protagonist",
             },
             "metrics": {"target_chars": 1296},
         }

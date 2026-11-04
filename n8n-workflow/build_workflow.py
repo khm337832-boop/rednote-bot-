@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 NAMESPACE = uuid.UUID("9a08f0e5-e72a-4ea4-9d84-8ae196769f84")
-WORKFLOW_NAME = "Rednote Bot — Whisper Third-Person Cast Lock Recap (Worker API)"
+WORKFLOW_NAME = "Rednote Bot — Whisper First-Person Protagonist Cast Lock Recap (Worker API)"
 STAGES = (
     ("download", "Download", 10),
     ("transcribe", "Transcribe", 15),

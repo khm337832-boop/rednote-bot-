@@ -1,4 +1,4 @@
-# n8n Pipeline တပ်ဆင်ပုံ — Whisper Third-Person Cast Lock Recap
+# n8n Pipeline တပ်ဆင်ပုံ — Whisper First-Person Protagonist Cast Lock Recap
 
 ဒီ workflow က လက်ရှိ Render Telegram bot ကို အစားထိုးတာ မဟုတ်ပါ။
 
@@ -17,7 +17,7 @@ Telegram user က link ပို့
   -> Worker job အတည်ပြု/ဖန်တီး
   -> download
   -> Whisper transcribe (timestamps ပါ)
-  -> Gemini Burmese third-person Cast Lock rewrite (coverage စစ် + top-up)
+  -> Gemini Burmese first-person protagonist Cast Lock rewrite (coverage စစ် + top-up)
   -> TTS (Edge my-MM-ThihaNeural အဓိက၊ Gemini Charon fallback)
   -> Render (narration ကို မညှိ၊ video ကိုပဲ ညှိ/ဖြတ်)
   -> Telegram deliver (ဖိုင်ကြီးလျှင် အပိုင်းခွဲ)
@@ -122,7 +122,7 @@ n8n Cloud သုံးလျှင်လည်း ဤ workflow က Execute Comma
 
 1. n8n → **Workflows** → **Import from File** ကို ရွေးပါ။
 2. `rednote-n8n-workflow.json` ကို import လုပ်ပါ။
-3. Workflow name သည် **Rednote Bot — Whisper Third-Person Cast Lock Recap (Worker API)** ဖြစ်သင့်ပါသည်။
+3. Workflow name သည် **Rednote Bot — Whisper First-Person Protagonist Cast Lock Recap (Worker API)** ဖြစ်သင့်ပါသည်။
 4. Sticky note နှင့် node connection များ ပေါ်လာ/မလာ စစ်ပါ။
 5. အရင်ဆုံး workflow ကို **Inactive** အတိုင်းပဲ ထားပါ။
 
@@ -203,13 +203,13 @@ download -> transcribe -> rewrite -> tts -> render -> deliver
 
 Stage start သည် idempotent ဖြစ်နိုင်ရန် စီစဉ်ထားပါသည်။ Stage ပြီးပြီးသားဆိုလျှင် `200`၊ ယခုမှစလျှင် သို့မဟုတ် လုပ်နေဆဲဆိုလျှင် `202` ပြန်ပါသည်။ ယခင် stage မပြီးဘဲ နောက် stage စ ခေါ်လျှင် `409` ပြန်ပါသည်။
 
-## Final Video ကြာချိန်၊ တတိယလူ Cast Lock အပြောနှင့် Video Alignment မှတ်ချက်များ
+## Final Video ကြာချိန်၊ အဓိကဇာတ်ကောင် first-person Cast Lock အပြောနှင့် Video Alignment မှတ်ချက်များ
 
 - Gemini က Whisper timestamp များကို ကိုယ်တိုင် မတီထွင်ရပါ။ Worker က Whisper segment များကို group လုပ်ပြီး group ID/start/end ကို ထိန်းထားပါသည်။
 - Settings ထဲက percentage သည် script character အရေအတွက်ကိုသာ ဆိုလိုခြင်း မဟုတ်ဘဲ **final video ၏ အမှန်တကယ်ကြာချိန်** ကို ဆိုလိုပါသည်။ Job/link တိုင်းအတွက် အနည်းဆုံး **90%** ဖြစ်ပြီး မူရင်းက 10 မိနစ်ကြာလျှင် final ကို 9 မိနစ်ခန့် ဖြစ်အောင် ချိန်ပါသည်။ လက်ခံနိုင်သောကွာခြားချက်မှာ target ± max(0.35 စက္ကန့်, မူရင်းကြာချိန်၏ 2%) သာ ဖြစ်သည်။
 - Settings တွင် 90% အောက် သိမ်းထားသော တန်ဖိုးဟောင်း ရှိနေလျှင်လည်း worker က 90% သို့ အလိုအလျောက် မြှင့်သည်။ 95% သို့မဟုတ် 100% ရွေးထားလျှင် ၎င်းအတိုင်း သုံးသည်။ Voice speed ပြောင်းလျှင် final target ကို မပြောင်းဘဲ လိုအပ်သောစာသားပမာဏကိုသာ ပြောင်းပါသည်။
 - Rewrite အောင်မြင်ရန် script ထဲတွင် ကိုယ်စားပြုထားသည့် Whisper speech duration သည် ရွေးထားသော percentage (အနည်းဆုံး 90%) အထက် ရှိရမည်။ Scene စာသားတစ်ကြောင်းတည်း ရှိနေရုံနှင့် covered မသတ်မှတ်ပါ။
-- Narrator သည် ဇာတ်လမ်းအပြင်က တတိယလူ recap ပြောပြသူဖြစ်ရပါမည်။ Quotation marks ပြင်ပတွင် narrator အဖြစ် `ကျွန်တော်`/`ကျွန်မ` မသုံးရ။ လူတိုင်းကို Name Ladder ဖြင့် Cast Lock လုပ်ရပါမည် — subtitle/on-screen အမည်ကနေ အတည်ပြုထားတဲ့ Burmese full `spoken_name` သို့မဟုတ် မှတ်မိလွယ် stable descriptive label ကို `name_evidence_text` နှင့် ချိတ်ပြီး ပထမဆုံးအကြိမ်မှာ အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံ `introduction` ဖြင့် မိတ်ဆက်ရမည်။ နောက်ပိုင်းမှာ source ကိုယ်တိုင်သုံးထားမှသာ approved `short_name` တစ်မျိုးကိုသုံးနိုင်ပြီး nickname အသစ် မတီထွင်ရပါ။ အရင် label ကနေ အမည်အစစ်ကို transcript တွင် တကယ်အတည်ပြုရမှသာ `name_reveal_bridge` ကို တစ်ကြိမ်တည်း သုံးရပါမည်။ story map တွင် လူတစ်ဦးချင်းရဲ့ goal/motivation၊ beat တစ်ခုစီရဲ့ trigger/dialogue/reaction/result/visible_text/why_it_matters၊ အဓိကပြဿနာရဲ့ `conflict_stakes` နဲ့ `central_question` ကို transcript ပြသလောက်သာ မှတ်ရပါမည်။ ပြန်ပေါ်လာသူကို `identity_anchor` နဲ့ ပြန်အမှတ်ရစေရပြီး term တိုင်းကို `terms` (spoken_term/source_term/meaning/first_explanation) နဲ့ lock လုပ်ကာ ပထမဆုံးအကြိမ် ရှင်းပြရပါမည်။ Transcript တွင် တကယ်ပါသော အရေးကြီးဖန်သားပြင်စာကိုသာ `visible_texts` (source_text/burmese_meaning/kind) ဖြင့် မှတ်ရပြီး မသေချာလျှင် မမှန်းရပါ။ အရေးကြီးစကားပြောကို ပြောသူ→ပြန်ဖြေ→ဆုံးဖြတ်ချက် အပြန်အလှန်ရေးပြီး နောက်ဆုံး batch မှာသာ မဖြေရှင်းရသေးတဲ့ မေးခွန်းနဲ့ ပိတ်ရပါမည်။ Scene တိုင်းကို quote-aware စစ်ပြီး မအောင်မြင်လျှင် ပြန်ပြင်ခိုင်းကာ မပြင်နိုင်လျှင် stage ကို failed ဖြစ်စေပါသည်။
+- Narrator သည် အဓိကဇာတ်ကောင်ကိုယ်တိုင်ဖြစ်ပြီး ဇာတ်လမ်းကို first person ဖြင့် ကိုယ်တိုင်ကြုံခဲ့ရသလို ပြန်ပြောရပါမည်။ Opening တွင် protagonist က မိမိအမည်အပြည့်/stable label၊ ဘယ်သူလဲ/အခန်းကဏ္ဍ၊ အဓိကဆက်နွယ်သူ၊ အချိန်/နေရာ/လက်ရှိအခြေအနေနှင့် စတင်သောပြဿနာကို တစ်ခါတည်း မိတ်ဆက်ရမည်။ နောက်ပိုင်းအပိုင်းများတွင် အဲဒီမိတ်ဆက်စာကို စက်ပိုင်းအတိုင်း မထပ်ဘဲ အရင်ရလဒ်ကနေ ဆက်ရမည်။ Protagonist ၏ ကိုယ်ပိုင်လုပ်ရပ်၊ source က အထောက်အပံ့ရှိသော အတွေး/တုံ့ပြန်မှုများအတွက် source-supported locked `ကျွန်တော်` သို့မဟုတ် `ကျွန်မ` တစ်ခုတည်းကိုသာသုံးရပြီး wrong/mixed pronoun၊ quotation marks ပြင်ပတွင် အခြားဇာတ်ကောင်က “ကျွန်တော်/ကျွန်မ” ဖြစ်သွားခြင်း၊ protagonist က မိမိကိုယ်ကို အမည်ဖြင့် တတိယလူ subject လို ထပ်ခေါ်ခြင်းတို့ မလုပ်ရပါ။ အခြားလူက protagonist ကို dialogue တွင် အမည်/title ဖြင့် ခေါ်နိုင်ပါသည်။ Protagonist မပါသော cutaway တွင် named actor/နေရာဖြင့် စပြီး protagonist ၏ဇာတ်ကြောင်းနှင့် ပြန် bridge လုပ်ရမည်။ အခြားလူတိုင်းကိုတော့ Name Ladder ဖြင့် Cast Lock လုပ်ရပါမည် — subtitle/on-screen အမည်ကနေ အတည်ပြုထားတဲ့ Burmese full `spoken_name` သို့မဟုတ် မှတ်မိလွယ် stable descriptive label ကို `name_evidence_text` နှင့် ချိတ်ပြီး ပထမဆုံးအကြိမ်မှာ အမည်+အခန်းကဏ္ဍ+ဆက်နွယ်ပုံ `introduction` ဖြင့် မိတ်ဆက်ရမည်။ နောက်ပိုင်းမှာ source ကိုယ်တိုင်သုံးထားမှသာ approved `short_name` တစ်မျိုးကိုသုံးနိုင်ပြီး nickname အသစ် မတီထွင်ရပါ။ အရင် label ကနေ အမည်အစစ်ကို transcript တွင် တကယ်အတည်ပြုရမှသာ `name_reveal_bridge` ကို တစ်ကြိမ်တည်း သုံးရပါမည်။ story map တွင် protagonist gender/pronoun၊ လူတစ်ဦးချင်းရဲ့ goal/motivation၊ beat တစ်ခုစီရဲ့ trigger/dialogue/reaction/result/visible_text/why_it_matters၊ အဓိကပြဿနာရဲ့ `conflict_stakes` နဲ့ `central_question` ကို transcript ပြသလောက်သာ မှတ်ရပါမည်။ ပြန်ပေါ်လာသူကို `identity_anchor` နဲ့ ပြန်အမှတ်ရစေရပြီး term တိုင်းကို `terms` (spoken_term/source_term/meaning/first_explanation) နဲ့ lock လုပ်ကာ ပထမဆုံးအကြိမ် ရှင်းပြရပါမည်။ Transcript တွင် တကယ်ပါသော အရေးကြီးဖန်သားပြင်စာကိုသာ `visible_texts` (source_text/burmese_meaning/kind) ဖြင့် မှတ်ရပြီး မသေချာလျှင် မမှန်းရပါ။ အရေးကြီးစကားပြောကို ပြောသူ→ပြန်ဖြေ/ငြင်း→ဖိအား/ရှင်းပြချက်→ဆုံးဖြတ်ချက် အပြန်အလှန်ရေးပြီး စာအုပ်ဖတ်ဟန်/အစီရင်ခံဟန်မဖြစ်အောင် သဘာဝအပြောမြန်မာဖြင့်ရေးရပါမည်။ Exact/near-duplicate retelling များကို ဖယ်ပြီး Scene တိုင်းကို quote-aware စစ်ကာ မအောင်မြင်လျှင် ပြန်ပြင်ခိုင်းပြီး မပြင်နိုင်လျှင် stage ကို failed ဖြစ်စေပါသည်။
 - Burmese စာသားပမာဏ target ကို source video duration (မသိလျှင်သာ Whisper speech duration)၊ final-duration percentage နှင့် Settings ထဲက characters/second ဖြင့် ပထမခန့်မှန်းပြီး group တစ်ခုစီကို source timeline အလိုက် ခွဲဝေကာ မပြည့်သေးသော group များကို top-up လုပ်ပါသည်။
 - TTS ပြီးလျှင် character အရေအတွက်ကိုသာ မယုံဘဲ တကယ့်အသံစက္ကန့်နှင့် ထို job ၏ တကယ့် chars/second ကို တိုင်းပါသည်။ တိုနေလျှင် Gemini ဖြင့် scene များကို ချဲ့ရေးပြီး ပြန်လည်အသံသွင်းကာ၊ ရှည်နေလျှင် အဆုံးပိုင်းကို မဖျက်ဘဲ scene အားလုံးကို အချိုးကျ ခ်ဳံ့၍ ပြန်အသံသွင်းပါသည်။ ဤ measured calibration ကို အများဆုံး 4 ကြိမ် လုပ်ပါသည်။
 - Render မစခင် planned duration၊ render ပြီးနောက် final MP4 duration နှင့် Telegram မပို့ခင် final MP4 duration ကို ထပ်စစ်ပါသည်။ Telegram အတွက် size အရ ထပ်ခွဲထားသော ဖိုင်များကိုလည်း ပထမဖိုင် မပို့ခင်ကပင် ဖိုင်တစ်ခုချင်း limit အောက် ရှိ/မရှိနှင့် ၎င်းတို့၏ ကြာချိန်ပေါင်းက joined final တစ်ခုလုံးနှင့် ကိုက်/မကိုက် စစ်ပါသည်။ Window အတွင်း မရှိလျှင် delivery မလုပ်ဘဲ stage ကို failed ဖြစ်စေပါသည်။
