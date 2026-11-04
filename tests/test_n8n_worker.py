@@ -2503,6 +2503,48 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         duplicate = [dict(clear[0]), dict(clear[0])]
         self.assertTrue(bot._story_clarity_metrics(duplicate, story_map)["needs_editor"])
 
+        # Professional-recap style narration names its place/time/
+        # storyline bridges ("တစ်ဖက်မှာတော့", "ခဏအကြာမှာ", ...).  The
+        # clarity gate must recognise those as real transitions so a
+        # well-bridged script is not sent to the editor pass.
+        pro_style = [
+            {
+                "start": index * 10,
+                "end": index * 10 + 10,
+                "burmese": text,
+            }
+            for index, text in enumerate([
+                f"တစ်ဖက်မှာတော့ Mina က {MALE_PRONOUN} ကို စောင့်နေတုန်း သော့ကိုရှာဖို့ ဆုံးဖြတ်လိုက်တယ် {0}။",
+                f"ခဏအကြာမှာ Mina က တံခါးပွင့်လာလို့ အခန်းထဲ ဝင်လာတယ် {1}။",
+                f"မြင်ကွင်းက ရွာဘက်ဆီ ပြောင်းသွားတယ်၊ အဖေက {MALE_PRONOUN} ကို ခေါ်လို့ သွားလိုက်တယ် {2}။",
+                f"လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့ {MALE_PRONOUN} Mina ပြောတာကို နားလည်လို့ ပြုံးလိုက်တယ် {3}။",
+                f"နောက်နေ့မနက်မှာ အဖေက စာအိတ်ပေးလို့ {MALE_PRONOUN} ချက်ချင်း ဖွင့်ကြည့်လိုက်တယ် {4}။",
+            ])
+        ]
+        pro_metrics = bot._story_clarity_metrics(pro_style, story_map)
+        self.assertEqual(pro_metrics["transition_scene_ratio"], 1.0)
+        self.assertFalse(pro_metrics["needs_editor"])
+
+    def test_pro_recap_style_guide_covers_opening_hook_and_named_transitions(self):
+        guide = bot._SPOKEN_STYLE_GUIDE
+        self.assertIn("Pro recap", guide)
+        self.assertIn("အဖွင့် hook", guide)
+        self.assertIn("တစ်ဖက်မှာတော့", guide)
+        self.assertIn("လက်ရှိအချိန်ကို ပြန်ရောက်လာတော့", guide)
+        self.assertIn("ရည်ရွယ်ချက်/အစီအစဉ်", guide)
+        # The old hard sentence-length cap made narration choppy next
+        # to professional recap flow; it must stay gone.
+        self.assertNotIn("၂၅ လုံး", guide)
+        # The story editor must know how to repair a weak opening.
+        editor_prompt = bot._direct_story_editor_prompt(
+            [{"start": 0, "end": 10, "burmese": f"{MALE_PRONOUN} ထိုင်နေတယ်။"}],
+            {},
+            {},
+            MALE_PRONOUN,
+            "Hero",
+        )
+        self.assertIn("အဖွင့် setup", editor_prompt)
+
     def test_story_map_survives_payload_normalization_and_worker_prompt(self):
         payload = bot._normalize_direct_script_payload(
             {
@@ -3879,6 +3921,10 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 health.json()["story_editor"],
                 "clarity_gated_bounded_text_only_pass",
+            )
+            self.assertEqual(
+                health.json()["script_style"],
+                "pro_recap_opening_hook_intention_first_named_transitions_first_person",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_auth"], "secret_token_header"
