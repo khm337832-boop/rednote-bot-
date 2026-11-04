@@ -2913,6 +2913,319 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("spoken_name", editor_prompt)
         self.assertIn("အဖွင့် setup", editor_prompt)
 
+    def test_story_map_keeps_introductions_goals_stakes_and_beat_parts(self):
+        story_map = bot._normalize_story_map({
+            "character_cards": [{
+                "spoken_name": HERO_NAME,
+                "source_name": "Aiden",
+                "role": "ရွာထဲက သစ်ခုတ်သမားလူငယ်",
+                "relation": "မေရီ့ရဲ့သား",
+                "introduction": (
+                    f"{HERO_NAME}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက "
+                    "သစ်ခုတ်သမားဖြစ်ပြီး မေရီ့ရဲ့သားဖြစ်တယ်"
+                ),
+                "goal": "ရွာကို ကာကွယ်ဖို့",
+                "motivation": "စစ်သားတွေက ရွာကို အရေးယူမယ်လို့ ခြိမ်းခြောက်ထားလို့",
+                "name_source": "subtitle",
+                "confidence": "confirmed",
+                "visual_cue": "အင်္ကျီအနီ",
+            }],
+            "beats": [{
+                "start": 0,
+                "end": 12,
+                "trigger": "စစ်သားတွေ ဆန်တောင်းဖို့ ရွာထဲရောက်လာတယ်",
+                "dialogue": "စစ်သားခေါင်းဆောင်က မေရီကို ဆန်ပေးဖို့ တောင်းဆိုတယ်",
+                "reaction": "အေဒင်က အရေးယူခံရမှာစိုးရိမ်လို့ ပြန်မေးတယ်",
+                "result": "တောင်းဆိုချက်ကို ပြည့်အောင် လုပ်ရတော့မယ်",
+            }],
+            "current_conflict": "စစ်သားတွေရဲ့ ဆန်တောင်းဆိုမှု",
+            "conflict_stakes": "မပေးရင် ရွာကို အရေးယူနိုင်တယ်",
+            "central_question": "ရွာက လိုက်နာမှာလား ငြင်းဆန်မှာလား",
+        })
+
+        card = story_map["character_cards"][0]
+        self.assertIn("သစ်ခုတ်သမား", card["introduction"])
+        self.assertEqual(card["goal"], "ရွာကို ကာကွယ်ဖို့")
+        self.assertIn("ခြိမ်းခြောက်", card["motivation"])
+        beat = story_map["beats"][0]
+        self.assertIn("တောင်းဆိုတယ်", beat["dialogue"])
+        self.assertIn("စိုးရိမ်", beat["reaction"])
+        self.assertIn("ဆန်တောင်းဖို့", beat["beat"])
+        self.assertEqual(
+            story_map["conflict_stakes"], "မပေးရင် ရွာကို အရေးယူနိုင်တယ်"
+        )
+
+        context = bot._story_context_from_story_map(story_map)
+        self.assertEqual(context["conflict_stakes"], story_map["conflict_stakes"])
+        self.assertEqual(
+            context["central_question"], "ရွာက လိုက်နာမှာလား ငြင်းဆန်မှာလား"
+        )
+        prompt_lines = bot._story_context_prompt_lines(context)
+        self.assertIn("ပထမမိတ်ဆက်ရန်", prompt_lines)
+        self.assertIn("ရည်မှန်းချက်: ရွာကို ကာကွယ်ဖို့", prompt_lines)
+        self.assertIn("ဆုံးရှုံးနိုင်တာ (stakes)", prompt_lines)
+        self.assertIn("မဖြေရှင်းရသေးတဲ့ အဓိကမေးခွန်း", prompt_lines)
+
+    def test_story_clarity_flags_generic_labels_flat_dialogue_stakes_and_ending(self):
+        story_map = {
+            "character_cards": [
+                {
+                    "spoken_name": "အမည်မသိလူငယ်",
+                    "role": "ရွာထဲက သစ်ခုတ်သမားလူငယ်",
+                    "relation": "လယ်သမားကြီးရဲ့သား",
+                    "introduction": "အမည်မသိလူငယ်က ရွာထဲက သစ်ခုတ်သမားဖြစ်ပြီး လယ်သမားကြီးရဲ့သားဖြစ်တယ်",
+                    "goal": "ရွာကို ကာကွယ်ဖို့",
+                    "motivation": "စစ်သားတွေက ခြိမ်းခြောက်ထားလို့",
+                    "name_source": "visual_label",
+                    "confidence": "descriptive",
+                },
+                {
+                    "spoken_name": "လယ်သမားကြီး",
+                    "role": "ရွာရဲ့ လယ်သမားကြီး",
+                    "relation": "အမည်မသိလူငယ်ရဲ့ အဖေ",
+                    "introduction": "လယ်သမားကြီးက အမည်မသိလူငယ်ရဲ့ အဖေဖြစ်တယ်",
+                    "name_source": "visual_label",
+                    "confidence": "descriptive",
+                },
+            ],
+            "beats": [
+                {
+                    "start": 0,
+                    "end": 20,
+                    "beat": "Soldiers demanded grain",
+                    "trigger": "The soldiers arrived to demand grain",
+                    "dialogue": "The leader asked the farmer for grain",
+                    "reaction": "The son decided after he worried",
+                    "result": "They went to cut wood",
+                },
+                {"start": 20, "end": 40, "beat": "The soldiers left"},
+                {"start": 40, "end": 60, "beat": "They entered the forest"},
+            ],
+            "current_conflict": "စစ်သားတွေရဲ့ ဆန်တောင်းဆိုမှု",
+            "conflict_stakes": "မပေးရင် ရွာကို အရေးယူနိုင်တယ်",
+            "central_question": "ရွာက လိုက်နာမှာလား ငြင်းဆန်မှာလား",
+        }
+        flat = [
+            {"start": 0, "end": 10, "burmese": "အဲဒီနောက် အမည်မသိလူငယ်နဲ့ လယ်သမားကြီးက ရွာအပြင်မှာ ရပ်နေတယ်။"},
+            {"start": 10, "end": 20, "burmese": "အဲဒီနောက် စစ်သားတွေ ရွာထဲ ဝင်လာတယ်။"},
+            {"start": 20, "end": 30, "burmese": "အဲဒီနောက် အမည်မသိလူငယ်နဲ့ လယ်သမားကြီးက စစ်သားတွေဘက် လှည့်ကြည့်တယ်။"},
+            {"start": 30, "end": 40, "burmese": "အဲဒီနောက် စစ်သားတွေ ရွာက ပြန်ထွက်သွားတယ်။"},
+            {"start": 40, "end": 50, "burmese": "အဲဒီနောက် အမည်မသိလူငယ်နဲ့ လယ်သမားကြီးက သစ်တောထဲ ဝင်သွားတယ်။"},
+            {"start": 50, "end": 60, "burmese": "အဲဒီနောက် အမည်မသိလူငယ်နဲ့ လယ်သမားကြီးက ထင်းတွေ ခုတ်နေတယ်။"},
+        ]
+
+        metrics = bot._story_clarity_metrics(
+            flat,
+            story_map,
+            is_final_window=True,
+        )
+
+        self.assertTrue(bot._cast_label_is_generic("အမည်မသိလူငယ်"))
+        self.assertTrue(bot._cast_label_is_generic("လယ်သမားကြီး"))
+        self.assertFalse(bot._cast_label_is_generic(HERO_NAME))
+        self.assertEqual(
+            metrics["missing_character_introductions"],
+            ["အမည်မသိလူငယ်", "လယ်သမားကြီး"],
+        )
+        self.assertEqual(metrics["generic_cast_labels"], ["အမည်မသိလူငယ်", "လယ်သမားကြီး"])
+        for issue in (
+            "missing_character_introductions",
+            "generic_cast_labels",
+            "weak_dialogue_exchange",
+            "weak_character_reactions",
+            "weak_character_motivations",
+            "missing_conflict_stakes",
+            "weak_ending_hook",
+        ):
+            self.assertIn(issue, metrics["issues"])
+        self.assertTrue(metrics["needs_editor"])
+
+    def test_story_clarity_accepts_named_intros_dialogue_stakes_and_hook(self):
+        story_map = {
+            "character_cards": [
+                {
+                    "spoken_name": HERO_NAME,
+                    "role": "ရွာထဲက သစ်ခုတ်သမားလူငယ်",
+                    "relation": "မေရီ့ရဲ့သား",
+                    "introduction": f"{HERO_NAME}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက သစ်ခုတ်သမားဖြစ်ပြီး မေရီ့ရဲ့သားဖြစ်တယ်",
+                    "goal": "ရွာကို ကာကွယ်ဖို့",
+                    "motivation": "စစ်သားတွေက ရွာကို အရေးယူမယ်လို့ ခြိမ်းခြောက်ထားလို့",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+                {
+                    "spoken_name": "မေရီ",
+                    "role": "ရွာရဲ့ ဆေးဆရာမ",
+                    "relation": "အေဒင်ရဲ့အမေ",
+                    "introduction": "မေရီလို့ခေါ်တဲ့ အမျိုးသမီးက အေဒင်ရဲ့အမေဖြစ်ပြီး ရွာရဲ့ ဆေးဆရာမဖြစ်တယ်",
+                    "goal": "ရွာကို ကာကွယ်ဖို့",
+                    "motivation": "သားနဲ့ ရွာသားတွေ အရေးယူခံရမှာကို စိုးရိမ်လို့",
+                    "name_source": "subtitle",
+                    "confidence": "confirmed",
+                },
+            ],
+            "beats": [
+                {
+                    "start": 0,
+                    "end": 20,
+                    "beat": "Soldiers demanded grain",
+                    "trigger": "The soldiers arrived to demand grain",
+                    "dialogue": "The leader asked Mary for grain and Aiden answered",
+                    "reaction": "Aiden decided to prepare because he worried",
+                    "result": "They went to the forest",
+                },
+                {"start": 20, "end": 40, "beat": "They prepared in the forest"},
+                {"start": 40, "end": 60, "beat": "The demand was still unresolved"},
+            ],
+            "current_conflict": "စစ်သားတွေရဲ့ ဆန်တောင်းဆိုမှု",
+            "conflict_stakes": "မပေးရင် ရွာကို အရေးယူနိုင်တယ်",
+            "central_question": "ရွာက လိုက်နာမှာလား ငြင်းဆန်မှာလား",
+        }
+        clear = [
+            {
+                "start": 0,
+                "end": 10,
+                "burmese": (
+                    "ဒီဇာတ်လမ်းက မြစ်ကမ်းနားရွာမှာ စတယ်။ "
+                    f"{HERO_NAME}လို့ခေါ်တဲ့ လူငယ်က ရွာထဲက သစ်ခုတ်သမားဖြစ်ပြီး မေရီ့ရဲ့သားဖြစ်တယ်။ "
+                    "မေရီလို့ခေါ်တဲ့ အမျိုးသမီးက အေဒင်ရဲ့အမေဖြစ်ပြီး ရွာရဲ့ ဆေးဆရာမဖြစ်တယ်။"
+                ),
+            },
+            {
+                "start": 10,
+                "end": 20,
+                "burmese": (
+                    "အဲဒီနောက် စစ်သားခေါင်းဆောင်က မေရီကို ဆန်ပေးဖို့ တောင်းဆိုတော့ "
+                    "အေဒင်က ဘာကြောင့်ပေးရမှာလဲလို့ ပြန်မေးတယ်။ မပေးရင် ရွာကို အရေးယူမယ်လို့ "
+                    "ပြန်ပြောတော့ မေရီ စိုးရိမ်သွားတယ်။"
+                ),
+            },
+            {
+                "start": 20,
+                "end": 30,
+                "burmese": (
+                    "စစ်သားတွေ ပြန်ထွက်သွားပြီးနောက် တောင်းဆိုချက်ကို ပြည့်အောင် လုပ်ဖို့လိုလာလို့ "
+                    "အေဒင်က မေရီနဲ့အတူ သစ်တောထဲသွားပြီး ထင်းခုတ်ဖို့ ဆုံးဖြတ်လိုက်တယ်။"
+                ),
+            },
+            {
+                "start": 30,
+                "end": 40,
+                "burmese": (
+                    "သစ်တောထဲရောက်တော့ မေရီက အေဒင်ကို အချိန်မီနိုင်မလားလို့ မေးတယ်။ "
+                    "အေဒင်က ရွာကို ကာကွယ်ဖို့ ကြိုးစားရမယ်လို့ ပြန်ပြောတယ်။"
+                ),
+            },
+            {
+                "start": 40,
+                "end": 50,
+                "burmese": (
+                    "ခဏအကြာမှာ အေဒင်က ထင်းတွေ စုပြီးဖြစ်နေတာကို မြင်လို့ မေရီ စိတ်အေးသွားတယ်။ "
+                    "ဒါပေမဲ့ အေဒင်က ဆက်လုပ်ဖို့ ဆုံးဖြတ်လိုက်တယ်။"
+                ),
+            },
+            {
+                "start": 50,
+                "end": 60,
+                "burmese": (
+                    "နောက်ဆုံးမှာတော့ အေဒင်နဲ့ မေရီက ရွာဘက်ကို ပြန်လာကြတယ်။ "
+                    "ဒါပေမဲ့ စစ်သားတွေရဲ့ တောင်းဆိုချက်ကို လိုက်နာမှာလား၊ ငြင်းဆန်မှာလားဆိုတာက "
+                    "မဖြေရှင်းရသေးဘူး။"
+                ),
+            },
+        ]
+
+        metrics = bot._story_clarity_metrics(
+            clear,
+            story_map,
+            is_final_window=True,
+        )
+
+        self.assertEqual(metrics["missing_character_introductions"], [])
+        self.assertEqual(metrics["generic_cast_labels"], [])
+        self.assertGreaterEqual(metrics["dialogue_exchanges"], 2)
+        self.assertTrue(metrics["conflict_stakes_reflected"])
+        self.assertTrue(metrics["ending_hook_present"])
+        for issue in (
+            "weak_dialogue_exchange",
+            "weak_character_reactions",
+            "weak_character_motivations",
+            "missing_conflict_stakes",
+            "weak_ending_hook",
+        ):
+            self.assertNotIn(issue, metrics["issues"])
+        self.assertFalse(metrics["needs_editor"])
+
+    def test_story_prompts_cover_name_hunt_conflict_dialogue_and_final_hook(self):
+        guide = bot._SPOKEN_STYLE_GUIDE
+        self.assertIn("အမည်ကို အရင်ဆုံး အကုန်ရှာပါ (name hunt)", guide)
+        self.assertIn("conflict anatomy", guide)
+        self.assertIn("dialogue exchange", guide)
+        self.assertIn("ending hook", guide)
+        self.assertIn("အမည်မသိလူငယ်", guide)
+        self.assertIn("ဘာကြောင့် အခုရောက်လာတာလဲ", guide)
+
+        editor_prompt = bot._direct_story_editor_prompt(
+            [{"start": 0, "end": 10, "burmese": f"{HERO_NAME} ထိုင်နေတယ်။"}],
+            {},
+            {},
+            protagonist=HERO_NAME,
+            is_final_window=True,
+        )
+        self.assertIn("နောက်ဆုံး window ဖြစ်သည်", editor_prompt)
+        self.assertIn('"introduction"', editor_prompt)
+        self.assertIn('"conflict_stakes"', editor_prompt)
+        self.assertIn('"trigger"', editor_prompt)
+        self.assertIn("ပြောသူ → နားထောင်သူရဲ့ ပြန်ဖြေ/ငြင်း/မေး", editor_prompt)
+
+        worker_prompt = bot._rewrite_prompt(
+            [{
+                "group_id": 1,
+                "start": 0,
+                "end": 8,
+                "source_text": "The leader asks Mary for grain.",
+            }],
+            {1: 100},
+            {},
+            bot.DEFAULT_SETTINGS,
+            is_final_batch=True,
+        )
+        self.assertIn("နောက်ဆုံး group ပါတယ်", worker_prompt)
+        self.assertIn('"introduction"', worker_prompt)
+        self.assertIn('"central_question"', worker_prompt)
+        self.assertIn("ပြောသူ မေး/တောင်း → နားထောင်သူ ပြန်ဖြေ/ငြင်း/မေး", worker_prompt)
+
+    async def test_final_window_flag_reaches_direct_script_builder(self):
+        fake_generate = AsyncMock(return_value={"scenes": [{"burmese": "x"}]})
+        with patch.object(bot, "generate_chunk_script", fake_generate):
+            await bot._generate_chunk_script_with_retry(
+                "chunk.mp4",
+                60,
+                120,
+                180,
+                {},
+                3,
+                None,
+                bot.DEFAULT_SETTINGS,
+                total_parts=3,
+            )
+        self.assertTrue(fake_generate.await_args.kwargs["is_final_window"])
+
+        fake_build = AsyncMock(return_value=({"scenes": []}, {}))
+        with patch.object(bot, "build_chunk_recap", fake_build):
+            await bot.generate_chunk_script(
+                "chunk.mp4",
+                60,
+                120,
+                180,
+                {},
+                3,
+                None,
+                bot.DEFAULT_SETTINGS,
+                is_final_window=True,
+            )
+        self.assertTrue(fake_build.await_args.kwargs["is_final_window"])
+
     def test_story_map_survives_payload_normalization_and_worker_prompt(self):
         payload = bot._normalize_direct_script_payload(
             {
@@ -4308,7 +4621,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["script_style"],
-                "pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock",
+                "pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock",
             )
             self.assertEqual(
                 health.json()["telegram_webhook_auth"], "secret_token_header"
@@ -4332,7 +4645,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 health.json()["script_qa"],
-                "cumulative_cast_lock_scene_openings_tts_safe_editor_gate",
+                "cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate",
+            )
+            self.assertEqual(
+                health.json()["story_clarity_contract"],
+                "who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending",
             )
             self.assertEqual(
                 health.json()["video_geometry"],
@@ -5676,6 +5993,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         bot._save_manual_session(state)
 
         script_calls = []
+        script_final_flags = []
         script_contexts = []
         render_calls = []
         extract_calls = []
@@ -5691,8 +6009,11 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
             part_num,
             _tracker,
             _settings,
+            *,
+            is_final_window=False,
         ):
             script_calls.append(part_num)
+            script_final_flags.append(bool(is_final_window))
             script_contexts.append(dict(story_context))
             return {
                 "version": 1,
@@ -5843,6 +6164,7 @@ class WorkerPipelineTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(task, timeout=2)
 
         self.assertEqual(script_calls, [1, 2])
+        self.assertEqual(script_final_flags, [False, True])
         self.assertEqual(script_contexts[1]["summary"], "after 1")
         self.assertEqual(render_calls, [1, 2])
         self.assertEqual(extract_calls, [(2, 10.0, 10.0)])

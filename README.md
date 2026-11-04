@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.30-pro-qa-continuity` is a **one-shot automatic flow**: the user
+Version `v5.31-story-clarity-dialogue` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -202,16 +202,21 @@ to about 1:30 and beyond — Telegram intake follows this exact order with
    full-retelling script in order *before any audio exists*. Each
    window first builds a `story_map`, and a cumulative **story
    bible** is carried forward — a Cast Lock with one spoken name or
-   stable descriptive label per character, plus source/name-evidence,
-   role, relation, visual cue and aliases; protagonist identity;
-   ordered cause→action→consequence
-   beats, current goal/conflict, setting, unresolved threads,
-   important facts, summary, and last scene. The joined script is
-   then checked as a whole (sentences repeated across parts are
-   removed, keeping the first telling). If local clarity signals
-   say a draft reads like disconnected captions (thin beats, weak
-   transitions/causal links, or duplicated scenes), a bounded
-   text-only **story-editor** pass may rewrite that window without
+   memorable stable descriptive label per character, plus
+   source/name-evidence, role, relation, a Burmese first-mention
+   `introduction`, current `goal`/`motivation`, visual cue and aliases;
+   protagonist identity; ordered beats with trigger, dialogue,
+   reaction and result parts; current goal/conflict, what is at stake
+   if the characters fail or refuse (`conflict_stakes`), the still-open
+   `central_question`, setting, unresolved threads, important facts,
+   summary, and last scene. The joined script is then checked as a
+   whole (sentences repeated across parts are removed, keeping the
+   first telling). If local clarity signals say a draft reads like
+   disconnected captions (thin beats, weak transitions/causal links,
+   duplicated scenes, missing first introductions, bare generic
+   labels, planned dialogue/reactions/stakes that never reach the
+   narration, or a final window with no unresolved-question close), a
+   bounded text-only **story-editor** pass may rewrite that window without
    moving events across scene boundaries; it is accepted only if
    scene count/order, third-person narration, Cast Lock identities,
    length, and clarity hold up. Only then voice
@@ -350,9 +355,16 @@ the visible result or new danger without inventing future events.
 Narration text is written to be *spoken and followed by ear alone*:
 everyday colloquial Burmese with meaningful storyteller connectors
 and short punchy sentences, named subjects whenever the actor
-changes, explicit speaker/listener in dialogue, and a clear
-cause→decision/action→consequence chain with short bridges across
-scene and window boundaries — no bookish endings, no
+changes, a first-mention introduction (confirmed name + role +
+relation/group/place, or one memorable descriptive label when no
+name is supported), explicit speaker/listener dialogue exchanges for
+important demands/questions/decisions, reactions with their visible
+or spoken reasons, the central conflict's source-supported reason
+and stakes, and a clear cause→decision/action→consequence chain with
+short “why next?” bridges across scene and window boundaries. Only
+the source's final window may close by restating its genuinely
+unresolved decision/danger as a question; future events are never
+predicted — no bookish endings, no
 Latin/foreign script or digits (foreign words are transliterated
 into Burmese sound and numbers are spelled out as Burmese words —
 enforced deterministically before synthesis), so the voice never
@@ -371,13 +383,22 @@ render, and delivery path refuses the job rather than shipping the wrong
 narrator perspective.
 
 Cast Lock name evidence is ranked so aliases stop drifting between
-windows. A readable burned-in subtitle, caption, or on-screen name card
-is strongest; a clearly confirmed name in dialogue comes next; weaker
-or conflicting later guesses become non-spoken aliases instead of
-replacing the established identity. If no reliable exact name exists,
-one unique role/visual descriptive label is locked for the whole video.
-Each card carries the canonical Burmese `spoken_name`, the original
-`source_name`, role, relation, visual cue, aliases, `name_source`, and
+windows. Before a descriptive label is accepted, the whole window is
+searched for names (readable burned-in subtitles/captions, on-screen
+name cards, readable text, self-introductions, and characters clearly
+addressing each other); a name revealed later in the same window is
+used from the person's first mention unless the source deliberately
+withholds it as a mystery. A readable burned-in subtitle, caption, or
+on-screen name card is strongest; a clearly confirmed name in dialogue
+comes next; weaker or conflicting later guesses become non-spoken
+aliases instead of replacing the established identity. If no reliable
+exact name exists, the label must still be memorable and unique —
+place/group + role + a visible anchor, never a bare category such as
+“unknown youth”, “woman”, or “old farmer” — and that one form is locked
+for the whole video. Each card carries the canonical Burmese
+`spoken_name`, the original `source_name`, role, relation, the exact
+Burmese `introduction` to speak at first mention, current
+`goal`/`motivation`, visual cue, aliases, `name_source`, and
 `confidence`. Narration uses only the locked spoken form; speaker and
 listener are named for dialogue beats, and a returning or newly acting
 character is re-identified instead of being left in an ambiguous
@@ -582,6 +603,38 @@ v5.19 makes the job registry survive that:
   stale manual-rate values migrate to measured auto; and the n8n docs
   now describe the current third-person Cast Lock contract.
 
+## v5.31 — Who is who, conflict stakes, dialogue life, and ending hooks
+
+- **Names are hunted before labels are accepted.** The script prompt
+  must scan the whole window for subtitle/name-card/readable-text and
+  clearly addressed dialogue names, then introduce every important
+  person or group at first mention with name + role +
+  relation/group/place. When no exact name is supported, it must use
+  one memorable place/group + role + visible-anchor label instead of a
+  bare category (“unknown youth”, “woman”, “old farmer”). Character
+  cards now retain that exact introduction plus each person's current
+  goal and motivation across windows.
+- **The story map explains the conflict, not only the event.** Beats
+  can carry `trigger`, `dialogue`, `reaction`, and `result`; the map
+  also retains `conflict_stakes` (what refusal/failure would cost) and
+  `central_question`. Direct, retry, plain-text, top-up, summary,
+  editor, and worker prompts all require source-supported demand
+  reasons/stakes and reaction reasons without inventing motives,
+  consequences, dialogue, or inner thoughts the source does not show.
+- **Important dialogue is dramatized as an exchange.** Demands,
+  questions, warnings, negotiations, and decisions should flow
+  speaker → listener response → reaction/decision, mostly as attributed
+  reported speech with only short decisive source lines quoted. Event
+  blocks must open with a causal “previous result → new need/decision →
+  next action” bridge.
+- **The local QA gate can send flat drafts to the editor.** It now
+  detects missing first introductions, generic cast labels, planned
+  dialogue with no exchange in the narration, thin reaction/motivation
+  signals, mapped stakes that are never spoken, and — only when the
+  caller marks the source's final window — an ending that ignores the
+  still-unresolved question. The final-window flag is threaded through
+  automatic, legacy combined, manual, and worker rewrite paths.
+
 ## Run / verify the live Render deployment
 
 ```bash
@@ -613,7 +666,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.30-pro-qa-continuity"`,
+URLs must show `"version":"v5.31-story-clarity-dialogue"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,
@@ -624,10 +677,11 @@ URLs must show `"version":"v5.30-pro-qa-continuity"`,
 `"edit_sync":"proportional_boundaries_min_span_repair_cut_snapped_input_side_t_replay_max2_no_freeze"`,
 `"story_continuity":"cumulative_story_bible_character_cards_ordered_beats"`,
 `"story_editor":"clarity_gated_bounded_text_only_pass"`,
-`"script_style":"pro_recap_third_person_opening_hook_intention_named_transitions_cast_lock"`,
+`"script_style":"pro_recap_third_person_named_intros_conflict_stakes_reactions_causal_bridges_dialogue_exchanges_cast_lock"`,
 `"narrator_enforcement":"third_person_quote_aware_per_scene_validated"`,
 `"cast_lock":"subtitle_on_screen_first_locked_spoken_name_or_stable_label_ambiguous_alias_rejected"`,
-`"script_qa":"cumulative_cast_lock_scene_openings_tts_safe_editor_gate"`,
+`"script_qa":"cumulative_cast_lock_introductions_generic_labels_dialogue_reactions_stakes_ending_hook_tts_safe_editor_gate"`,
+`"story_clarity_contract":"who_is_who_first_introductions_conflict_reason_stakes_reaction_reasons_why_next_bridges_dialogue_exchanges_unresolved_ending"`,
 `"video_geometry":"display_sar_rotation_square_pixel_output"`,
 `"last_duration_calibration":{}`,
 `"job_registry":"disk_mirrored_active_jobs_with_stall_watchdog"`,
