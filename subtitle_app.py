@@ -27,7 +27,7 @@ UPLOAD_SESSIONS = {}
 ACTIVE = set()
 SEEN_UPDATES = {}
 TTL = 24 * 3600
-VERSION = 'subtitle-v1.1-browser-upload'
+VERSION = 'subtitle-v1.2-timed-cue-repair'
 WEBHOOK_READY = False
 EDITOR = Path(__file__).with_name('subtitle_editor.html')
 UPLOADER = Path(__file__).with_name('subtitle_upload.html')
@@ -120,17 +120,62 @@ def ffprobe(path):
     return duration, width, height
 
 
+def _cue_seconds(value):
+    """Accept numeric seconds or an unambiguous MM:SS / HH:MM:SS timestamp."""
+    if isinstance(value, bool):
+        raise ValueError('Invalid subtitle timing')
+    if isinstance(value, str) and ':' in value:
+        parts = value.strip().split(':')
+        if len(parts) not in (2, 3) or any(not part.strip() for part in parts):
+            raise ValueError('Invalid subtitle timing')
+        numbers = [float(part.strip().replace(',', '.')) for part in parts]
+        if any(not math.isfinite(number) or number < 0 for number in numbers):
+            raise ValueError('Invalid subtitle timing')
+        if numbers[-1] >= 60 or (len(numbers) == 3 and numbers[-2] >= 60):
+            raise ValueError('Invalid subtitle timing')
+        if any(not number.is_integer() for number in numbers[:-1]):
+            raise ValueError('Invalid subtitle timing')
+        return sum(number * 60 ** i for i, number in enumerate(reversed(numbers)))
+    return float(value)
+
+
+def _cue_list(data):
+    """Unwrap only known model envelopes; never infer timestamps from prose."""
+    for _ in range(4):
+        if isinstance(data, list):
+            return data, False
+        if not isinstance(data, dict):
+            break
+        for key in ('cues', 'subtitles', 'segments', 'captions', 'scenes'):
+            if key in data:
+                if not isinstance(data[key], list):
+                    raise ValueError('Invalid subtitle list')
+                return data[key], data.get('silence') is True
+        envelopes = [data[key] for key in ('result', 'data', 'output') if key in data]
+        if len(envelopes) != 1:
+            break
+        data = envelopes[0]
+    raise ValueError('Translation did not return timed subtitles')
+
+
 def parse_model_cues(data, offset, length):
-    if not isinstance(data, dict) or not isinstance(data.get('cues'), list):
-        raise ValueError('Translation did not return timed subtitles')
-    if len(data['cues']) > 300:
+    items, explicit_silence = _cue_list(data)
+    if not items and not explicit_silence:
+        raise ValueError('Empty subtitles without explicit silence')
+    if len(items) > 300:
         raise ValueError('Too many subtitles in one audio chunk')
     cues = []
-    for item in data['cues']:
+    for item in items:
         if not isinstance(item, dict):
             raise ValueError('Invalid subtitle')
-        start, end = float(item['start']), float(item['end'])
-        text = str(item.get('text') or '').strip()
+        try:
+            start = _cue_seconds(item.get('start', item.get('start_time')))
+            end = _cue_seconds(item.get('end', item.get('end_time')))
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError('Invalid subtitle timing') from exc
+        text_value = next((item[key] for key in ('text', 'burmese', 'translation', 'subtitle')
+                           if isinstance(item.get(key), str) and item[key].strip()), '')
+        text = text_value.strip()
         if not math.isfinite(start) or not math.isfinite(end) or start < 0 or start >= length or end <= start or end > length + .05 or not text or len(text) > 500:
             raise ValueError('Invalid subtitle timing or text')
         if not any('\u1000' <= c <= '\u109f' for c in text):
@@ -172,12 +217,16 @@ async def transcribe_translate(source, duration, directory, chat):
                       'Preserve meaning, names and dialogue; do not invent content. Use Burmese script for names where possible. '
                       f'Return JSON only: {{"cues":[{{"start":0.0,"end":2.0,"text":"မြန်မာစာ"}}]}}. '
                       f'Timestamps are seconds relative to this audio chunk, from 0 to {length:.3f}; use short readable cues synchronized to speech. '
-                      'For silence only return an empty cues array. Never omit audible dialogue intentionally.')
+                      'Only when this audio contains no speech, return {\"cues\":[],\"silence\":true}. Never omit audible dialogue intentionally.')
             if cues:
                 previous = [c.text for c in cues[-6:]]
                 prompt += (' Previous subtitle context for consistent names only; do not repeat these lines unless heard in this audio: '
                            + json.dumps(previous, ensure_ascii=False))
-            data = await bot._generate_direct_gemini_json(client, [uploaded, prompt], purpose='subtitle translation', max_output_tokens=8192)
+            data = await bot._generate_direct_gemini_json(
+                client, [uploaded, prompt], purpose='subtitle translation',
+                max_output_tokens=8192, strict_json=True,
+                validator=lambda candidate: parse_model_cues(candidate, start, length),
+            )
             cues.extend(parse_model_cues(data, start, length))
         finally:
             await bot._delete_gemini_file(client, uploaded)
