@@ -425,10 +425,36 @@ docker run --rm -p 8000:8000 \
 
 * Image တွင် Debian FFmpeg (libass/harfbuzz ပါ) နှင့် ဖောင့် ပါသည်။
 * `HF_HOME` volume ဖြင့် Whisper မော်ဒယ်ကို ပြန်မယူဘဲ သိမ်းထားနိုင်သည်။
-* Render အတွက် `render.yaml` ပါသည် (persistent disk ကို `/data` တွင်
-  mount လုပ်ပြီး `MSE_UPLOADS_DIR=/data/uploads`,
-  `MSE_PROJECTS_DIR=/data/projects` သတ်မှတ်ထားသည်)။
-* Free tier တွင် disk နည်းသဖြင့် `model_size: "small"` ဖြင့် စတင်ရန် အကြံပြုပါသည်။
+* Render အတွက် `render.yaml` ပါသည် — persistent disk ကို `/data` တွင် mount
+  လုပ်ပြီး `MSE_UPLOADS_DIR`/`MSE_PROJECTS_DIR`/`MSE_WORK_DIR`/`HF_HOME` ကို
+  ထို disk ပေါ် ညွှန်ထားသည်။
+
+### Render (သို့မဟုတ် တူညီသော PaaS) တွင် သုံးနိုင်မလား?
+
+**ဟုတ်သည်၊ သို့သော် instance အရွယ်ကို မှန်ကန်စွာ ရွေးမှ ဖြစ်မည်။** Render တွင်
+GPU မရှိပါ၊ RAM/CPU က မော်ဒယ်အရွယ်နှင့် export အမြန်နှုန်းကို အဆုံးအဖြတ်ပေးသည်။
+
+| Plan | RAM · CPU | တကယ် ဖြစ်နိုင်မလား |
+| --- | --- | --- |
+| **Free** ($0) | 512 MB · 0.1 | ❌ ဗီဒီယို/ပရောဂျက် မသိမ်းနိုင် (disk မရ၊ ၁၅ မိနစ် idle ရင် အိပ်၊ restart လျှင် ဖိုင်ပျောက်)၊ export/Whisper တွင် OOM ဖြစ်နိုင်၊ ပထမ ဝင်ချိန် ၃၀–၆၀ စက္ကန့် စောင့်ရ။ UI ကို ကြည့်ရုံသာ။ |
+| **Starter** ($7) | 512 MB · 0.5 | ⚠️ Disk တပ်၍ ရသည် (ဖိုင်မပျောက်)၊ ဒါပေမယ့် 512 MB က Python + FFmpeg + Whisper အတွက် ကျပ်သည်။ `model_size: tiny/base` သာ၊ 720p အထိ export၊ ၅–၁၀ မိနစ် ဗီဒီယိုသာ။ OOM ဖြစ်နိုင်သည်။ |
+| **Standard** ($25) | 2 GB · 1 | ✅ **အနည်းဆုံး အကြံပြုသော tier။** `small`/`medium` int8 ဖြင့် စာတန်းထုတ်နိုင်၊ 720p export အဆင်ပြေ၊ ဖိုင်များ disk ပေါ် ကျန်သည်။ |
+| Pro 4 GB+ | 4 GB · 2+ | ✅ large-v3 int8 ပါ ရနိုင်၊ ပိုမြန်။ |
+
+အပိုကုန်ကျစရိတ် — disk `$0.25/GB/လ` (20 GB ≈ $5/လ)၊ bandwidth ကို Hobby တွင် 5 GB/လ
+သာ ပါသည် (ဗီဒီယို ဒေါင်းလုဒ်က outbound ဖြစ်သည်၊ `$0.15/GB` ကျော်လျှင်)။
+
+**အကြံပြုချက်**
+
+* ကိုယ်တိုင်/မိသားစု သုံးရုံဆိုလျှင် **သင့်ကွန်ပျူတာတွင် run ခြင်းက အကောင်းဆုံး**
+  (အခမဲ့၊ GPU ရှိလျှင် အလွန်မြန်၊ ဖိုင်တွေ ကိုယ့်စက်ထဲမှာသာ)။
+* အမြဲ ဖွင့်ထားလိုလျှင် Render Standard ($25) + disk ထက် **VPS (ဥပမာ Hetzner
+  2 vCPU / 4 GB ≈ €4/လ)** က ပိုသက်သာပြီး CPU ပိုမြန်သည် — Docker ဖြင့် တူတူ run နိုင်သည်။
+* Render တွင် `large-v3` ကို မတင်ပါနှင့် — CPU တွင် real-time ထက် အဆ ၅–၁၀ နှေး
+  (၁၀ မိနစ် ဗီဒီယို → မိနစ် ၃၀–၆၀)။ `small` + `int8` + `beam_size 3` က လက်တွေ့။
+* `EDITOR_PASSWORD` ကို **မဖြစ်မနေ** သတ်မှတ်ပါ — Render URL ကို လူတိုင်း ဖွင့်နိုင်သည်။
+* Deploy ပြီးတိုင်း `/api/capabilities` ကို ဖွင့်ကြည့်ပါ — FFmpeg/libass/harfbuzz/font
+  အားလုံး `true` ဖြစ်မှ burn-in မှန်မည်။
 
 ---
 

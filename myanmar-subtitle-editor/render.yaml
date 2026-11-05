@@ -1,29 +1,54 @@
-# Render blueprint — persistent disk သည် paid plan လိုအပ်သည်။
-# Disk မပါဘဲ စမ်းသပ်လိုလျှင် disk block ကို ဖယ်ပြီး /data env vars များကိုလည်း ဖယ်ပါ။
+# Render blueprint — မြန်မာစာတန်းထိုး Video Editor
+#
+# ⚠️ အရေးကြီး — Render သည် CPU ပဲ ပေးသည် (GPU မရှိ)၊ RAM ကန့်သတ်ချက်က
+#    Whisper မော်ဒယ် အရွယ်ကို အဆုံးအဖြတ်ပေးသည်:
+#
+#      Free    : 512 MB · 0.1 CPU · 15 မိနစ် idle ရင် အိပ်သည် · disk မရ  ❌ အလုပ်မဖြစ်
+#      Starter : 512 MB · 0.5 CPU · $7              → tiny/base သာ၊ export လည်း OOM ဖြစ်နိုင်
+#      Standard: 2 GB   · 1 CPU   · $25             → ✅ ဒီ app အတွက် အနည်းဆုံး အဆင်ပြေသော tier
+#
+#    ဒီ blueprints သည် Standard ကို သုံးထားသည်။ စမ်းသပ်ရုံသာ ဆိုလျှင်
+#    plan ကို "starter" သို့ ပြောင်းနိုင်သည် (သို့သော် Whisper ကို tiny ချပါ၊
+#    MSE_MODEL_SIZE=tiny)။
+#
+#    CPU ဖြင့် large-v3 သည် real-time ထက် အဆ ၅–၁၀ နှေးနိုင်သည်။
+#    ၁၀ မိနစ် ဗီဒီယို → မိနစ် ၃၀–၆၀ ခန့်။ မြန်လိုလျှင် small/medium ကို သုံးပါ။
 services:
   - type: web
     name: myanmar-subtitle-editor
     runtime: docker
-    plan: starter
+    plan: standard          # 2 GB RAM · 1 CPU ($25/mo) — Starter (512 MB) တွင် OOM ဖြစ်နိုင်
+    region: singapore       # မြန်မာနှင့် အနီးဆုံး (us-east / frankfurt လည်း ရ)
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
+    autoDeploy: true
     disk:
       name: mse-data
-      mountPath: /data
+      mountPath: /data      # $0.25/GB/လ — 20 GB ≈ $5/mo; ဗီဒီယို/ပရောဂျက် သိမ်းရန်
       sizeGB: 20
     envVars:
-      - key: EDITOR_PASSWORD
+      - key: EDITOR_PASSWORD   # ⚠️ မဖြစ်မနေ သတ်မှတ်ပါ — URL ကို လူတိုင်း မြင်နိုင်သည်
         sync: false
       - key: MSE_UPLOADS_DIR
         value: /data/uploads
       - key: MSE_PROJECTS_DIR
         value: /data/projects
-      - key: HF_HOME
+      - key: MSE_WORK_DIR
+        value: /data/work
+      - key: HF_HOME          # Whisper မော်ဒယ်ကို disk ပေါ် cache လုပ်ရန် (deploy တစ်ခါ 3 GB ပြန်မယူရ)
         value: /data/hf
-      # CPU-only instances: small/medium model ဖြင့် စတင်ပါ
-      - key: MSE_MODEL_SIZE
-        value: small
-      - key: MSE_COMPUTE_TYPE
-        value: int8
+      # CPU-only instance — int8 + အလယ်အလတ် မော်ဒယ်
       - key: MSE_DEVICE
         value: cpu
+      - key: MSE_COMPUTE_TYPE
+        value: int8
+      - key: MSE_MODEL_SIZE
+        value: small          # 2 GB RAM တွင် medium လည်း ရနိုင်၊ large-v3 က RAM/အချိန် မတတ်နိုင်
+      - key: MSE_BEAM_SIZE
+        value: "3"            # ပိုမြန် (5 → 3)
+      - key: MSE_MAX_UPLOAD_MB
+        value: "300"          # disk/RAM နှင့် upload အချိန်ကို ထိန်း
+      - key: MSE_MAX_RENDER_HEIGHT
+        value: "720"          # export ကို 720p အထိ ချုံ့ → render အမြန်၊ ဖိုင်ငယ်
+      - key: MSE_VIDEO_PRESET
+        value: veryfast
