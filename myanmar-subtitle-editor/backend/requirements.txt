@@ -1,0 +1,18 @@
+# Myanmar Subtitle Editor — backend (Python 3.10+)
+#
+# Install:  pip install -r backend/requirements.txt
+#
+# faster-whisper is installed by default (GPU: float16, CPU: int8).  The
+# openai-whisper backend is optional because it pulls in PyTorch:
+#   pip install openai-whisper==20250625
+# then set  "stt_backend": "openai-whisper"  in backend/config.json.
+
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.33
+pysrt==1.1.2
+Pillow==13.0.0
+faster-whisper==1.2.1
+# Static FFmpeg build that ships libass + libharfbuzz.  Used only when the
+# system ffmpeg is missing or was built without libass (see /api/capabilities).
+imageio-ffmpeg==0.8.1

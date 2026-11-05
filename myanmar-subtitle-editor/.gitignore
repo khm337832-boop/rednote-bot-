@@ -1,0 +1,10 @@
+# Generated at runtime — never commit user media or saved projects
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/projects/*
+!backend/projects/.gitkeep
+backend/config.json
+backend/uploads/_work/
+__pycache__/
+*.py[cod]
+.pytest_cache/
