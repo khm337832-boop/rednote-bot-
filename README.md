@@ -6,7 +6,7 @@ video or a RedNote/video link and turns it into a Burmese recap video
 **inline buttons, a persistent bottom keyboard, and Telegram's command
 menu button** — no commands to memorize.
 
-Version `v5.39-foreign-name-token-lock` is a **one-shot automatic flow**: the user
+Version `v5.40-opening-introduction-repair` is a **one-shot automatic flow**: the user
 sends one video or link and the bot does everything else. It downloads
 the complete source, processes it internally in fixed chronological
 **2-minute windows** (a 1:30 source is 45 windows; a 3-hour source is
@@ -778,6 +778,10 @@ v5.19 makes the job registry survive that:
   speaker. These heuristics are conservative editor signals, not a
   reason to invent names or story facts.
 
+## v5.40 — Opening introduction repair
+
+Card introduction text is reused only when it actually passes the same quote-aware protagonist self-introduction check as the final gate and is TTS-safe. Otherwise a safe locked identity gets a deterministic introduction; foreign evidence is never spoken as a fallback. Final direct quality metrics use the same locked protagonist/pronoun as the repair pass, and opening diagnostics are exposed for investigation. This does not bypass the opening or professional gates.
+
 ## v5.39 — Foreign-name token lock and actor-targeted repair
 
 - **Foreign card names are repaired at token level.** The first live
@@ -961,7 +965,7 @@ https://<service>.onrender.com/healthz
 `/healthz` is deliberately retained as an alias because the older live
 service used that path; a Render service still configured to check it must
 not fail new deployments with a 404 health check. For this release these
-URLs must show `"version":"v5.39-foreign-name-token-lock"`,
+URLs must show `"version":"v5.40-opening-introduction-repair"`,
 `"telegram_webhook_auth":"secret_token_header"`,
 `"gemini_hedge_delay_seconds":15`, `"gemini_hedge_initial_parallel":2`,
 `"gemini_generate_timeout_seconds":240`, `"gemini_tts_timeout_seconds":300`,

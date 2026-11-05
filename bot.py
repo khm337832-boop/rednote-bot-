@@ -8008,11 +8008,28 @@ def _build_protagonist_self_introduction(
         protagonist_name,
     )
     introduction = _clean_story_text(card.get("introduction"), 240)
-    if introduction and expected in introduction and any(
-        form in introduction
-        for form in _character_card_name_forms(card)
+    # A card can mention the narrator and their name without actually
+    # introducing them (or do so only in quoted dialogue).  Reusing such
+    # text makes every repair pass insert the same invalid opening again.
+    # Validate it with the very same quote-aware gate as the final script.
+    introduction = _polish_text_for_speech(introduction)
+    if (
+        introduction
+        and not _tts_unsafe_script_chars(introduction)
+        and _protagonist_self_introduction_present(
+            [introduction],
+            protagonist_forms=_protagonist_name_forms(
+                protagonist_name, story_map=story_map, story_context=merged_context
+            ),
+            expected_pronoun=expected,
+        )
     ):
-        return _polish_text_for_speech(introduction)
+        return introduction
+
+    # Never manufacture an introduction by speaking foreign evidence.
+    # The token repair or model repair must first lock a safe identity.
+    if not _tts_safe_spoken_form(protagonist_name, limit=100):
+        return ""
 
     confidence = str(card.get("confidence") or "")
     descriptive = confidence == "descriptive" or _spoken_name_form_is_long(
@@ -8026,8 +8043,9 @@ def _build_protagonist_self_introduction(
         if relation.startswith(form):
             relation = relation[len(form):].lstrip(" ကကတော့")
     identity_detail = role or relation
-    if identity_detail and any(
-        marker in identity_detail for marker in ("။", "?", "!")
+    if identity_detail and (
+        _tts_unsafe_script_chars(identity_detail)
+        or any(marker in identity_detail for marker in ("။", "?", "!"))
     ):
         identity_detail = ""
 
@@ -15002,7 +15020,12 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
     final_story_metrics = _story_clarity_metrics(
         scenes,
         story_map,
-        story_context,
+        {
+            **(story_context or {}),
+            "protagonist": new_protagonist,
+            "protagonist_gender": new_protagonist_gender,
+            "protagonist_pronoun": new_protagonist_pronoun,
+        },
         is_final_window=is_final_window,
         protagonist=new_protagonist,
         is_opening_window=(chunk_index == 1),
@@ -15042,6 +15065,10 @@ JSON မထုတ်ခင် အောက်ပါတို့ကို စစ�
         "score": final_story_metrics.get("score"),
         "issues": final_story_metrics.get("issues") or [],
         "professional_quality_failures": professional_quality_failures,
+        "protagonist_self_introduction_present": bool(
+            final_story_metrics.get("protagonist_self_introduction_present")
+        ),
+        "opening_first_person_pass": final_pass_stats.get("first_person") or {},
         "scene_count": int(final_story_metrics.get("scene_count") or 0),
         "duplicate_sentence_count": int(
             final_story_metrics.get("duplicate_sentence_count") or 0
@@ -25927,7 +25954,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ဒီ code အစစ် run နေကြောင်း စစ်နိုင်ဖို့ version အမှတ်အသား
-BUILD_VERSION = "v5.39-foreign-name-token-lock"
+BUILD_VERSION = "v5.40-opening-introduction-repair"
 BUILD_FEATURES = len(FEATURES)
 
 
