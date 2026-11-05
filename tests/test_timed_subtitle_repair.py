@@ -90,3 +90,81 @@ def test_subtitle_pipeline_retries_wrong_schema_without_losing_chunk(tmp_path):
         assert delete.await_count == 1
         assert not list(tmp_path.iterdir())
     asyncio.run(run())
+
+
+def test_translated_field_precedes_source_text():
+    data = {'cues': [{'start': 0, 'end': 1, 'text': 'Hello', 'burmese': 'မင်္ဂလာပါ'}]}
+    assert app.parse_model_cues(data, 0, 10)[0].text == 'မင်္ဂလာပါ'
+
+
+def test_foreign_cues_repaired_without_changing_times_or_burmese_cues():
+    from unittest.mock import AsyncMock
+    async def run():
+        cues = [SubtitleCue(1, 2, 'Hello'), SubtitleCue(3, 4, 'ရပါတယ်'), SubtitleCue(5, 6, '你好')]
+        generator = AsyncMock(return_value={'translations': [{'id': 0, 'text': 'မင်္ဂလာပါ'}, {'id': 2, 'text': 'နေကောင်းလား'}]})
+        with patch.object(bot, '_generate_direct_gemini_json', generator):
+            result = await app._translate_foreign_cues(object(), cues)
+        assert result == [SubtitleCue(1, 2, 'မင်္ဂလာပါ'), cues[1], SubtitleCue(5, 6, 'နေကောင်းလား')]
+        assert generator.await_args.kwargs['attempts_per_model'] == 2
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('payload', [
+    {'translations': [{'id': 0, 'text': 'English'}]},
+    {'translations': [{'id': 0, 'text': 'စာ'}, {'id': 0, 'text': 'စာ'}]},
+    {'translations': [{'id': 1, 'text': 'စာ'}]},
+    {'translations': []},
+])
+def test_translation_mapping_rejects_missing_duplicate_unknown_or_foreign(payload):
+    with pytest.raises(ValueError):
+        app._subtitle_translation_mapping(payload, [0])
+
+
+def test_pipeline_recovers_foreign_cues_with_one_available_model(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        generator = AsyncMock(side_effect=[
+            {'cues': [{'start': 0.5, 'end': 2, 'text': 'Hello'}, {'start': 2, 'end': 3, 'text': 'ကောင်းပြီ'}]},
+            {'translations': [{'id': 0, 'text': 'မင်္ဂလာပါ'}]},
+        ])
+        def extract(source, target, start, length):
+            target.write_bytes(b'audio')
+        with patch.object(app.bot, '_make_gemini_client', return_value=object()), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(app.bot, '_upload_video_to_gemini', AsyncMock(return_value=object())), \
+             patch.object(app.bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(app.bot, '_generate_direct_gemini_json', generator), \
+             patch.object(app.bot, 'send_text', AsyncMock()):
+            result = await app.transcribe_translate('source', 10, str(tmp_path), 123)
+        assert result == [SubtitleCue(.5, 2, 'မင်္ဂလာပါ'), SubtitleCue(2, 3, 'ကောင်းပြီ')]
+        assert generator.await_count == 2
+    asyncio.run(run())
+
+
+def test_single_model_repairs_foreign_cue_after_invalid_mapping(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        calls = []
+        def generate_content(model, contents, config):
+            calls.append(model)
+            if len(calls) == 1:
+                data = {'cues': [{'start': 1, 'end': 2, 'text': 'Hello'}]}
+            elif len(calls) == 2:
+                data = {'translations': [{'id': 0, 'text': 'Hello'}]}
+            else:
+                data = {'translations': [{'id': 0, 'text': 'မင်္ဂလာပါ'}]}
+            return SimpleNamespace(text=json.dumps(data, ensure_ascii=False))
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+        def extract(source, target, start, length):
+            target.write_bytes(b'audio')
+        with patch.object(app.bot, '_make_gemini_client', return_value=client), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(app.bot, '_upload_video_to_gemini', AsyncMock(return_value=object())), \
+             patch.object(app.bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(app.bot, 'send_text', AsyncMock()), \
+             patch.object(bot, 'PREFERRED_MODELS', ['only']), \
+             patch.object(bot, '_live_gemini_models', side_effect=lambda models: models):
+            result = await app.transcribe_translate('source', 10, str(tmp_path), 123)
+        assert result == [SubtitleCue(1, 2, 'မင်္ဂလာပါ')]
+        assert len(calls) == 3
+    asyncio.run(run())
