@@ -1,0 +1,29 @@
+# Render blueprint — persistent disk သည် paid plan လိုအပ်သည်။
+# Disk မပါဘဲ စမ်းသပ်လိုလျှင် disk block ကို ဖယ်ပြီး /data env vars များကိုလည်း ဖယ်ပါ။
+services:
+  - type: web
+    name: myanmar-subtitle-editor
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    disk:
+      name: mse-data
+      mountPath: /data
+      sizeGB: 20
+    envVars:
+      - key: EDITOR_PASSWORD
+        sync: false
+      - key: MSE_UPLOADS_DIR
+        value: /data/uploads
+      - key: MSE_PROJECTS_DIR
+        value: /data/projects
+      - key: HF_HOME
+        value: /data/hf
+      # CPU-only instances: small/medium model ဖြင့် စတင်ပါ
+      - key: MSE_MODEL_SIZE
+        value: small
+      - key: MSE_COMPUTE_TYPE
+        value: int8
+      - key: MSE_DEVICE
+        value: cpu

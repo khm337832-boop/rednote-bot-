@@ -1,0 +1,11 @@
+backend/uploads/*
+backend/projects/*
+backend/config.json
+backend/uploads/_work
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.venv
+.git
+tests
+README.md

@@ -1,0 +1,42 @@
+{
+  "stt_backend": "faster-whisper",
+  "model_size": "large-v3",
+  "language": "my",
+  "device": "auto",
+  "compute_type": "auto",
+  "beam_size": 5,
+  "vad_filter": true,
+  "cpu_threads": 0,
+
+  "gap_threshold": 0.5,
+  "punctuation_break": true,
+  "max_chars": 35,
+  "max_duration": 6.0,
+  "min_duration": 0.3,
+  "max_hold_seconds": 3.0,
+  "last_hold_mode": "cap",
+
+  "max_upload_mb": 500,
+  "chunk_size": 1048576,
+  "job_workers": 2,
+  "demo_mode": "auto",
+
+  "default_font_size": 0.055,
+  "default_position_x": 0.5,
+  "default_position_y": 0.86,
+  "default_box_width": 0.82,
+  "default_text_color": "#FFFFFF",
+  "default_outline_color": "#000000",
+  "default_outline_width": 0.08,
+  "default_opacity": 1.0,
+  "default_bold": true,
+
+  "ffmpeg_binary": "",
+  "video_codec": "libx264",
+  "video_crf": 20,
+  "video_preset": "veryfast",
+  "audio_bitrate": "192k",
+  "max_render_height": 0,
+
+  "access_password": ""
+}

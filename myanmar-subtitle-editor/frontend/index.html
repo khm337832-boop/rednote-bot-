@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="my" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="မြန်မာစာတန်းထိုး Video Editor — CapCut စတိုင် စာတန်းထိုး၊ Blur နှင့် Logo" />
+    <title>မြန်မာစာတန်းထိုး — Video Editor</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/css/glass.css" />
+    <script>
+      try {
+        document.documentElement.dataset.theme = localStorage.getItem("mse-theme") || "dark";
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div class="bg-blobs"><div class="blob-pink"></div></div>
+
+    <nav class="navbar glass">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="14" width="18" height="5" rx="2.5" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="7" r="3.4" />
+          </svg>
+        </div>
+        မြန်မာစာတန်းထိုး <span class="text-faint" style="font-weight: 400">Editor</span>
+      </div>
+      <div class="spacer"></div>
+      <div class="navbar-actions">
+        <span class="chip" id="ffmpeg-chip" title="FFmpeg အခြေအနေ"><span class="dot"></span> စစ်ဆေးနေသည်...</span>
+        <button class="btn btn-sm" id="btn-demo-video" title="ဗီဒီယိုဖိုင် မလိုဘဲ စမ်းသပ်ရန်">
+          ✨ <span class="label">သရုပ်ပြ ဗီဒီယို</span>
+        </button>
+        <button class="btn btn-sm btn-primary" id="btn-upload">
+          ⬆ <span class="label">ဗီဒီယို တင်ရန်</span>
+        </button>
+        <button class="btn btn-icon btn-sm" data-theme-toggle title="အလင်း/အမှောင်">☾</button>
+      </div>
+    </nav>
+
+    <div class="dashboard-wrap">
+      <section class="hero glass">
+        <div>
+          <span class="hero-eyebrow">🎬 CapCut စတိုင် · မြန်မာစာတန်းထိုး · Blur + Logo</span>
+          <h1>ဗီဒီယို တင်လိုက်ပါ — မြန်မာစာတန်းထိုး အလိုအလျောက် ရပါမည်</h1>
+          <p>
+            စကားပြောတစ်ကြောင်းချင်းစီကို သီးသန့် စာတန်းအဖြစ် ခွဲပေးပြီး နောက်စကား မစပြောမချင်း
+            စာတန်း ဆက်ပေါ်နေပါသည်။ စာသား၊ အချိန်၊ နေရာ၊ Logo နှင့် Blur ကို စိတ်ကြိုက် ပြင်ဆင်ပြီး
+            ဗီဒီယို အဖြစ် ပြန်ထုတ်နိုင်ပါသည်။
+          </p>
+          <div class="row" style="margin-top: 6px">
+            <button class="btn btn-primary" id="btn-upload-2">⬆ ဗီဒီယို တင်ရန်</button>
+            <button class="btn" id="btn-demo-video-2">✨ သရုပ်ပြ ဖြင့် စမ်းကြည့်ရန်</button>
+          </div>
+        </div>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="ဗီဒီယို တင်ရန်">
+          <div class="dz-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+              <path d="M12 16V4m0 0L7 9m5-5 5 5" />
+              <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+          </div>
+          <strong>ဗီဒီယိုဖိုင် ဆွဲထည့်ပါ (သို့) နှိပ်ပါ</strong>
+          <small>MP4 · MKV · MOV — အများဆုံး <span id="max-upload-label">500 MB</span></small>
+          <small class="text-faint">ဖိုင်ကို chunk လိုက် တင်သဖြင့် browser memory မပြည့်ပါ</small>
+        </div>
+      </section>
+
+      <div class="dashboard-grid">
+        <section class="glass panel">
+          <div class="section-head">
+            <h2 style="margin: 0">ပရောဂျက်များ</h2>
+            <div class="row">
+              <button class="btn btn-sm" id="btn-refresh">↻ ပြန်စစ်</button>
+            </div>
+          </div>
+          <div class="project-grid" id="project-grid">
+            <div class="empty-state">ဖွင့်နေသည်...</div>
+          </div>
+        </section>
+
+        <aside class="glass panel">
+          <h2>စနစ် အခြေအနေ</h2>
+          <ul class="status-list" id="status-list">
+            <li><span class="icon">⏳</span><span>စစ်ဆေးနေသည်...</span></li>
+          </ul>
+          <div class="divider"></div>
+          <h3 style="font-size: 0.86rem; color: var(--text-dim)">ဆက်တင်</h3>
+          <div class="config-list" id="config-list"></div>
+          <div id="warnings"></div>
+          <div class="divider"></div>
+          <p class="text-faint" style="font-size: 0.76rem; margin: 0">
+            မြန်မာစာတန်းထိုးကို <strong>Noto Sans Myanmar</strong> ဖောင့်ဖြင့် Canvas နှင့်
+            FFmpeg (libass) နှစ်ခုလုံးတွင် တူညီစွာ ဆွဲပါသည်။ Preview နှင့် Export သည်
+            အနည်းငယ် ကွာနိုင်ပါသည်။
+          </p>
+        </aside>
+      </div>
+
+      <footer class="site-footer">
+        မြန်မာစာတန်းထိုး Video Editor · FastAPI + faster-whisper + FFmpeg (libass/harfbuzz) + Konva.js
+      </footer>
+    </div>
+
+    <input type="file" id="video-input" accept=".mp4,.mkv,.mov,.m4v,.webm,video/*" />
+    <input type="file" id="logo-input-unused" hidden />
+
+    <div class="modal" id="upload-modal" data-static="true">
+      <div class="modal-card">
+        <h2 id="upload-title">ဗီဒီယို တင်နေသည်...</h2>
+        <p class="text-dim" id="upload-stage">ဖိုင် ပြင်ဆင်နေသည်...</p>
+        <div class="progress"><span id="upload-progress"></span></div>
+        <div class="progress-label">
+          <span id="upload-pct">0%</span>
+          <span id="upload-size"></span>
+        </div>
+        <div class="export-preview hidden" id="upload-error"></div>
+        <div class="modal-actions">
+          <button class="btn" data-close-modal="upload-modal">ပိတ်ရန်</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="login-modal" data-static="true">
+      <div class="modal-card">
+        <h2>သီးသန့် စာမျက်နှာ</h2>
+        <p class="text-dim">ဆက်လုပ်ရန် စကားဝှက် ထည့်ပါ။</p>
+        <form>
+          <div class="field">
+            <label for="login-password">စကားဝှက်</label>
+            <input id="login-password" class="input" type="password" autocomplete="current-password" required />
+          </div>
+          <p class="login-error text-dim hidden" style="color: #fda4af"></p>
+          <div class="modal-actions">
+            <button class="btn btn-primary" type="submit">ဝင်ရောက်ရန်</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+  </body>
+</html>
