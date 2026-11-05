@@ -9,6 +9,14 @@ import subtitle_app as app
 from subtitle_engine import SubtitleCue
 
 
+@pytest.fixture(autouse=True)
+def isolate_translation_stage(monkeypatch):
+    # Keep existing timing/checkpoint tests scoped to their original behavior.
+    async def legacy_translation(client, cues, previous):
+        return await app._translate_foreign_cues(client, cues)
+    monkeypatch.setattr(app, '_translate_source_cues', legacy_translation)
+
+
 @pytest.mark.parametrize('data', [
     [{'start': 1, 'end': 2, 'text': 'မင်္ဂလာပါ'}],
     {'segments': [{'start_time': '00:01.000', 'end_time': '00:02.000', 'burmese': 'မင်္ဂလာပါ'}]},
