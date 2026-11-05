@@ -83,6 +83,15 @@ pip install openai-whisper==20250625
 ### Run
 
 ```bash
+# လွယ်ဆုံး — venv + requirements ကို အလိုအလျောက် ပြင်ပြီး စတင်ပေးသည်
+./start.sh
+# စကားဝှက် နှင့် တခြား port
+EDITOR_PASSWORD='change-me' PORT=9000 ./start.sh
+```
+
+သို့မဟုတ် ကိုယ်တိုင် —
+
+```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
