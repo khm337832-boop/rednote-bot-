@@ -25,11 +25,13 @@ class SubtitleStyle:
     x: float = 50.0
     y: float = 90.0
     size: float = 4.5
+    cover: bool = True
+    cover_top: float = 82.0
 
     def validate(self) -> None:
-        if not all(math.isfinite(v) for v in (self.x, self.y, self.size)):
+        if type(self.cover) is not bool or not all(math.isfinite(v) for v in (self.x, self.y, self.size, self.cover_top)):
             raise ValueError("Subtitle position and size must be finite")
-        if not (0 <= self.x <= 100 and 0 <= self.y <= 100 and 1 <= self.size <= 15):
+        if not (0 <= self.x <= 100 and 0 <= self.y <= 100 and 1 <= self.size <= 15 and 0 <= self.cover_top <= 99):
             raise ValueError("Subtitle position or size out of range")
 
 
@@ -98,9 +100,10 @@ def burn_subtitles(source: str, output: str, cues: list[SubtitleCue], width: int
         ass_path.write_text(ass, encoding="utf-8")
         partial = out.parent / ("." + out.stem + ".partial.mp4")
         try:
+            filters = (f"drawbox=x=0:y=ih*{style.cover_top / 100:.4f}:w=iw:h=ih:color=black:t=fill," if style.cover else "") + f"ass={ass_path}"
             command = [
                 "ffmpeg", "-nostdin", "-y", "-i", str(source),
-                "-vf", f"ass={ass_path}", "-map", "0:v:0", "-map", "0:a?",
+                "-vf", filters, "-map", "0:v:0", "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             ]
             tail = ["-movflags", "+faststart", str(partial)]

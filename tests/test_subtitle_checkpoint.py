@@ -10,6 +10,14 @@ import bot
 from subtitle_engine import SubtitleCue
 
 
+@pytest.fixture(autouse=True)
+def isolate_translation_stage(monkeypatch):
+    # Keep existing timing/checkpoint tests scoped to their original behavior.
+    async def legacy_translation(client, cues, previous):
+        return await app._translate_foreign_cues(client, cues)
+    monkeypatch.setattr(app, '_translate_source_cues', legacy_translation)
+
+
 def test_503_then_retry_resumes_completed_windows_without_duplicate(tmp_path):
     async def run():
         calls = []
