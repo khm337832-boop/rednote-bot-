@@ -168,3 +168,103 @@ def test_single_model_repairs_foreign_cue_after_invalid_mapping(tmp_path):
         assert result == [SubtitleCue(1, 2, 'မင်္ဂလာပါ')]
         assert len(calls) == 3
     asyncio.run(run())
+
+
+def test_camel_case_timing_fields():
+    data = {'cues': [{'startTime': '00:01.0', 'endTime': '00:02.0', 'text': 'မင်္ဂလာပါ'}]}
+    assert app.parse_model_cues(data, 60, 10) == [SubtitleCue(61, 62, 'မင်္ဂလာပါ')]
+
+
+def test_timing_repair_preserves_valid_cues_and_original_text():
+    source = {'cues': [
+        {'start': 0, 'end': 2, 'text': 'မင်္ဂလာပါ'},
+        {'start': 'unknown', 'end': None, 'text': 'ဘယ်သွားမလဲ'},
+        {'start': 5, 'end': 7, 'text': 'အိမ်ပြန်မယ်'},
+    ]}
+    items, bad = app._timing_repair_plan(source, 60, 10)
+    assert bad == [1]
+    repaired = app._apply_timing_repairs(items, bad, {'timings': [{'id': 1, 'start': 2.5, 'end': 4, 'text': 'မဖြစ်ရ'}]}, 60, 10)
+    assert repaired == [SubtitleCue(60, 62, 'မင်္ဂလာပါ'), SubtitleCue(62.5, 64, 'ဘယ်သွားမလဲ'), SubtitleCue(65, 67, 'အိမ်ပြန်မယ်')]
+
+
+@pytest.mark.parametrize('mapping', [
+    {'timings': []},
+    {'timings': [{'id': 1, 'start': 3, 'end': 20}]},
+    {'timings': [{'id': 1, 'start': 2, 'end': 1}]},
+    {'timings': [{'id': 1, 'start': 2, 'end': 3}, {'id': 1, 'start': 4, 'end': 5}]},
+    {'timings': [{'id': 0, 'start': 2, 'end': 3}]},
+])
+def test_timing_repair_never_accepts_incomplete_or_wrong_mappings(mapping):
+    items = [{'start': 0, 'end': 1, 'text': 'စာ'}, {'start': None, 'end': None, 'text': 'စာ'}]
+    with pytest.raises(ValueError):
+        app._apply_timing_repairs(items, [1], mapping, 0, 10)
+
+
+def test_no_timing_repair_without_a_full_candidate_or_text():
+    assert app._timing_repair_plan({'cues': []}, 0, 10) is None
+    assert app._timing_repair_plan({'cues': [{'start': None, 'end': None, 'text': ''}]}, 0, 10) is None
+    assert app._timing_repair_plan({'cues': [{'start': 1, 'end': 2, 'text': 'စာ'}]}, 0, 10) is None
+
+
+def test_single_model_invalid_timings_then_audio_grounded_repair(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        calls = []
+        def generate_content(model, contents, config):
+            calls.append((model, contents))
+            if len(calls) == 1:
+                data = {'cues': [{'start': 0, 'end': 1, 'text': 'ပထမ'}, {'start': 'unknown', 'end': None, 'text': 'ဒုတိယ'}]}
+            else:
+                data = {'timings': [{'id': 1, 'start': 2, 'end': 3}]}
+            return SimpleNamespace(text=json.dumps(data, ensure_ascii=False))
+        media = object()
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+        def extract(source, target, start, length):
+            target.write_bytes(b'audio')
+        with patch.object(app.bot, '_make_gemini_client', return_value=client), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(app.bot, '_upload_video_to_gemini', AsyncMock(return_value=media)), \
+             patch.object(app.bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(app.bot, 'send_text', AsyncMock()), \
+             patch.object(bot, 'PREFERRED_MODELS', ['only']), \
+             patch.object(bot, '_live_gemini_models', side_effect=lambda models: models):
+            result = await app.transcribe_translate('source', 10, str(tmp_path), 123)
+        assert result == [SubtitleCue(0, 1, 'ပထမ'), SubtitleCue(2, 3, 'ဒုတိယ')]
+        assert len(calls) >= 2
+        assert calls[1][1][0] is media
+    asyncio.run(run())
+
+
+def test_explicit_timestamp_pair_and_rounded_duration_checks():
+    data = {'cues': [{'timestamps': [1, 2], 'text': 'စာ'}]}
+    assert app.parse_model_cues(data, 0, 10) == [SubtitleCue(1, 2, 'စာ')]
+    with pytest.raises(ValueError):
+        app.parse_model_cues({'cues': [{'start': 1, 'end': 1.001, 'text': 'စာ'}]}, 0, 10)
+
+
+def test_failed_timing_repair_is_not_delivered(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        def generate_content(model, contents, config):
+            if 'timings' in contents[1]:
+                data = {'timings': [{'id': 0, 'start': 20, 'end': 21}]}
+            else:
+                data = {'cues': [{'start': None, 'end': None, 'text': 'စာ'}]}
+            return SimpleNamespace(text=json.dumps(data, ensure_ascii=False))
+        media = object()
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+        def extract(source, target, start, length):
+            target.write_bytes(b'audio')
+        with patch.object(app.bot, '_make_gemini_client', return_value=client), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(app.bot, '_upload_video_to_gemini', AsyncMock(return_value=media)), \
+             patch.object(app.bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(app.bot, 'send_text', AsyncMock()), \
+             patch.object(bot, 'PREFERRED_MODELS', ['only']), \
+             patch.object(bot, '_live_gemini_models', side_effect=lambda models: models):
+            with pytest.raises(RuntimeError):
+                await app.transcribe_translate('source', 10, str(tmp_path), 123)
+        assert app.LAST_TIMING_REPAIR['status'] == 'failed'
+        assert app.LAST_TIMING_REPAIR['invalid_cues'] == 1
+        assert not list(tmp_path.iterdir())
+    asyncio.run(run())
