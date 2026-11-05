@@ -268,3 +268,123 @@ def test_failed_timing_repair_is_not_delivered(tmp_path):
         assert app.LAST_TIMING_REPAIR['invalid_cues'] == 1
         assert not list(tmp_path.iterdir())
     asyncio.run(run())
+
+
+def test_unrepairable_response_splits_audio_and_keeps_both_halves(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        extracted = []
+        async def upload(client, path):
+            return json.loads(__import__('pathlib').Path(path).read_text())
+        def extract(source, path, start, length):
+            extracted.append((start, length))
+            path.write_text(json.dumps({'start': start, 'length': length}))
+        async def generate(client, contents, **kwargs):
+            audio = contents[0]
+            if audio['length'] == 60:
+                # Timing is invalid and text is missing: v1.4's targeted
+                # repair cannot form a plan from this candidate.
+                data = {'cues': [{'start': None, 'end': None, 'text': ''}]}
+            else:
+                data = {'cues': [{'start': 1, 'end': 3, 'text': 'စာတန်း'}]}
+            try:
+                kwargs['validator'](data)
+            except ValueError as exc:
+                raise RuntimeError('invalid response') from exc
+            return data
+        with patch.object(bot, '_make_gemini_client', return_value=object()), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(bot, '_upload_video_to_gemini', side_effect=upload), \
+             patch.object(bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(bot, '_generate_direct_gemini_json', side_effect=generate), \
+             patch.object(bot, 'send_text', AsyncMock()):
+            result = await app.transcribe_translate('source', 60, str(tmp_path), 123)
+        assert extracted == [(0, 60), (0, 30), (30, 30)]
+        assert result == [SubtitleCue(1, 3, 'စာတန်း'), SubtitleCue(31, 33, 'စာတန်း')]
+        assert app.LAST_TIMING_REPAIR['status'] == 'recovered_by_split'
+        assert not list(tmp_path.iterdir())
+    asyncio.run(run())
+
+
+def test_provider_failure_without_invalid_response_does_not_split(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        extracted = []
+        def extract(source, path, start, length):
+            extracted.append((start, length))
+            path.write_bytes(b'audio')
+        with patch.object(bot, '_make_gemini_client', return_value=object()), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(bot, '_upload_video_to_gemini', AsyncMock(return_value=object())), \
+             patch.object(bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(bot, '_generate_direct_gemini_json', AsyncMock(side_effect=RuntimeError('provider unavailable'))):
+            with pytest.raises(RuntimeError, match='provider unavailable'):
+                await app.transcribe_translate('source', 60, str(tmp_path), 123)
+        assert extracted == [(0, 60)]
+        assert not list(tmp_path.iterdir())
+    asyncio.run(run())
+
+
+def test_no_partial_output_if_second_split_cannot_be_repaired(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        async def upload(client, path):
+            return json.loads(__import__('pathlib').Path(path).read_text())
+        def extract(source, path, start, length):
+            path.write_text(json.dumps({'start': start, 'length': length}))
+        async def generate(client, contents, **kwargs):
+            audio = contents[0]
+            data = ({'cues': [{'start': None, 'end': None, 'text': ''}]}
+                    if audio['length'] == 60 or audio['start'] >= 30 else
+                    {'cues': [{'start': 1, 'end': 3, 'text': 'စာတန်း'}]})
+            try:
+                kwargs['validator'](data)
+            except ValueError as exc:
+                raise RuntimeError('invalid response') from exc
+            return data
+        with patch.object(bot, '_make_gemini_client', return_value=object()), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(bot, '_upload_video_to_gemini', side_effect=upload), \
+             patch.object(bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(bot, '_generate_direct_gemini_json', side_effect=generate), \
+             patch.object(bot, 'send_text', AsyncMock()):
+            with pytest.raises(RuntimeError):
+                await app.transcribe_translate('source', 60, str(tmp_path), 123)
+        assert app.LAST_TIMING_REPAIR['status'] == 'failed'
+        assert not list(tmp_path.iterdir())
+    asyncio.run(run())
+
+
+def test_failed_targeted_timing_repair_falls_back_to_shorter_audio(tmp_path):
+    from unittest.mock import AsyncMock
+    async def run():
+        extracted = []
+        def extract(source, path, start, length):
+            extracted.append((start, length))
+            path.write_text(json.dumps({'start': start, 'length': length}))
+        async def upload(client, path):
+            return json.loads(__import__('pathlib').Path(path).read_text())
+        async def generate(client, contents, **kwargs):
+            audio = contents[0]
+            if kwargs['purpose'] == 'subtitle timing repair':
+                data = {'timings': []}
+            elif audio['length'] == 60:
+                data = {'cues': [{'start': None, 'end': None, 'text': 'စာတန်း'}]}
+            else:
+                data = {'cues': [{'start': 1, 'end': 3, 'text': 'စာတန်း'}]}
+            try:
+                kwargs['validator'](data)
+            except ValueError as exc:
+                raise RuntimeError('invalid response') from exc
+            return data
+        with patch.object(bot, '_make_gemini_client', return_value=object()), \
+             patch.object(app, 'extract_audio', side_effect=extract), \
+             patch.object(bot, '_upload_video_to_gemini', side_effect=upload), \
+             patch.object(bot, '_delete_gemini_file', AsyncMock()), \
+             patch.object(bot, '_generate_direct_gemini_json', side_effect=generate), \
+             patch.object(bot, 'send_text', AsyncMock()):
+            result = await app.transcribe_translate('source', 60, str(tmp_path), 123)
+        assert extracted == [(0, 60), (0, 30), (30, 30)]
+        assert result == [SubtitleCue(1, 3, 'စာတန်း'), SubtitleCue(31, 33, 'စာတန်း')]
+        assert app.LAST_TIMING_REPAIR['status'] == 'recovered_by_split'
+    asyncio.run(run())

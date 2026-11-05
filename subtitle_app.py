@@ -27,7 +27,7 @@ UPLOAD_SESSIONS = {}
 ACTIVE = set()
 SEEN_UPDATES = {}
 TTL = 24 * 3600
-VERSION = 'subtitle-v1.4-timing-repair'
+VERSION = 'subtitle-v1.5-timing-split-retry'
 WEBHOOK_READY = False
 LAST_TIMING_REPAIR = {}
 EDITOR = Path(__file__).with_name('subtitle_editor.html')
@@ -339,29 +339,38 @@ async def transcribe_translate(source, duration, directory, chat):
     cues = []
     chunk_seconds = 60
     count = math.ceil(duration / chunk_seconds)
-    for index in range(count):
-        start = index * chunk_seconds
-        length = min(chunk_seconds, duration - start)
-        audio = Path(directory) / f'audio-{index}.mp3'
-        await asyncio.to_thread(extract_audio, source, audio, start, length)
+
+    async def process_chunk(start, length, previous, depth=0):
+        # Bound the recovery work to a 60s chunk split into at most four
+        # 15s windows. Do not interpolate timestamps or discard failed cues.
+        audio = Path(directory) / f'audio-{round(start * 1000)}-{depth}.mp3'
         uploaded = None
+        validation_failures = []
+        timing_candidates = []
+        must_split = False
         try:
+            await asyncio.to_thread(extract_audio, source, audio, start, length)
             uploaded = await bot._upload_video_to_gemini(client, str(audio))
             prompt = ('Listen to the complete audio carefully. Transcribe and translate every audible spoken line into natural, clear Burmese subtitles, not a summary. '
                       'Preserve meaning, names and dialogue; do not invent content. Use Burmese script for names where possible. '
                       f'Return JSON only: {{"cues":[{{"start":0.0,"end":2.0,"text":"မြန်မာစာ"}}]}}. '
-                      f'Timestamps are seconds relative to this audio chunk, from 0 to {length:.3f}; use short readable cues synchronized to speech. '
-                      'Only when this audio contains no speech, return {\"cues\":[],\"silence\":true}. Never omit audible dialogue intentionally.')
-            if cues:
-                previous = [c.text for c in cues[-6:]]
+                      f'Timestamps are numeric seconds relative to this audio chunk, from 0 to {length:.3f}. '
+                      'Every cue must have numeric start and end, start strictly less than end, and nonempty text; never use null or placeholder timestamps. '
+                      'Use short readable cues synchronized to speech. '
+                      'Only when this audio contains no speech, return {"cues":[],"silence":true}. Never omit audible dialogue intentionally.')
+            if previous:
                 prompt += (' Previous subtitle context for consistent names only; do not repeat these lines unless heard in this audio: '
-                           + json.dumps(previous, ensure_ascii=False))
-            timing_candidates = []
+                           + json.dumps([c.text for c in previous[-6:]], ensure_ascii=False))
 
             def validate_timed_candidate(candidate):
                 try:
                     return parse_model_cues(candidate, start, length, require_burmese=False)
-                except ValueError:
+                except ValueError as exc:
+                    # Diagnostics deliberately contain no video, subtitle text or timestamps.
+                    reason = str(exc)
+                    category = ('timing' if 'timing' in reason else
+                                'empty' if 'Empty' in reason else 'schema_or_text')
+                    validation_failures.append(category)
                     try:
                         plan = _timing_repair_plan(candidate, start, length)
                     except ValueError:
@@ -378,27 +387,53 @@ async def transcribe_translate(source, duration, directory, chat):
                 )
                 chunk_cues = parse_model_cues(data, start, length, require_burmese=False)
             except RuntimeError:
-                if not timing_candidates:
+                if not validation_failures:
+                    # Quota, provider and network failures are not corrected by
+                    # dividing audio; preserve the original actionable error.
                     raise
-                # Prefer the candidate with the fewest broken timings; all
-                # other cues and text must survive the repair unchanged.
-                items, bad = min(timing_candidates, key=lambda plan: len(plan[1]) / len(plan[0]))
                 LAST_TIMING_REPAIR.clear()
-                LAST_TIMING_REPAIR.update({'candidate_cues': len(items), 'invalid_cues': len(bad), 'status': 'attempted'})
-                await bot.send_text(chat, '⏱️ စာတန်းအချိန် မမှန်သောနေရာများကို အသံနှင့် ပြန်စစ်နေပါသည်။')
-                try:
-                    chunk_cues = await _repair_cue_timings(client, uploaded, items, bad, start, length)
-                except Exception:
-                    LAST_TIMING_REPAIR['status'] = 'failed'
-                    raise
-                LAST_TIMING_REPAIR['status'] = 'repaired'
-            if any(not _has_myanmar_text(cue.text) for cue in chunk_cues):
-                await bot.send_text(chat, '🔤 မြန်မာစာမဖြစ်သေးသော စာတန်းများကို ပြန်ဘာသာပြန်နေပါသည်။')
-                chunk_cues = await _translate_foreign_cues(client, chunk_cues)
-            cues.extend(chunk_cues)
+                LAST_TIMING_REPAIR.update({'status': 'validation_failed', 'depth': depth,
+                                           'reasons': sorted(set(validation_failures)),
+                                           'repairable_candidates': len(timing_candidates)})
+                if timing_candidates:
+                    items, bad = min(timing_candidates, key=lambda plan: len(plan[1]) / len(plan[0]))
+                    LAST_TIMING_REPAIR.update({'candidate_cues': len(items), 'invalid_cues': len(bad), 'status': 'attempted'})
+                    await bot.send_text(chat, '⏱️ စာတန်းအချိန် မမှန်သောနေရာများကို အသံနှင့် ပြန်စစ်နေပါသည်။')
+                    try:
+                        chunk_cues = await _repair_cue_timings(client, uploaded, items, bad, start, length)
+                    except RuntimeError:
+                        LAST_TIMING_REPAIR['status'] = 'failed'
+                        must_split = True
+                    else:
+                        LAST_TIMING_REPAIR['status'] = 'repaired'
+                else:
+                    must_split = True
+            if not must_split:
+                if any(not _has_myanmar_text(cue.text) for cue in chunk_cues):
+                    await bot.send_text(chat, '🔤 မြန်မာစာမဖြစ်သေးသော စာတန်းများကို ပြန်ဘာသာပြန်နေပါသည်။')
+                    chunk_cues = await _translate_foreign_cues(client, chunk_cues)
+                return chunk_cues
         finally:
             await bot._delete_gemini_file(client, uploaded)
             audio.unlink(missing_ok=True)
+
+        if depth >= 2 or length <= 15.0:
+            LAST_TIMING_REPAIR['status'] = 'failed'
+            raise RuntimeError('စာတန်းအချိန်ကို အသံနှင့် ကိုက်ညီအောင် မပြင်နိုင်ပါ။ ပြန်ကြိုးစားပါ။')
+        LAST_TIMING_REPAIR.update({'status': 'splitting', 'depth': depth})
+        await bot.send_text(chat, '⏱️ အချိန်မမှန်သေးသော အသံပိုင်းကို ပိုတိုအောင်ခွဲပြီး ပြန်စစ်နေပါသည်။')
+        left_length = length / 2.0
+        left = await process_chunk(start, left_length, previous, depth + 1)
+        right = await process_chunk(start + left_length, length - left_length, previous + left, depth + 1)
+        LAST_TIMING_REPAIR.update({'status': 'recovered_by_split', 'depth': depth})
+        return left + right
+
+    for index in range(count):
+        start = index * chunk_seconds
+        length = min(chunk_seconds, duration - start)
+        # Only append a window once both halves, if needed, have succeeded.
+        chunk_cues = await process_chunk(start, length, cues)
+        cues.extend(chunk_cues)
         if count > 1:
             await bot.send_text(chat, f'ဘာသာပြန်နေပါသည် ({index + 1}/{count})')
     if not cues:
