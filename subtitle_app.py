@@ -24,15 +24,17 @@ from subtitle_engine import SubtitleCue, SubtitleStyle, burn_subtitles, make_ass
 log = logging.getLogger('subtitle-bot')
 SESSIONS = {}
 UPLOAD_SESSIONS = {}
+RETRY_JOBS = {}  # per-chat paused provider failures; never a background queue
 ACTIVE = set()
 SEEN_UPDATES = {}
 TTL = 24 * 3600
-VERSION = 'subtitle-v1.5-timing-split-retry'
+VERSION = 'subtitle-v1.6-provider-retry-checkpoint'
 WEBHOOK_READY = False
 LAST_TIMING_REPAIR = {}
 EDITOR = Path(__file__).with_name('subtitle_editor.html')
 UPLOADER = Path(__file__).with_name('subtitle_upload.html')
 UPLOAD_TTL = 3600
+RETRY_TTL = 2 * 3600
 # Leave room for preview, final rendering, and other running processes.
 UPLOAD_DISK_RESERVE = 512 * 1024 * 1024
 
@@ -68,6 +70,10 @@ def clean_expired():
             if session.get('directory') and not session.get('used'):
                 shutil.rmtree(session['directory'], ignore_errors=True)
                 ACTIVE.discard(session['chat'])
+    for chat, job in list(RETRY_JOBS.items()):
+        if time.time() - job['created'] > RETRY_TTL and chat not in ACTIVE:
+            RETRY_JOBS.pop(chat, None)
+            shutil.rmtree(job['directory'], ignore_errors=True)
 
 
 async def send_upload_link(chat, reply=None):
@@ -334,11 +340,54 @@ def extract_audio(source, target, start, length):
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=600)
 
 
-async def transcribe_translate(source, duration, directory, chat):
+def _load_subtitle_checkpoint(directory, duration, chunk_seconds):
+    path = Path(directory) / 'subtitle-checkpoint.json'
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        windows = data['windows']
+        if (data['version'] != 1 or abs(float(data['duration']) - duration) > 0.001
+                or data['chunk_seconds'] != chunk_seconds or not isinstance(windows, list)
+                or len(windows) > math.ceil(duration / chunk_seconds)):
+            raise ValueError('Checkpoint metadata mismatch')
+        validated = []
+        for index, window in enumerate(windows):
+            if not isinstance(window, list):
+                raise ValueError('Invalid checkpoint window')
+            start = index * chunk_seconds
+            length = min(chunk_seconds, duration - start)
+            parsed = parse_model_cues({'cues': window, 'silence': not window}, start, length)
+            validated.append(parsed)
+        return validated
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, json.JSONDecodeError) as exc:
+        raise ValueError('Saved subtitle progress is invalid; send the video again') from exc
+
+
+def _save_subtitle_checkpoint(directory, duration, chunk_seconds, windows):
+    path = Path(directory) / 'subtitle-checkpoint.json'
+    partial = path.with_suffix('.tmp')
+    payload = {'version': 1, 'duration': duration, 'chunk_seconds': chunk_seconds, 'windows': []}
+    for index, window in enumerate(windows):
+        start = index * chunk_seconds
+        payload['windows'].append([{'start': round(c.start - start, 3),
+                                    'end': round(c.end - start, 3), 'text': c.text}
+                                   for c in window])
+    try:
+        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as file:
+            json.dump(payload, file, ensure_ascii=False)
+        os.replace(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+async def transcribe_translate(source, duration, directory, chat, checkpoint=False):
     client = bot._make_gemini_client()
-    cues = []
     chunk_seconds = 60
     count = math.ceil(duration / chunk_seconds)
+    windows = _load_subtitle_checkpoint(directory, duration, chunk_seconds) if checkpoint else []
+    cues = [cue for window in windows for cue in window]
 
     async def process_chunk(start, length, previous, depth=0):
         # Bound the recovery work to a 60s chunk split into at most four
@@ -428,11 +477,14 @@ async def transcribe_translate(source, duration, directory, chat):
         LAST_TIMING_REPAIR.update({'status': 'recovered_by_split', 'depth': depth})
         return left + right
 
-    for index in range(count):
+    for index in range(len(windows), count):
         start = index * chunk_seconds
         length = min(chunk_seconds, duration - start)
-        # Only append a window once both halves, if needed, have succeeded.
+        # Only checkpoint a window once both halves, if needed, succeeded.
         chunk_cues = await process_chunk(start, length, cues)
+        windows.append(chunk_cues)
+        if checkpoint:
+            _save_subtitle_checkpoint(directory, duration, chunk_seconds, windows)
         cues.extend(chunk_cues)
         if count > 1:
             await bot.send_text(chat, f'ဘာသာပြန်နေပါသည် ({index + 1}/{count})')
@@ -450,7 +502,11 @@ async def create_job(chat, reply, attachment, url, *, uploaded_dir=None):
             return
         ACTIVE.add(chat)
     directory = uploaded_dir or tempfile.mkdtemp(prefix='subtitle-job-')
+    old_retry = RETRY_JOBS.pop(chat, None)
+    if old_retry and old_retry['directory'] != directory:
+        shutil.rmtree(old_retry['directory'], ignore_errors=True)
     kept = False
+    phase = 'source'
     try:
         clean_expired()
         await bot.send_text(chat, '🎬 Video ကို စစ်ပြီး မြန်မာစာတန်း ဘာသာပြန်နေပါသည်။', reply_to=reply)
@@ -469,7 +525,9 @@ async def create_job(chat, reply, attachment, url, *, uploaded_dir=None):
         else:
             await bot.download_full(url, source, raise_on_error=True)
         duration, width, height = await asyncio.to_thread(ffprobe, source)
-        cues = await transcribe_translate(source, duration, directory, chat)
+        phase = 'translation'
+        cues = await transcribe_translate(source, duration, directory, chat, True)
+        phase = 'preview'
         await bot.send_text(chat, '🖼️ Browser preview ပြုလုပ်နေပါသည်။')
         preview = str(Path(directory) / 'preview.mp4')
         await asyncio.to_thread(make_preview, source, preview)
@@ -488,7 +546,21 @@ async def create_job(chat, reply, attachment, url, *, uploaded_dir=None):
         kept = True
     except Exception as exc:
         log.exception('Subtitle preparation failed')
-        await bot.send_text(chat, '❌ စာတန်းပြင်ဆင်၍ မရပါ: ' + bot._user_error_text(exc), reply_to=reply)
+        if phase == 'translation' and bot._gemini_error_is_overload(exc) and os.path.isfile(source):
+            # No queue and no fabricated subtitles. Keep the original and
+            # fully validated windows for an explicit, per-chat retry.
+            RETRY_JOBS[chat] = {'created': time.time(), 'directory': directory, 'reply': reply}
+            kept = True
+            await bot.send_text(
+                chat,
+                '⚠️ အခမဲ့ Gemini model လက်ရှိ အလုပ်များနေခြင်း သို့မဟုတ် quota ကန့်သတ်ခြင်းကြောင့် ရပ်သွားပါသည်။ '
+                'Video နှင့် ပြီးပြီးသား စာတန်းအပိုင်းများကို ယာယီသိမ်းထားပါသည်။ '
+                'နောက်မှ /retry ပို့လျှင် မပြီးသေးသောအပိုင်းမှ ပြန်စမ်းပါမည်။ '
+                'အလိုအလျောက် စောင့်တန်းမထားပါ။ ၂ နာရီအတွင်းသာ ရပြီး server restart ဖြစ်လျှင် ပျောက်နိုင်ပါသည်။',
+                reply_to=reply,
+            )
+        else:
+            await bot.send_text(chat, '❌ စာတန်းပြင်ဆင်၍ မရပါ: ' + bot._user_error_text(exc), reply_to=reply)
     finally:
         ACTIVE.discard(chat)
         if not kept:
@@ -542,7 +614,9 @@ async def lifespan(app):
         secret = bot._telegram_webhook_secret()
         commands = await bot.tg_api('setMyCommands', {'commands': [
             {'command':'start', 'description':'မြန်မာစာတန်းထိုးရန်'},
-            {'command':'upload', 'description':'Video ဖိုင်ကြီး browser မှ တင်ရန်'}]}, timeout=15)
+            {'command':'upload', 'description':'Video ဖိုင်ကြီး browser မှ တင်ရန်'},
+            {'command':'retry', 'description':'ယာယီရပ်ထားသော video ကို ပြန်စမ်းရန်'},
+            {'command':'cancel', 'description':'သိမ်းထားသော retry video ကို ဖျက်ရန်'}]}, timeout=15)
         result = await bot.tg_api('setWebhook', {'url': bot.PUBLIC_BASE_URL.rstrip('/') + '/webhook', 'secret_token': secret, 'allowed_updates':['message']}, timeout=15)
         WEBHOOK_READY = bool(result.get('ok'))
         if not commands.get('ok') or not WEBHOOK_READY:
@@ -557,6 +631,9 @@ async def lifespan(app):
         for session in UPLOAD_SESSIONS.values():
             if session.get('directory') and not session.get('used'):
                 shutil.rmtree(session['directory'], ignore_errors=True)
+        for job in RETRY_JOBS.values():
+            shutil.rmtree(job['directory'], ignore_errors=True)
+        RETRY_JOBS.clear()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -565,7 +642,7 @@ app = FastAPI(lifespan=lifespan)
 @app.get('/health')
 @app.get('/healthz')
 async def health():
-    return {'ok': True, 'version': VERSION, 'render_git_commit': os.getenv('RENDER_GIT_COMMIT', ''), 'telegram_webhook_ready': WEBHOOK_READY, 'active_jobs': len(ACTIVE), 'last_timing_repair': dict(LAST_TIMING_REPAIR)}
+    return {'ok': True, 'version': VERSION, 'render_git_commit': os.getenv('RENDER_GIT_COMMIT', ''), 'telegram_webhook_ready': WEBHOOK_READY, 'active_jobs': len(ACTIVE), 'paused_retry_jobs': len(RETRY_JOBS), 'last_timing_repair': dict(LAST_TIMING_REPAIR)}
 
 
 @app.get('/upload')
@@ -778,7 +855,28 @@ async def process_update(update):
     attachment = bot._telegram_video_attachment(msg)
     url = bot._extract_first_url(text)
     command = text.split()[0].split('@')[0].lower() if text else ''
-    if command == '/upload':
+    if command == '/retry':
+        clean_expired()
+        if chat in ACTIVE:
+            await bot.send_text(chat, 'လက်ရှိ video တစ်ခု လုပ်နေပါသည်။ ပြီးမှ ထပ်စမ်းပါ။')
+            return
+        job = RETRY_JOBS.pop(chat, None)
+        if not job:
+            await bot.send_text(chat, 'ပြန်စမ်းရန် သိမ်းထားသော video မရှိပါ။ Video သို့မဟုတ် link ကို ပြန်ပို့ပါ။')
+            return
+        ACTIVE.add(chat)
+        await create_job(chat, msg.get('message_id'), None, '', uploaded_dir=job['directory'])
+    elif command == '/cancel':
+        if chat in ACTIVE:
+            await bot.send_text(chat, 'လက်ရှိ လုပ်နေသောအလုပ်ကို ဤ command ဖြင့် မရပ်နိုင်ပါ။')
+            return
+        job = RETRY_JOBS.pop(chat, None)
+        if job:
+            shutil.rmtree(job['directory'], ignore_errors=True)
+            await bot.send_text(chat, '🗑️ ယာယီသိမ်းထားသော video နှင့် စာတန်းအပိုင်းများကို ဖျက်ပြီးပါပြီ။')
+        else:
+            await bot.send_text(chat, 'ဖျက်ရန် သိမ်းထားသော retry video မရှိပါ။')
+    elif command == '/upload':
         await send_upload_link(chat, msg.get('message_id'))
     elif attachment and attachment.get('file_size', 0) > bot.TELEGRAM_BOT_FILE_DOWNLOAD_LIMIT_BYTES:
         await send_upload_link(chat, msg.get('message_id'))
