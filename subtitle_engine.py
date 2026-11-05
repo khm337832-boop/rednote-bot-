@@ -98,12 +98,21 @@ def burn_subtitles(source: str, output: str, cues: list[SubtitleCue], width: int
         ass_path.write_text(ass, encoding="utf-8")
         partial = out.parent / ("." + out.stem + ".partial.mp4")
         try:
-            subprocess.run([
+            command = [
                 "ffmpeg", "-nostdin", "-y", "-i", str(source),
                 "-vf", f"ass={ass_path}", "-map", "0:v:0", "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-c:a", "copy", "-movflags", "+faststart", str(partial),
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            ]
+            tail = ["-movflags", "+faststart", str(partial)]
+            try:
+                subprocess.run(command + ["-c:a", "copy"] + tail,
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError:
+                # Some source audio codecs cannot be muxed into MP4. Keep
+                # the original sound, transcoding only when copy fails.
+                partial.unlink(missing_ok=True)
+                subprocess.run(command + ["-c:a", "aac", "-b:a", "192k"] + tail,
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             os.replace(partial, out)
         finally:
             partial.unlink(missing_ok=True)
