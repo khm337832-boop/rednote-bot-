@@ -4863,6 +4863,8 @@ async def _generate_direct_gemini_json(
     attempts_per_model: int = 1,
     max_output_tokens: int = 8192,
     plain_text: bool = False,
+    validator=None,
+    strict_json: bool = False,
 ):
     """Generate JSON with model fallback instead of silently using no scenes.
 
@@ -5074,9 +5076,20 @@ async def _generate_direct_gemini_json(
                                 f"Gemini returned empty text{detail}"
                             )
                         if plain_text:
-                            winner = str(raw).strip()
+                            candidate = str(raw).strip()
+                        elif strict_json:
+                            if "MAX_TOKENS" in diagnostics.upper():
+                                raise ValueError("Gemini response was truncated")
+                            text = str(raw).strip()
+                            if text.startswith("```"):
+                                text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+                                text = re.sub(r"\s*```$", "", text).strip()
+                            candidate = json.loads(text)
                         else:
-                            winner = _parse_gemini_json_text(raw)
+                            candidate = _parse_gemini_json_text(raw)
+                        if validator is not None:
+                            validator(candidate)
+                        winner = candidate
                     except Exception as e:
                         last_error = f"{model}: {_safe_error_text(e, 700)}"
                         logger.warning(

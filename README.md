@@ -2,6 +2,8 @@
 
 This branch replaces the active recap workflow with a Telegram subtitle workflow. Send a video or supported video link in a **private** chat. The bot downloads the source, uses Gemini to listen to short chronological audio windows and translate speech into timed Burmese captions, and sends a private editor link. In the browser, play the video, drag the caption, adjust its size, and correct any caption text or timestamps. Choose **Final video ပို့ရန်** to burn the captions into the original video and deliver all parts on Telegram. Original audio remains; if its codec cannot be copied into MP4 it is converted to AAC, not replaced with narration.
 
+Version `subtitle-v1.2-timed-cue-repair` validates timed subtitle responses before selecting a model answer. Known JSON envelopes and timestamp formats are supported; malformed, truncated, non-Burmese or ambiguous empty responses are rejected so another model can be tried. An empty chunk is accepted only when the model explicitly reports silence. This cannot independently verify that every line was transcribed; review the editor before export.
+
 The AI translation and timing are not guaranteed accurate: check the preview and edit mistakes before rendering. The browser preview approximates the final font layout and may differ slightly. Source video and editor sessions are held temporarily on the server; sessions expire after at most 24 hours and are lost on restart/deployment. Do not share the editor link. Gemini free-tier availability, quota, and supported models are controlled by Google; if unavailable the job fails rather than delivering an untranslated video. No paid service is required by this code, but a configured Gemini key must have access to a free tier.
 
 ## Limits
