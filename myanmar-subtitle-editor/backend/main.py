@@ -44,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config as cfg
 from . import project_manager as pm
 from . import subtitle_generator as sg
+from . import translation as tr
 from . import video_renderer as vr
 
 APP_VERSION = "1.0.0"
@@ -182,6 +183,10 @@ PUBLIC_PATHS = {"/", "/editor", "/healthz", "/favicon.svg", "/api/docs", "/opena
 async def auth_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
     settings = cfg.get_settings()
     if not settings.access_password:
+        # A public Render deployment must never silently become a public
+        # file/project API when its private password is missing.
+        if os.environ.get("RENDER") and request.url.path.startswith("/api/"):
+            return JSONResponse(status_code=503, content={"detail": "Private editor access is not configured"})
         return await call_next(request)
     path = request.url.path
     if path in PUBLIC_PATHS or path.startswith(("/static/", "/api/auth/", "/api/docs")):
@@ -882,12 +887,21 @@ def transcribe(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             JOBS.progress(current, 1.0, "သရုပ်ပြ စာတန်း ဖန်တီးပြီးပါပြီ")
             result["demo"] = True
             return result
-        return sg.transcribe_video(
+        result = sg.transcribe_video(
             str(path),
             settings,
             duration=float(record.get("duration") or 0.0),
-            progress=lambda fraction, stage: JOBS.progress(current, fraction, stage),
+            progress=lambda fraction, stage: JOBS.progress(
+                current, (fraction * 0.85) if fraction is not None else None, stage
+            ),
         )
+        JOBS.progress(current, 0.9, "မြန်မာဘာသာသို့ ပြန်နေသည်...")
+        result["segments"] = tr.translate_segments(
+            result["segments"], str(result.get("language") or "")
+        )
+        result["translated_to"] = "my"
+        JOBS.progress(current, 1.0, "ပြီးစီးပါပြီ")
+        return result
 
     JOBS.submit(job, run)
     return {"job_id": job.id, "status": "queued"}

@@ -270,3 +270,32 @@ def test_password_protection(monkeypatch):
         assert guarded.get("/api/project/list").status_code == 200
         # pages stay reachable so the login overlay can render
         assert guarded.get("/").status_code == 200
+
+
+def test_transcribe_job_translates_and_keeps_timing(client, uploaded_video, monkeypatch):
+    from backend import main
+    monkeypatch.setattr(main.cfg, 'whisper_available', lambda settings: (True, ''))
+    monkeypatch.setattr(main.sg, 'transcribe_video', lambda *a, **k: {
+        'language': 'en', 'segments': [
+            {'start': 0.2, 'end': 1.6, 'speech_end': 1.0, 'text': 'hello'},
+            {'start': 1.6, 'end': 2.9, 'speech_end': 2.0, 'text': 'today'},
+        ], 'words': [], 'duration': 3.0,
+    })
+    monkeypatch.setattr(main.tr, 'translate_segments', lambda items, lang: [
+        {**item, 'text': text} for item, text in zip(items, ['မင်္ဂလာပါ', 'ဒီနေ့'])
+    ])
+    result = client.post('/api/transcribe', json={'video_id': uploaded_video['id']})
+    assert result.status_code == 200
+    job = wait_for_job(client, result.json()['job_id'])
+    assert job['status'] == 'done'
+    assert job['result']['translated_to'] == 'my'
+    assert [(s['start'], s['end']) for s in job['result']['segments']] == [(0.2, 1.6), (1.6, 2.9)]
+    assert job['result']['segments'][0]['text'] == 'မင်္ဂလာပါ'
+
+
+def test_render_deployment_without_private_password_fails_closed(client, monkeypatch):
+    monkeypatch.setenv('RENDER', 'true')
+    monkeypatch.setattr(cfg.get_settings(), 'access_password', '')
+    assert client.get('/api/project/list').status_code == 503
+    assert client.get('/api/auth/status').status_code == 503
+    assert client.get('/healthz').status_code == 200

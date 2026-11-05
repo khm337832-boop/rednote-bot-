@@ -669,7 +669,7 @@ def transcribe_video(
         report(0.05, "အသံဖိုင် ဖတ်နေသည်...")
         segments_iter, info = model.transcribe(
             video_path,
-            language=settings.language,
+            language=settings.language or None,
             beam_size=int(settings.beam_size),
             vad_filter=bool(settings.vad_filter),
             word_timestamps=True,
@@ -712,7 +712,7 @@ def transcribe_video(
         report(0.2, "စကားပြောများ ဖတ်နေသည်...")
         result = model.transcribe(
             video_path,
-            language=settings.language,
+            language=settings.language or None,
             task="transcribe",
             word_timestamps=True,
             condition_on_previous_text=False,
