@@ -1,72 +1,23 @@
-# Render Blueprint — ဒီ repo ကို ဒီအတိုင်း deploy လုပ်ရန် သတ်မှတ်ချက်။
-# Service အသစ်ဆောက်ရင် (သို့) repo ပြန်ချိတ်ရင် ဒီ setting တွေ အတိအကျ ရပါမယ်။
 services:
   - type: web
     name: rednote-bot
     runtime: docker
     plan: free
-    branch: main            # ⬅️ အမြဲ main branch (code အသစ် ရှိတဲ့ နေရာ)
-    autoDeploy: true        # ⬅️ main ထဲ push/merge တိုင်း အလိုအလျောက် deploy
+    branch: main
+    autoDeploy: true
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
       - key: BOT_TOKEN
-        sync: false         # Render dashboard မှာ ကိုယ်တိုင် ထည့်ရမယ့် secret
-      # Optional: Telegram webhook secret token.  When unset the bot
-      # derives one from BOT_TOKEN automatically, so the webhook is
-      # authenticated either way; set this only to override/rotate it.
-      - key: TELEGRAM_WEBHOOK_SECRET
         sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: ADMIN_ID
         sync: false
-      # Default Telegram UX (one-shot auto): the user sends one video/link,
-      # the bot downloads the full source, processes it internally in
-      # fixed 2-minute windows in order, joins everything, verifies the
-      # final duration, and sends the finished final video automatically.
-      # The retired click-each-part manual flow needs BOTH RECAP_FLOW=manual
-      # and ENABLE_MANUAL_FLOW=1; do not set them for normal use.
-      - key: RECAP_FLOW
-        value: auto
-      - key: ENABLE_MANUAL_FLOW
-        value: "0"
-      - key: N8N_TELEGRAM_HANDOFF
-        value: "0"
-      - key: AUTO_SEGMENT_ATTEMPTS
-        value: "3"
-      - key: AUTO_SOURCE_ATTEMPTS
-        value: "2"
-      - key: MANUAL_SESSION_TTL_HOURS
-        value: "24"
-      # Optional RedNote/Xiaohongshu access.  Never paste these values in
-      # chat; set them only in Render Environment/Secret Files if a public
-      # link is blocked and needs a browser cookie.
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      # Optional: existing downloader settings for restricted source sites.
       - key: XHS_COOKIE
         sync: false
       - key: YTDLP_COOKIES_FILE
         sync: false
-      # --- Optional n8n orchestration ---------------------------------
-      # မထည့်ရင် PIPELINE_MODE မရှိတဲ့အတွက် direct bot flow ပဲ သုံးမယ်။
-      # n8n ကို အပြည့်အဝစစ်ပြီးမှသာ PIPELINE_MODE=n8n ပြောင်းပါ။
-      - key: PIPELINE_MODE
-        value: direct
-      - key: N8N_WEBHOOK_URL
-        sync: false         # Activated n8n production webhook URL
-      - key: N8N_WEBHOOK_SECRET
-        sync: false         # n8n ဘက်က N8N_WEBHOOK_SECRET နဲ့ အတူတူထားပါ
-      - key: WORKER_API_KEY
-        sync: false         # n8n HTTP node တွေက X-Worker-Key အဖြစ် ပို့မယ့်လျှို့ဝှက်ကုဒ်
-      # Whisper (OpenAI-compatible API) — WHISPER_API_KEY မရှိရင်
-      # OPENAI_API_KEY ကို fallback အဖြစ် သုံးပါတယ်။
-      - key: WHISPER_API_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: WHISPER_API_BASE
-        value: https://api.openai.com/v1
-      - key: WHISPER_MODEL
-        value: whisper-1
-      - key: WHISPER_CHUNK_SECONDS
-        value: "120"
-      # RENDER_EXTERNAL_URL ကို Render က အလိုအလျောက် ပေးပါတယ် (မထည့်ရပါ)
