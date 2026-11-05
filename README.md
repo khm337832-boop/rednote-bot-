@@ -6,7 +6,7 @@ The AI translation and timing are not guaranteed accurate: check the preview and
 
 ## Limits
 
-- Telegram's public Bot API limits direct downloads to 20 MB; for a larger source send a supported public video link instead. Site restrictions and disk/time limits can still prevent a download.
+- Telegram's public Bot API limits bot downloads to 20 MB. For a larger Telegram upload, the bot sends a private, one-hour browser-upload link: choose the original video again, without splitting it. Alternatively send `/upload` in the private bot chat to request a link without first uploading the file to Telegram. The bot cannot fetch the original large Telegram attachment itself. Supported public video links also work. Browser uploads are streamed to temporary disk, and disk space, provider/proxy limits, network interruption or restart can still prevent an upload.
 - Large results are split only after final rendering; the bot verifies part sizes and total duration, reports a failed partial delivery, and resumes at the first unsent part when retried with the same settings.
 - Silent videos are reported rather than given invented subtitles. Audio crossing a 60-second boundary or difficult/noisy speech can need manual correction.
 - Multiple sessions are private capability links. They are not durable storage; download the result and retain the source yourself.

@@ -23,12 +23,17 @@ from subtitle_engine import SubtitleCue, SubtitleStyle, burn_subtitles, make_ass
 
 log = logging.getLogger('subtitle-bot')
 SESSIONS = {}
+UPLOAD_SESSIONS = {}
 ACTIVE = set()
 SEEN_UPDATES = {}
 TTL = 24 * 3600
-VERSION = 'subtitle-v1'
+VERSION = 'subtitle-v1.1-browser-upload'
 WEBHOOK_READY = False
 EDITOR = Path(__file__).with_name('subtitle_editor.html')
+UPLOADER = Path(__file__).with_name('subtitle_upload.html')
+UPLOAD_TTL = 3600
+# Leave room for preview, final rendering, and other running processes.
+UPLOAD_DISK_RESERVE = 512 * 1024 * 1024
 
 
 def session_for(request):
@@ -56,6 +61,43 @@ def clean_expired():
         if time.time() - session['created'] > TTL and not session.get('rendering'):
             SESSIONS.pop(token, None)
             shutil.rmtree(session['dir'], ignore_errors=True)
+    for token, session in list(UPLOAD_SESSIONS.items()):
+        if time.time() - session['created'] > UPLOAD_TTL and not session.get('uploading'):
+            UPLOAD_SESSIONS.pop(token, None)
+            if session.get('directory') and not session.get('used'):
+                shutil.rmtree(session['directory'], ignore_errors=True)
+                ACTIVE.discard(session['chat'])
+
+
+async def send_upload_link(chat, reply=None):
+    """Issue a short-lived, private capability; Telegram cannot serve >20 MB."""
+    clean_expired()
+    # Re-requesting /upload abandons any idle partial upload for this chat.
+    # Never remove an actively streaming request or an already handed-off job.
+    for old_token, old in list(UPLOAD_SESSIONS.items()):
+        if old['chat'] == chat and not old.get('uploading') and not old.get('used'):
+            if old.get('directory'):
+                shutil.rmtree(old['directory'], ignore_errors=True)
+                ACTIVE.discard(chat)
+            UPLOAD_SESSIONS.pop(old_token, None)
+    base = bot.PUBLIC_BASE_URL.rstrip('/')
+    if not base:
+        raise RuntimeError('Public upload URL is not configured')
+    token = secrets.token_urlsafe(32)
+    UPLOAD_SESSIONS[token] = {'created': time.time(), 'chat': chat, 'reply': reply,
+                              'uploading': False, 'used': False}
+    message_id = await bot.send_text(
+        chat,
+        '📤 Telegram က 20 MB အထက် video ကို bot ဆီ download မပေးနိုင်ပါ။ '
+        'အောက်က link ကိုဖွင့်ပြီး မူရင်း video ဖိုင်ကို browser မှ တစ်ကြိမ်ပြန်ရွေးတင်ပါ။ '
+        'အပိုင်းခွဲစရာ မလိုပါ။ Upload ပြီးလျှင် bot က စာတန်းဆက်လုပ်ပါမည်။\n\n'
+        '🔒 Link ကို မမျှဝေပါနှင့်။ ၁ နာရီအတွင်း အသုံးပြုပါ။',
+        reply_to=reply,
+        reply_markup={'inline_keyboard': [[{'text': '📤 Video တင်ရန်', 'url': f'{base}/upload#{token}'}]]},
+    )
+    if not message_id:
+        UPLOAD_SESSIONS.pop(token, None)
+        raise RuntimeError('Could not send the private upload link')
 
 
 def ffprobe(path):
@@ -147,19 +189,31 @@ async def transcribe_translate(source, duration, directory, chat):
     return cues
 
 
-async def create_job(chat, reply, attachment, url):
-    if chat in ACTIVE:
-        await bot.send_text(chat, 'လက်ရှိ video တစ်ခု လုပ်နေပါသည်။ ပြီးမှ နောက်တစ်ခု ပို့ပါ။', reply_to=reply)
-        return
-    ACTIVE.add(chat)
-    directory = tempfile.mkdtemp(prefix='subtitle-job-')
+async def create_job(chat, reply, attachment, url, *, uploaded_dir=None):
+    # Browser uploads reserve ACTIVE before streaming; ownership is handed
+    # to this task along with the temporary directory after upload completes.
+    if not uploaded_dir:
+        if chat in ACTIVE:
+            await bot.send_text(chat, 'လက်ရှိ video တစ်ခု လုပ်နေပါသည်။ ပြီးမှ နောက်တစ်ခု ပို့ပါ။', reply_to=reply)
+            return
+        ACTIVE.add(chat)
+    directory = uploaded_dir or tempfile.mkdtemp(prefix='subtitle-job-')
     kept = False
     try:
         clean_expired()
-        await bot.send_text(chat, '🎬 Video ကို ဒေါင်းပြီး မြန်မာစာတန်း ဘာသာပြန်နေပါသည်။', reply_to=reply)
+        await bot.send_text(chat, '🎬 Video ကို စစ်ပြီး မြန်မာစာတန်း ဘာသာပြန်နေပါသည်။', reply_to=reply)
         source = str(Path(directory) / 'source.mp4')
-        if attachment:
-            await bot.download_telegram_file(attachment['file_id'], source, expected_size=attachment.get('file_size', 0), raise_on_error=True)
+        if uploaded_dir:
+            if not os.path.isfile(source) or os.path.getsize(source) <= 0:
+                raise ValueError('Uploaded video is empty')
+        elif attachment:
+            try:
+                await bot.download_telegram_file(attachment['file_id'], source, expected_size=attachment.get('file_size', 0), raise_on_error=True)
+            except bot.SourceDownloadError as exc:
+                if '20MB' in str(getattr(exc, 'user_message', '') or str(exc)):
+                    await send_upload_link(chat, reply)
+                    return
+                raise
         else:
             await bot.download_full(url, source, raise_on_error=True)
         duration, width, height = await asyncio.to_thread(ffprobe, source)
@@ -234,7 +288,9 @@ async def lifespan(app):
     WEBHOOK_READY = False
     if bot.BOT_TOKEN and bot.PUBLIC_BASE_URL:
         secret = bot._telegram_webhook_secret()
-        commands = await bot.tg_api('setMyCommands', {'commands': [{'command':'start', 'description':'မြန်မာစာတန်းထိုးရန်'}]}, timeout=15)
+        commands = await bot.tg_api('setMyCommands', {'commands': [
+            {'command':'start', 'description':'မြန်မာစာတန်းထိုးရန်'},
+            {'command':'upload', 'description':'Video ဖိုင်ကြီး browser မှ တင်ရန်'}]}, timeout=15)
         result = await bot.tg_api('setWebhook', {'url': bot.PUBLIC_BASE_URL.rstrip('/') + '/webhook', 'secret_token': secret, 'allowed_updates':['message']}, timeout=15)
         WEBHOOK_READY = bool(result.get('ok'))
         if not commands.get('ok') or not WEBHOOK_READY:
@@ -246,6 +302,9 @@ async def lifespan(app):
         cleanup_task.cancel()
         for session in SESSIONS.values():
             shutil.rmtree(session['dir'], ignore_errors=True)
+        for session in UPLOAD_SESSIONS.values():
+            if session.get('directory') and not session.get('used'):
+                shutil.rmtree(session['directory'], ignore_errors=True)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -255,6 +314,134 @@ app = FastAPI(lifespan=lifespan)
 @app.get('/healthz')
 async def health():
     return {'ok': True, 'version': VERSION, 'render_git_commit': os.getenv('RENDER_GIT_COMMIT', ''), 'telegram_webhook_ready': WEBHOOK_READY, 'active_jobs': len(ACTIVE)}
+
+
+@app.get('/upload')
+async def upload_page():
+    return HTMLResponse(UPLOADER.read_text(encoding='utf-8'), headers={
+        'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff'})
+
+
+def upload_session_for(request):
+    token = request.cookies.get('subtitle_upload', '')
+    session = UPLOAD_SESSIONS.get(token)
+    if not session or time.time() - session['created'] > UPLOAD_TTL or session.get('used'):
+        raise HTTPException(404, 'Upload link expired or already used; send the video again')
+    return session
+
+
+@app.post('/upload/session')
+async def open_upload_session(request: Request):
+    check_origin(request)
+    body = await request.json()
+    token = str(body.get('token') or '')
+    session = UPLOAD_SESSIONS.get(token)
+    if not session or time.time() - session['created'] > UPLOAD_TTL or session.get('used'):
+        raise HTTPException(404, 'Upload link expired or already used; send the video again')
+    response = JSONResponse({'ok': True}, headers={'Cache-Control': 'no-store'})
+    response.set_cookie('subtitle_upload', token, httponly=True,
+                        secure=request.url.scheme == 'https' or bot.PUBLIC_BASE_URL.startswith('https://'),
+                        samesite='strict', max_age=UPLOAD_TTL, path='/upload')
+    return response
+
+
+@app.get('/upload/status')
+async def upload_status(request: Request):
+    token = request.cookies.get('subtitle_upload', '')
+    session = UPLOAD_SESSIONS.get(token)
+    if not session or time.time() - session['created'] > UPLOAD_TTL:
+        raise HTTPException(404, 'Upload link expired; send /upload to get another')
+    return JSONResponse({'received': session.get('received', 0),
+                         'used': session.get('used', False)},
+                        headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/upload/cancel')
+async def cancel_upload(request: Request):
+    check_origin(request)
+    session = upload_session_for(request)
+    if session.get('uploading'):
+        raise HTTPException(409, 'Upload is still in progress')
+    if session.get('directory'):
+        shutil.rmtree(session.pop('directory'), ignore_errors=True)
+        ACTIVE.discard(session['chat'])
+    session['used'] = True
+    return {'ok': True}
+
+
+@app.post('/upload/video')
+async def upload_video(request: Request):
+    check_origin(request)
+    session = upload_session_for(request)
+    chat = session['chat']
+    if session['uploading']:
+        raise HTTPException(409, 'Another upload chunk is in progress')
+    try:
+        offset = int(request.headers['x-upload-offset'])
+        total = int(request.headers['x-upload-total'])
+        size = int(request.headers['content-length'])
+    except (ValueError, KeyError):
+        raise HTTPException(400, 'Invalid upload offset or length')
+    # Each request is small enough for typical reverse-proxy body limits.
+    if offset < 0 or total <= 0 or size <= 0 or size > 8 * 1024 * 1024 or offset + size > total:
+        raise HTTPException(400, 'Invalid upload chunk')
+    if offset != session.get('received', 0):
+        raise HTTPException(409, 'Upload offset mismatch; check status and retry')
+    if session.get('total', total) != total:
+        raise HTTPException(409, 'A different file is already being uploaded')
+    if not session.get('directory') and chat in ACTIVE:
+        raise HTTPException(409, 'Another job is already in progress')
+    session['uploading'] = True
+    created = False
+    try:
+        if not session.get('directory'):
+            ACTIVE.add(chat)
+            try:
+                session['directory'] = tempfile.mkdtemp(prefix='subtitle-job-')
+            except BaseException:
+                ACTIVE.discard(chat)
+                raise
+            created = True
+            session['total'] = total
+        directory = session['directory']
+        if shutil.disk_usage(directory).free - (total - offset) < UPLOAD_DISK_RESERVE:
+            raise HTTPException(507, 'Not enough temporary disk space for this video')
+        source = Path(directory) / 'source.mp4'
+        received = 0
+        try:
+            with source.open('ab') as output:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    if received + len(chunk) > size:
+                        raise HTTPException(400, 'Upload chunk exceeds declared length')
+                    if shutil.disk_usage(directory).free - len(chunk) < UPLOAD_DISK_RESERVE:
+                        raise HTTPException(507, 'Temporary disk space is full')
+                    output.write(chunk)
+                    received += len(chunk)
+                if received != size:
+                    raise HTTPException(400, 'Upload chunk was incomplete')
+        except BaseException:
+            # A disconnected client may retry the same offset safely.
+            if source.exists():
+                with source.open('r+b') as output:
+                    output.truncate(offset)
+            raise
+        session['received'] = offset + received
+        if session['received'] == total:
+            # The job owns the lock and directory from this point onward.
+            asyncio.create_task(create_job(chat, session.get('reply'), None, '', uploaded_dir=directory))
+            session['used'] = True
+        return {'ok': True, 'received': session['received'], 'complete': session.get('used', False)}
+    except BaseException:
+        if created and not session.get('received'):
+            shutil.rmtree(session.pop('directory'), ignore_errors=True)
+            session.pop('total', None)
+            ACTIVE.discard(chat)
+        raise
+    finally:
+        session['uploading'] = False
 
 
 @app.get('/editor')
@@ -338,10 +525,15 @@ async def process_update(update):
     text = (msg.get('text') or msg.get('caption') or '').strip()
     attachment = bot._telegram_video_attachment(msg)
     url = bot._extract_first_url(text)
-    if attachment or url:
+    command = text.split()[0].split('@')[0].lower() if text else ''
+    if command == '/upload':
+        await send_upload_link(chat, msg.get('message_id'))
+    elif attachment and attachment.get('file_size', 0) > bot.TELEGRAM_BOT_FILE_DOWNLOAD_LIMIT_BYTES:
+        await send_upload_link(chat, msg.get('message_id'))
+    elif attachment or url:
         await create_job(chat, msg.get('message_id'), attachment, url)
     else:
-        await bot.send_text(chat, '🎬 Video သို့မဟုတ် video link ပို့ပါ။ မူရင်းအသံကိုထားပြီး မြန်မာစာတန်း ဘာသာပြန်ပါမယ်။ Browser မှာ စာတန်းကို ဆွဲရွှေ့၊ size နဲ့ စာသားပြင်ပြီး Final ပို့နိုင်ပါတယ်။ Telegram တိုက်ရိုက် upload သည် Bot API ၏ 20MB ကန့်သတ်ချက်ရှိပါသည်။', reply_markup={'remove_keyboard': True})
+        await bot.send_text(chat, '🎬 Video သို့မဟုတ် video link ပို့ပါ။ မူရင်းအသံကိုထားပြီး မြန်မာစာတန်း ဘာသာပြန်ပါမယ်။ Browser မှာ စာတန်းကို ဆွဲရွှေ့၊ size နဲ့ စာသားပြင်ပြီး Final ပို့နိုင်ပါတယ်။ Telegram file 20MB ကျော်လျှင် ပို့ပေးမည့် private link မှ browser ဖြင့် ဖိုင်ကို ပြန်တင်နိုင်ပါသည်။ /upload နှိပ်၍ link ကို တိုက်ရိုက်ရယူနိုင်ပါသည်။', reply_markup={'remove_keyboard': True})
 
 
 @app.post('/webhook')

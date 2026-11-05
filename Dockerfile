@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py subtitle_app.py subtitle_engine.py subtitle_editor.html ./
+COPY bot.py subtitle_app.py subtitle_engine.py subtitle_editor.html subtitle_upload.html ./
 
 ENV PORT=10000
 EXPOSE 10000
