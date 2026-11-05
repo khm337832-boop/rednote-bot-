@@ -28,7 +28,7 @@ RETRY_JOBS = {}  # per-chat paused provider failures; never a background queue
 ACTIVE = set()
 SEEN_UPDATES = {}
 TTL = 24 * 3600
-VERSION = 'subtitle-v1.6-provider-retry-checkpoint'
+VERSION = 'subtitle-v1.7-preview-progress'
 WEBHOOK_READY = False
 LAST_TIMING_REPAIR = {}
 EDITOR = Path(__file__).with_name('subtitle_editor.html')
@@ -325,13 +325,71 @@ async def _translate_foreign_cues(client, cues):
     return repaired
 
 
-def make_preview(source, target):
-    subprocess.run(['ffmpeg', '-nostdin', '-y', '-i', str(source),
-                    '-vf', "scale=w='min(960,iw)':h=-2", '-map', '0:v:0', '-map', '0:a:0?',
-                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-                    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '96k',
-                    '-movflags', '+faststart', str(target)], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=3600)
+async def make_preview(source, target, duration, chat, message_id, *,
+                       report_interval=15, timeout=3600):
+    """Report actual ffmpeg timestamps; an unchanged timestamp is not progress."""
+    started = time.monotonic()
+    state = {'seconds': 0.0, 'advanced': started}
+
+    async def report():
+        while True:
+            await asyncio.sleep(report_interval)
+            now = time.monotonic()
+            percent = min(99, max(0, int(state['seconds'] / duration * 100)))
+            idle = max(0, int(now - state['advanced']))
+            elapsed = max(0, int(now - started))
+            note = ('⚠️ အချိန်အတော်ကြာ မတိုးသေးပါ; ရပ်နေခြင်း ဖြစ်နိုင်ပါသည်။'
+                    if idle >= 60 else 'လုပ်ဆောင်မှုကို စောင့်ကြည့်နေပါသည်။')
+            text = (f'🖼️ Browser preview: {percent}%\n'
+                    f'ကြာချိန် {elapsed} စက္ကန့် · နောက်ဆုံးတိုးခဲ့သည်မှာ {idle} စက္ကန့်ရှိပါပြီ။\n'
+                    f'{note} 99% တွင် ဖိုင်ကို အပြီးသတ်နေနိုင်ပါသည်။')
+            await bot.edit_text(chat, message_id, text)
+
+    with tempfile.TemporaryFile() as errors:
+        proc = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-stats_period', '1',
+            '-progress', 'pipe:1', '-i', str(source),
+            '-vf', "scale=w='min(960,iw)':h=-2", '-map', '0:v:0', '-map', '0:a:0?',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+            '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '96k',
+            '-movflags', '+faststart', str(target),
+            stdout=asyncio.subprocess.PIPE, stderr=errors)
+        reporter = asyncio.create_task(report()) if message_id else None
+
+        async def consume():
+            async for line in proc.stdout:
+                key, sep, value = line.decode('utf-8', errors='replace').strip().partition('=')
+                if sep and key == 'out_time_us':
+                    try:
+                        seconds = float(value) / 1_000_000
+                    except ValueError:
+                        continue
+                    if math.isfinite(seconds) and seconds > state['seconds']:
+                        state['seconds'] = seconds
+                        state['advanced'] = time.monotonic()
+            return await proc.wait()
+
+        try:
+            try:
+                code = await asyncio.wait_for(consume(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError('Preview preparation timed out after 1 hour') from exc
+            if code:
+                errors.seek(0)
+                raise subprocess.CalledProcessError(code, 'ffmpeg', stderr=errors.read())
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+            if reporter:
+                reporter.cancel()
+                try:
+                    await reporter
+                except asyncio.CancelledError:
+                    pass
 
 
 def extract_audio(source, target, start, length):
@@ -528,9 +586,14 @@ async def create_job(chat, reply, attachment, url, *, uploaded_dir=None):
         phase = 'translation'
         cues = await transcribe_translate(source, duration, directory, chat, True)
         phase = 'preview'
-        await bot.send_text(chat, '🖼️ Browser preview ပြုလုပ်နေပါသည်။')
+        progress_id = await bot.send_text(chat, '🖼️ Browser preview: 0%\nစတင်ပြုလုပ်နေပါသည်။')
         preview = str(Path(directory) / 'preview.mp4')
-        await asyncio.to_thread(make_preview, source, preview)
+        try:
+            await make_preview(source, preview, duration, chat, progress_id)
+        except Exception:
+            await bot.edit_text(chat, progress_id, '❌ Browser preview မအောင်မြင်ပါ။ အသေးစိတ်ကို အောက်ပါ message တွင်ကြည့်ပါ။')
+            raise
+        await bot.edit_text(chat, progress_id, '✅ Browser preview: 100% ပြီးပါပြီ။ Editor link ပြင်ဆင်နေပါသည်။')
         base = bot.PUBLIC_BASE_URL.rstrip('/')
         if not base:
             raise RuntimeError('Public editor URL is not configured')
