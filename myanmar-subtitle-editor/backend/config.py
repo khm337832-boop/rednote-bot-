@@ -62,7 +62,7 @@ class Settings:
     # ---- speech to text -------------------------------------------------
     stt_backend: str = "faster-whisper"
     model_size: str = "large-v3"
-    language: str = "my"
+    language: str = ""  # empty = auto-detect source language
     device: str = "auto"  # auto | cuda | cpu
     compute_type: str = "auto"  # auto | float16 | int8 | int8_float16 | float32
     beam_size: int = 5

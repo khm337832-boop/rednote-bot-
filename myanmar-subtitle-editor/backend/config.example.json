@@ -1,7 +1,7 @@
 {
   "stt_backend": "faster-whisper",
   "model_size": "large-v3",
-  "language": "my",
+  "language": "",
   "device": "auto",
   "compute_type": "auto",
   "beam_size": 5,

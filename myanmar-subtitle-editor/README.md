@@ -5,7 +5,10 @@ CapCut လိုပဲ စာတန်း၊ Logo နှင့် Blur ကို
 နိုင်သည့် သီးသန့် (private) Web Application ဖြစ်ပါသည်။
 
 * **စကားပြော → စာတန်း**: faster-whisper (large-v3၊ GPU မရှိလျှင် CPU + int8)
-  သို့မဟုတ် openai-whisper (config မှ ရွေး)။
+  သို့မဟုတ် openai-whisper (config မှ ရွေး) ဖြင့် မူရင်းဘာသာကို auto-detect လုပ်သည်။
+  မြန်မာမဟုတ်သော speech ကို မူလ timing မပြောင်းဘဲ Gemini ဖြင့် မြန်မာသို့ ပြန်သည်။
+  Gemini မရလျှင် အခြားဘာသာကို မြန်မာစာတန်းအဖြစ် မပြဘဲ error ပြသည်။
+  ဘာသာပြန်/အချိန်ကို export မလုပ်မီ လူကိုယ်တိုင် စစ်ဆေးပြင်ဆင်ပါ။
 * **CapCut စတိုင် timing**: စကားပြောတစ်ကြောင်းချင်းစီကို သီးသန့် segment ခွဲပြီး
   `segment[i].end === segment[i+1].start` ဖြစ်သည်အထိ စာတန်း **ဆက်ပေါ်နေသည်**
   (စကားကြား silence ရှိရင်တောင် မပျောက်)။
@@ -425,10 +428,10 @@ docker run --rm -p 8000:8000 \
 
 * Image တွင် Debian FFmpeg (libass/harfbuzz ပါ) နှင့် ဖောင့် ပါသည်။
 * `HF_HOME` volume ဖြင့် Whisper မော်ဒယ်ကို ပြန်မယူဘဲ သိမ်းထားနိုင်သည်။
-* Render အတွက် `render.yaml` ပါသည် (persistent disk ကို `/data` တွင်
-  mount လုပ်ပြီး `MSE_UPLOADS_DIR=/data/uploads`,
-  `MSE_PROJECTS_DIR=/data/projects` သတ်မှတ်ထားသည်)။
-* Free tier တွင် disk နည်းသဖြင့် `model_size: "small"` ဖြင့် စတင်ရန် အကြံပြုပါသည်။
+* Render blueprint သည် free instance သာ သုံးပြီး persistent disk မပါပါ။ ထို့ကြောင့် restart/deploy ဖြစ်လျှင် video၊ project နှင့် model cache ပျောက်နိုင်သည် — အမြဲတမ်း save/load အဖြစ် အာမမခံပါ။
+* Free instance ၏ RAM/disk အကန့်အသတ်ကြောင့် 500 MB video သို့မဟုတ် Whisper large-v3 အလုပ်လုပ်မည်ဟု အာမမခံနိုင်ပါ။ Blueprint တွင် small/int8 ကို သုံးထားသည်။
+* `GEMINI_API_KEY` ကို environment တွင် သတ်မှတ်ထားမှ မြန်မာမဟုတ်သော speech ကို ဘာသာပြန်နိုင်သည် (free tier availability/quota အပေါ် မူတည်သည်)။ `EDITOR_PASSWORD` မရှိသော Render deployment တွင် private API များကို ပိတ်ထားသည်။ Secret ကို chat ထဲ မပို့ပါနှင့်။
+* လက်ရှိ standalone editor တွင် video upload ကိုသာ ပံ့ပိုးပြီး arbitrary video link ကို တိုက်ရိုက် import မလုပ်နိုင်သေးပါ။ မူရင်း subtitle ကို အလိုအလျောက် detect/ဖုံးခြင်းလည်း မပြီးသေးပါ — blur layer ကို ကိုယ်တိုင် နေရာချနိုင်သည်။
 
 ---
 
